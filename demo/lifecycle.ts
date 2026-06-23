@@ -6,9 +6,19 @@
  * 3. Runs buyer-agent inline (same process)
  * 4. Kills seller when buyer finishes
  * 5. Exits 0 on success
+ *
+ * x402 payment is tracked as a separate health check.
+ * If the x402 micropayment step fails the lifecycle exits non-zero
+ * so CI / dashboards catch facilitator regressions.
  */
 import "dotenv/config";
 import { spawn, type ChildProcess } from "node:child_process";
+
+const X402_FAIL_PATTERNS = [
+  "Payment verification failed",
+  "x402.*fail",
+  "settle.*fail",
+];
 
 function log(msg: string) {
   console.log(`[lifecycle] ${new Date().toISOString()} ${msg}`);
@@ -60,8 +70,23 @@ async function main() {
     stdio: ["ignore", "pipe", "pipe"],
   });
 
-  buyer.stdout?.on("data", (c: Buffer) => process.stdout.write(c));
-  buyer.stderr?.on("data", (c: Buffer) => process.stderr.write(c));
+  let x402Failed = false;
+
+  buyer.stdout?.on("data", (c: Buffer) => {
+    const text = c.toString();
+    process.stdout.write(text);
+    if (!x402Failed && X402_FAIL_PATTERNS.some((p) => text.match(p))) {
+      x402Failed = true;
+    }
+  });
+
+  buyer.stderr?.on("data", (c: Buffer) => {
+    const text = c.toString();
+    process.stderr.write(text);
+    if (!x402Failed && X402_FAIL_PATTERNS.some((p) => text.match(p))) {
+      x402Failed = true;
+    }
+  });
 
   const buyerExit = await new Promise<number>((resolve) => {
     buyer.on("exit", (code) => resolve(code ?? 1));
@@ -72,6 +97,11 @@ async function main() {
 
   if (buyerExit !== 0) {
     log(`FAIL — buyer exited with code ${buyerExit}`);
+    process.exit(1);
+  }
+
+  if (x402Failed) {
+    log(`FAIL — x402 micropayment failed (check facilitator config)`);
     process.exit(1);
   }
 
