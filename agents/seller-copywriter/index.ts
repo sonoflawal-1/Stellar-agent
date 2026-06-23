@@ -2,6 +2,7 @@ import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";
 import express from "express";
+import rateLimit from "express-rate-limit";
 import Groq from "groq-sdk";
 import { Keypair } from "@stellar/stellar-sdk";
 import { IdentityClient, CommerceClient, TESTNET, type MarcConfig } from "marc-stellar-sdk";
@@ -65,6 +66,14 @@ async function heartbeat() {
 setInterval(heartbeat, 60_000);
 heartbeat();
 
+const limiter = rateLimit({
+  windowMs: 60_000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "too many requests — rate limited (5/min/IP)" },
+});
+
 const app = express();
 app.use(express.json());
 
@@ -72,7 +81,7 @@ app.get("/", (_req, res) => res.json(JSON.parse(fs.readFileSync("agent.json", "u
 
 app.use(`/${OUTPUT_DIR}`, express.static(OUTPUT_DIR));
 
-app.post("/job", async (req, res) => {
+app.post("/job", limiter, async (req, res) => {
   const { jobId, task } = req.body;
   if (!jobId || !task) {
     res.status(400).json({ error: "missing jobId or task" });

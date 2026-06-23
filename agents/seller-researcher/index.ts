@@ -2,6 +2,7 @@ import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";
 import express from "express";
+import rateLimit from "express-rate-limit";
 import Groq from "groq-sdk";
 import { Keypair } from "@stellar/stellar-sdk";
 import { IdentityClient, CommerceClient, TESTNET, type MarcConfig } from "marc-stellar-sdk";
@@ -39,12 +40,20 @@ if (!agentId) {
   console.log(`[${AGENT_ID}] Already agent #${agentId}`);
 }
 
+const limiter = rateLimit({
+  windowMs: 60_000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "too many requests — rate limited (5/min/IP)" },
+});
+
 const app = express();
 app.use(express.json());
 
 app.get("/", (_req, res) => res.json(JSON.parse(fs.readFileSync("agent.json", "utf8"))));
 
-app.post("/job", async (req, res) => {
+app.post("/job", limiter, async (req, res) => {
   const { jobId, task } = req.body;
   console.log(`[${AGENT_ID}] Job #${jobId}: ${task}`);
   res.json({ status: "accepted", jobId });
