@@ -29,6 +29,24 @@ type AgentEntry = {
 
 const activeAgents = new Map<string, AgentEntry>();
 
+// JSON schema for agent manifests — closes #66
+const REQUIRED_STRING_FIELDS = ["id", "name", "description", "endpoint"] as const;
+
+function validateManifest(m: unknown): string | null {
+  if (typeof m !== "object" || m === null || Array.isArray(m)) return "manifest must be a JSON object";
+  const obj = m as Record<string, unknown>;
+  for (const field of REQUIRED_STRING_FIELDS) {
+    if (typeof obj[field] !== "string" || !(obj[field] as string).trim()) {
+      return `field "${field}" must be a non-empty string`;
+    }
+  }
+  if (!obj.price || typeof obj.price !== "object") return 'field "price" must be an object';
+  const price = obj.price as Record<string, unknown>;
+  if (typeof price.amount !== "number" || price.amount <= 0) return '"price.amount" must be a positive number';
+  if (typeof price.currency !== "string" || !price.currency.trim()) return '"price.currency" must be a non-empty string';
+  return null;
+}
+
 const app = express();
 app.use(express.json());
 
@@ -104,6 +122,11 @@ app.post("/heartbeat", (req, res) => {
   const manifest = loadManifest(agentId);
   if (!manifest) {
     return res.status(404).json({ error: "agent manifest not found" });
+  }
+
+  const schemaError = validateManifest(manifest);
+  if (schemaError) {
+    return res.status(422).json({ error: `invalid manifest: ${schemaError}` });
   }
 
   activeAgents.set(agentId, { lastHeartbeat: Date.now(), manifest });
