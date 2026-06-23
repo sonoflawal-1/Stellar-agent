@@ -3,7 +3,8 @@
  * Serves agent.json manifests so the buyer can discover available sellers.
  * Tracks agent liveness via heartbeat — dead agents auto-deregister.
  *
- * GET  /agents         → list all alive agents
+ * GET  /agents              → list alive agents (heartbeating)
+ * GET  /agents?include_inactive=true → list all agents including deregistered
  * GET  /agents/:id     → get a specific agent manifest
  * POST /heartbeat      → agent pings with { agentId }
  * GET  /health         → registry + agent count
@@ -59,10 +60,20 @@ function getAliveAgents(): Record<string, unknown>[] {
   const alive: Record<string, unknown>[] = [];
   for (const entry of activeAgents.values()) {
     if (now - entry.lastHeartbeat < HEARTBEAT_TIMEOUT_MS) {
-      alive.push(entry.manifest);
+      alive.push({ ...entry.manifest, alive: true });
     }
   }
   return alive;
+}
+
+function getAllAgentsWithStatus(): Record<string, unknown>[] {
+  const now = Date.now();
+  return loadManifests().map((m) => {
+    const id = (m as Record<string, unknown>).id as string | undefined;
+    const entry = id ? activeAgents.get(id) : undefined;
+    const alive = entry !== undefined && now - entry.lastHeartbeat < HEARTBEAT_TIMEOUT_MS;
+    return { ...m, alive };
+  });
 }
 
 function isAlive(agentId: string): boolean {
@@ -99,13 +110,11 @@ app.post("/heartbeat", (req, res) => {
   res.json({ status: "ok", agentId });
 });
 
-app.get("/agents", (_req, res) => {
-  const alive = getAliveAgents();
-  if (alive.length > 0) {
-    return res.json(alive);
+app.get("/agents", (req, res) => {
+  if (req.query.include_inactive === "true") {
+    return res.json(getAllAgentsWithStatus());
   }
-  const all = loadManifests();
-  return res.json(all);
+  return res.json(getAliveAgents());
 });
 
 app.get("/agents/:id", (req, res) => {
