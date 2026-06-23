@@ -6,6 +6,7 @@ import rateLimit from "express-rate-limit";
 import Groq from "groq-sdk";
 import { Keypair } from "@stellar/stellar-sdk";
 import { IdentityClient, CommerceClient, TESTNET, type MarcConfig } from "marc-stellar-sdk";
+import { retryWithBackoff } from "../shared.js";
 
 const cfg: MarcConfig = {
   rpcUrl: process.env.STELLAR_RPC_URL ?? TESTNET.rpcUrl,
@@ -33,9 +34,21 @@ async function generate(prompt: string): Promise<string> {
 }
 
 const identity = new IdentityClient(cfg);
-let agentId = await identity.agentOf(seller.publicKey());
+let agentId: bigint | null = null;
+try {
+  await retryWithBackoff(
+    async () => { agentId = await identity.agentOf(seller.publicKey()); },
+    { maxAttempts: 6, baseDelayMs: 2000, label: AGENT_ID },
+  );
+} catch (err) {
+  console.error(`[${AGENT_ID}] Fatal: identity RPC unreachable —`, (err as Error).message);
+  process.exit(1);
+}
 if (!agentId) {
-  agentId = await identity.register(seller, `ipfs://${AGENT_ID}.json`);
+  await retryWithBackoff(
+    async () => { agentId = await identity.register(seller, `ipfs://${AGENT_ID}.json`); },
+    { maxAttempts: 4, baseDelayMs: 2000, label: AGENT_ID },
+  );
   console.log(`[${AGENT_ID}] Registered as agent #${agentId}`);
 } else {
   console.log(`[${AGENT_ID}] Already agent #${agentId}`);

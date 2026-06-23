@@ -1,0 +1,145 @@
+version: "3.9"
+
+# ── MARC on Stellar — Development Environment ──────────────────────────────
+#
+# Prerequisites:
+#   Docker 24+ with Compose v2
+#
+# Quick start:
+#   cp .env.example .env              # fill in secrets
+#   docker compose up                  # starts soroban-rpc + all agents
+#   docker compose up buyer            # interactive TUI only
+#
+# Services:
+#   soroban-rpc   local Stellar devnet (Soroban-enabled, port 8000)
+#   sdk           build the marc-stellar-sdk TypeScript package
+#   registry      agent discovery API (port 4500)
+#   seller-*      agent workers (ports 4501-4504)
+#   buyer         interactive Blessed TUI (no port, stdin required)
+
+x-node: &node
+  image: node:22-slim
+  working_dir: /app
+  volumes:
+    - .:/app
+  env_file: ${ENV_FILE:-.env}
+  networks:
+    - marc-net
+
+services:
+  soroban-rpc:
+    image: stellar/quickstart:latest
+    command: --local --enable-soroban
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/.well-known/stellar.toml"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+    networks:
+      - marc-net
+
+  # ── SDK (one-shot build) ──────────────────────────────────────────────────
+  sdk:
+    <<: *node
+    working_dir: /app/sdk
+    command: sh -c "npm install --silent 2>/dev/null && npm run build"
+    restart: "no"
+    profiles: ["setup"]
+
+  # ── Agent Registry ────────────────────────────────────────────────────────
+  registry:
+    <<: *node
+    working_dir: /app/agents/registry
+    command: sh -c "
+      npm install --silent 2>/dev/null &&
+      npx tsx server.ts
+    "
+    ports:
+      - "4500:4500"
+    depends_on:
+      sdk:
+        condition: service_completed_successfully
+
+  # ── Seller Agents ─────────────────────────────────────────────────────────
+  seller-webbuilder:
+    <<: *node
+    working_dir: /app/agents/seller-webbuilder
+    command: sh -c "
+      npm install --silent 2>/dev/null &&
+      npx tsx index.ts
+    "
+    ports:
+      - "4501:4501"
+    depends_on:
+      sdk:
+        condition: service_completed_successfully
+      registry:
+        condition: service_started
+
+  seller-copywriter:
+    <<: *node
+    working_dir: /app/agents/seller-copywriter
+    command: sh -c "
+      npm install --silent 2>/dev/null &&
+      npx tsx index.ts
+    "
+    ports:
+      - "4502:4502"
+    depends_on:
+      sdk:
+        condition: service_completed_successfully
+      registry:
+        condition: service_started
+
+  seller-namer:
+    <<: *node
+    working_dir: /app/agents/seller-namer
+    command: sh -c "
+      npm install --silent 2>/dev/null &&
+      npx tsx index.ts
+    "
+    ports:
+      - "4503:4503"
+    depends_on:
+      sdk:
+        condition: service_completed_successfully
+      registry:
+        condition: service_started
+
+  seller-researcher:
+    <<: *node
+    working_dir: /app/agents/seller-researcher
+    command: sh -c "
+      npm install --silent 2>/dev/null &&
+      npx tsx index.ts
+    "
+    ports:
+      - "4504:4504"
+    depends_on:
+      sdk:
+        condition: service_completed_successfully
+      registry:
+        condition: service_started
+
+  # ── Buyer TUI (interactive) ───────────────────────────────────────────────
+  buyer:
+    <<: *node
+    working_dir: /app/agents/buyer
+    command: sh -c "
+      npm install --silent 2>/dev/null &&
+      npx tsx index.ts
+    "
+    stdin_open: true
+    tty: true
+    depends_on:
+      sdk:
+        condition: service_completed_successfully
+      registry:
+        condition: service_started
+
+networks:
+  marc-net:
+    driver: bridge

@@ -1,7 +1,7 @@
 import "dotenv/config";
 import blessed from "blessed";
 import { Keypair, Contract, Account, TransactionBuilder, BASE_FEE, Address, scValToNative, rpc } from "@stellar/stellar-sdk";
-import { IdentityClient, CommerceClient, TESTNET, type MarcConfig } from "marc-stellar-sdk";
+import { IdentityClient, CommerceClient, TESTNET, type MarcConfig, type Job } from "marc-stellar-sdk";
 
 const cfg: MarcConfig = {
   rpcUrl: process.env.STELLAR_RPC_URL ?? TESTNET.rpcUrl,
@@ -188,6 +188,26 @@ taskBox.key(["enter"], async () => {
   await submitTask(task);
 });
 
+// ── Deliverable validation ────────────────────────────────────────────────────
+
+function validateDeliverable(job: Job): { valid: boolean; reason?: string } {
+  if (!job.deliverable || typeof job.deliverable !== "string") {
+    return { valid: false, reason: "deliverable is empty or not a string" };
+  }
+  const s = job.deliverable.trim();
+  if (s.length === 0) {
+    return { valid: false, reason: "deliverable is whitespace-only" };
+  }
+  const scheme = s.split("://")[0];
+  if (!scheme || !/^[a-z][a-z0-9+.-]*$/i.test(scheme)) {
+    return { valid: false, reason: `deliverable is not a valid URI: "${s.slice(0, 80)}"` };
+  }
+  if (job.status !== "Submitted") {
+    return { valid: false, reason: `expected status Submitted, got ${job.status}` };
+  }
+  return { valid: true };
+}
+
 // ── Submit task ───────────────────────────────────────────────────────────────
 
 async function submitTask(task: string) {
@@ -245,15 +265,25 @@ async function submitTask(task: string) {
     log(`Waiting for deliverable...`);
 
     // Poll for submission with retry on timeout
+    let job: Job | null = null;
     while (true) {
       try {
-        const job = await commerce.getJob(jobId);
+        job = await commerce.getJob(jobId);
         if (job?.status === "Submitted") {
           log(`{green-fg}Deliverable received: ${job.deliverable}{/green-fg}`);
           break;
         }
       } catch { /* transient RPC error — retry */ }
       await new Promise((r) => setTimeout(r, 5000));
+    }
+
+    // Validate deliverable before paying
+    const validation = validateDeliverable(job!);
+    if (!validation.valid) {
+      log(`{red-fg}Deliverable validation failed: ${validation.reason}{/red-fg}`);
+      log(`{red-fg}Cancelling job #${jobId} — no payment issued{/red-fg}`);
+      await commerce.cancel(buyer, jobId);
+      return;
     }
 
     await commerce.complete(buyer, jobId);
