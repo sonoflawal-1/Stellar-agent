@@ -19,16 +19,37 @@ const cfg: MarcConfig = {
 const seller = Keypair.fromSecret(process.env.SELLER_SECRET!);
 const port = Number(process.env.SELLER_PORT ?? 4504);
 const AGENT_ID = "seller-researcher";
-const OUTPUT_FILE = "output/research.md";
+const OUTPUT_FILE = "output/research.json";
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-async function generate(prompt: string): Promise<string> {
+interface ResearchOutput {
+  summary: string;
+  sources: { title: string; url: string }[];
+}
+
+async function generate(task: string): Promise<ResearchOutput> {
   const res = await groq.chat.completions.create({
     model: "llama-3.3-70b-versatile",
-    messages: [{ role: "user", content: prompt }],
+    messages: [
+      {
+        role: "user",
+        content: `You are a research analyst. Research the following topic thoroughly and return ONLY valid JSON (no markdown, no code fences) with this exact schema:
+{
+  "summary": "comprehensive research summary in markdown format",
+  "sources": [
+    { "title": "Source title", "url": "https://..." }
+  ]
+}
+
+Topic: ${task}
+
+Each source must have a real, verifiable URL. Include 3-8 sources. The summary should cite sources by their index [1], [2], etc.`,
+      },
+    ],
   });
-  return res.choices[0].message.content ?? "";
+  const text = res.choices[0].message.content ?? "";
+  return JSON.parse(text.replace(/```(?:json)?\s*/gi, "").trim()) as ResearchOutput;
 }
 
 const identity = new IdentityClient(cfg);
@@ -60,18 +81,17 @@ app.post("/job", limiter, async (req, res) => {
 
   try {
     console.log(`[${AGENT_ID}] Calling Groq...`);
-    const report = await generate(
-      `You are a research analyst. Write a thorough research report for:\n\n${task}\n\nStructure in markdown: # Executive Summary, ## Key Findings, ## Analysis, ## Recommendations.`
-    );
+    const research = await generate(task);
+    const sourceCount = research.sources.length;
     fs.mkdirSync("output", { recursive: true });
-    fs.writeFileSync(OUTPUT_FILE, report);
-    console.log(`[${AGENT_ID}] Report written (${report.length} chars)`);
+    fs.writeFileSync(OUTPUT_FILE, JSON.stringify(research, null, 2));
+    console.log(`[${AGENT_ID}] Research done: ${research.summary.length} chars, ${sourceCount} sources`);
 
     const commerce = new CommerceClient(cfg);
     for (let attempt = 1; attempt <= 5; attempt++) {
       try {
         await commerce.submit(seller, BigInt(jobId), `file://${path.resolve(OUTPUT_FILE)}`);
-        console.log(`[${AGENT_ID}] ✓ Job #${jobId} submitted`);
+        console.log(`[${AGENT_ID}] ✓ Job #${jobId} submitted (${sourceCount} sources)`);
         break;
       } catch (e) {
         if (attempt === 5) throw e;
