@@ -21,6 +21,10 @@ const PORT = 4500;
 const MISSED_BEATS_LIMIT = 3;
 const HEARTBEAT_INTERVAL_MS = 60_000;
 const HEARTBEAT_TIMEOUT_MS = MISSED_BEATS_LIMIT * HEARTBEAT_INTERVAL_MS;
+const AGENT_LIST_RATE_LIMIT = 60;
+const AGENT_LIST_RATE_WINDOW_MS = 60_000;
+const REGISTRY_API_KEY = process.env.REGISTRY_API_KEY?.trim();
+const agentListRequestCounts = new Map<string, { count: number; resetAt: number }>();
 
 type AgentEntry = {
   lastHeartbeat: number;
@@ -30,7 +34,7 @@ type AgentEntry = {
 const activeAgents = new Map<string, AgentEntry>();
 
 // JSON schema for agent manifests — closes #66
-const REQUIRED_STRING_FIELDS = ["id", "name", "description", "endpoint"] as const;
+const REQUIRED_STRING_FIELDS = ["id", "name", "description", "url"] as const;
 
 function validateManifest(m: unknown): string | null {
   if (typeof m !== "object" || m === null || Array.isArray(m)) return "manifest must be a JSON object";
@@ -40,10 +44,8 @@ function validateManifest(m: unknown): string | null {
       return `field "${field}" must be a non-empty string`;
     }
   }
-  if (!obj.price || typeof obj.price !== "object") return 'field "price" must be an object';
-  const price = obj.price as Record<string, unknown>;
-  if (typeof price.amount !== "number" || price.amount <= 0) return '"price.amount" must be a positive number';
-  if (typeof price.currency !== "string" || !price.currency.trim()) return '"price.currency" must be a non-empty string';
+  if (typeof obj.price_usdc !== "number" || obj.price_usdc <= 0) return 'field "price_usdc" must be a positive number';
+  if (typeof obj.wallet !== "string" || !(obj.wallet as string).trim()) return 'field "wallet" must be a non-empty string';
   return null;
 }
 
@@ -71,6 +73,36 @@ function loadManifest(agentId: string): Record<string, unknown> | null {
     if (m.id === agentId) return m;
   }
   return null;
+}
+
+function getRequestKey(req: any) {
+  return (
+    req.ip ||
+    String(req.headers["x-forwarded-for"] ?? "").split(",")[0].trim() ||
+    "unknown"
+  );
+}
+
+function requireRegistryAuth(req: any, res: any, next: any) {
+  if (!REGISTRY_API_KEY) return next();
+  const auth = String(req.headers.authorization ?? "").trim();
+  if (auth === `Bearer ${REGISTRY_API_KEY}`) return next();
+  return res.status(401).json({ error: "unauthorized" });
+}
+
+function rateLimitAgentList(req: any, res: any, next: any) {
+  const key = getRequestKey(req);
+  const now = Date.now();
+  const existing = agentListRequestCounts.get(key);
+  if (!existing || now >= existing.resetAt) {
+    agentListRequestCounts.set(key, { count: 1, resetAt: now + AGENT_LIST_RATE_WINDOW_MS });
+    return next();
+  }
+  if (existing.count >= AGENT_LIST_RATE_LIMIT) {
+    return res.status(429).json({ error: "rate limit exceeded" });
+  }
+  existing.count += 1;
+  return next();
 }
 
 function getAliveAgents(): Record<string, unknown>[] {
@@ -113,7 +145,7 @@ setInterval(() => {
   }
 }, HEARTBEAT_INTERVAL_MS);
 
-app.post("/heartbeat", (req, res) => {
+app.post("/heartbeat", requireRegistryAuth, (req, res) => {
   const { agentId } = req.body;
   if (!agentId) {
     return res.status(400).json({ error: "missing agentId" });
@@ -133,14 +165,14 @@ app.post("/heartbeat", (req, res) => {
   res.json({ status: "ok", agentId });
 });
 
-app.get("/agents", (req, res) => {
+app.get("/agents", rateLimitAgentList, (req, res) => {
   if (req.query.include_inactive === "true") {
     return res.json(getAllAgentsWithStatus());
   }
   return res.json(getAliveAgents());
 });
 
-app.get("/agents/:id", (req, res) => {
+app.get("/agents/:id", rateLimitAgentList, (req, res) => {
   const manifest = isAlive(req.params.id) ? activeAgents.get(req.params.id)!.manifest : null;
   if (!manifest) return res.status(404).json({ error: "agent not found or not alive" });
   res.json(manifest);

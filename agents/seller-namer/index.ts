@@ -6,7 +6,7 @@ import rateLimit from "express-rate-limit";
 import Groq from "groq-sdk";
 import { Keypair } from "@stellar/stellar-sdk";
 import { IdentityClient, CommerceClient, TESTNET, type MarcConfig } from "marc-stellar-sdk";
-import { retryWithBackoff } from "../shared.js";
+import { retryWithBackoff, startHeartbeat } from "../shared.js";
 
 const cfg: MarcConfig = {
   rpcUrl: process.env.STELLAR_RPC_URL ?? TESTNET.rpcUrl,
@@ -20,6 +20,8 @@ const cfg: MarcConfig = {
 const seller = Keypair.fromSecret(process.env.SELLER_SECRET!);
 const port = Number(process.env.SELLER_PORT ?? 4503);
 const AGENT_ID = "seller-namer";
+const registryUrl = (process.env.REGISTRY_URL ?? "http://localhost:4500").replace(/\/+$/, "");
+const registryApiKey = process.env.REGISTRY_API_KEY?.trim();
 const OUTPUT_FILE = "output/names.md";
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
@@ -52,6 +54,8 @@ if (!agentId) {
 } else {
   console.log(`[${AGENT_ID}] Already agent #${agentId}`);
 }
+
+await startHeartbeat(AGENT_ID, registryUrl, { apiKey: registryApiKey, maxAttempts: 6, baseDelayMs: 2000 });
 
 const limiter = rateLimit({
   windowMs: 60_000,

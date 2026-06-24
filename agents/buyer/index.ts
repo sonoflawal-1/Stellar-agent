@@ -256,11 +256,37 @@ async function submitTask(task: string) {
 
     // Notify seller server
     log(`Sending job to ${picked.name} at ${picked.url}...`);
-    await fetch(`${picked.url}/job`, {
+    const sellerRes = await fetch(`${picked.url}/job`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ jobId: jobId.toString(), task }),
     });
+
+    if (!sellerRes.ok) {
+      const text = await sellerRes.text();
+      log(`{red-fg}Seller rejected job request: ${sellerRes.status} ${text}{/red-fg}`);
+      log(`{red-fg}Cancelling job #${jobId} — no payment issued{/red-fg}`);
+      await commerce.cancel(buyer, jobId);
+      return;
+    }
+
+    let sellerBody: any;
+    try {
+      sellerBody = await sellerRes.json();
+    } catch {
+      log(`{red-fg}Seller returned invalid JSON for job acceptance{/red-fg}`);
+      log(`{red-fg}Cancelling job #${jobId} — no payment issued{/red-fg}`);
+      await commerce.cancel(buyer, jobId);
+      return;
+    }
+
+    if (sellerBody?.status !== "accepted" || sellerBody?.jobId !== jobId.toString()) {
+      log(`{red-fg}Seller response failed validation: ${JSON.stringify(sellerBody)}{/red-fg}`);
+      log(`{red-fg}Cancelling job #${jobId} — no payment issued{/red-fg}`);
+      await commerce.cancel(buyer, jobId);
+      return;
+    }
+
     log(`{cyan-fg}${picked.name} accepted the job — working...{/cyan-fg}`);
     log(`Waiting for deliverable...`);
 
