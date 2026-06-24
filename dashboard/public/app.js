@@ -18,6 +18,7 @@
   const wallet = {
     connected: false,
     publicKey: null,
+    network: null, // 'testnet' | 'mainnet' | null
   };
   window.__walletState = wallet;
 
@@ -48,6 +49,34 @@
     swkReady = true;
   }
 
+  // Freighter detection: prefer Freighter if present
+  async function detectFreighter() {
+    try {
+      const api = window.freighterApi || window.freighter;
+      if (api && typeof api.getPublicKey === "function") {
+        const pk = await api.getPublicKey();
+        let net = null;
+        if (typeof api.getNetwork === "function") {
+          try {
+            const n = await api.getNetwork();
+            // freighter may return 'TESTNET'|'PUBLIC' or a passphrase string
+            if (String(n).toLowerCase().includes("test")) net = "testnet";
+            else if (String(n).toLowerCase().includes("pub") || String(n).toLowerCase().includes("main")) net = "mainnet";
+          } catch (e) {}
+        }
+        wallet.connected = true;
+        wallet.publicKey = pk;
+        wallet.network = net || null;
+        updateWalletUI();
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  // Try detect Freighter immediately
+  detectFreighter();
+
   function disconnectWallet() {
     wallet.connected = false;
     wallet.publicKey = null;
@@ -71,7 +100,15 @@
         var addrDisplay = document.getElementById("wallet-addr-display");
         if (addrDisplay) addrDisplay.onclick = function() { copyToClipboard(wallet.publicKey); };
       }
-      if (modeLabel) modeLabel.textContent = "Connected";
+      if (modeLabel) {
+        const netLabel = wallet.network === "mainnet" ? "Mainnet" : wallet.network === "testnet" ? "Testnet" : "Connected";
+        modeLabel.textContent = "Connected — " + netLabel;
+      }
+      // Update sidebar network badge
+      try {
+        var nb = document.getElementById("network-badge");
+        if (nb) nb.innerHTML = '<span class="badge-dot"></span>' + (wallet.network === "mainnet" ? "Stellar Mainnet" : wallet.network === "testnet" ? "Stellar Testnet" : "Unknown Network");
+      } catch (e) {}
       // Hide the SWK connect button once connected
       if (btnWrapper) btnWrapper.style.display = "none";
     } else {
@@ -89,16 +126,34 @@
       body: { publicKey: wallet.publicKey, ...params },
     });
     // 2. Sign with Stellar Wallets Kit
+    // Prefer Freighter if available
+    try {
+      const api = window.freighterApi || window.freighter;
+      if (api && typeof api.signTransaction === "function") {
+        if (wallet.network === "mainnet") throw new Error("Freighter is on Mainnet — dashboard blocks mainnet signing to avoid real transactions");
+        const sigRes = await api.signTransaction(buildRes.xdr);
+        // Accept multiple possible response shapes
+        const signedXdr = sigRes.signedTransaction || sigRes.signedTx || sigRes.signedTxXdr || sigRes.signedXdr || sigRes;
+        return await apiClientSubmit(signedXdr);
+      }
+    } catch (e) {
+      // Fall through to SWK path if Freighter signing fails
+      console.warn("Freighter signing failed, falling back to SWK:", e);
+    }
+
     if (!swkReady) throw new Error("Stellar Wallets Kit not loaded");
     var { address } = await StellarWalletsKit.getAddress();
     var { signedTxXdr } = await StellarWalletsKit.signTransaction(buildRes.xdr, {
       networkPassphrase: "Test SDF Network ; September 2015",
       address: address,
     });
-    // 3. Submit signed tx via server
+    return await apiClientSubmit(signedTxXdr);
+  }
+
+  async function apiClientSubmit(signedXdr) {
     return await api("/submit", {
       method: "POST",
-      body: { signedXdr: signedTxXdr },
+      body: { signedXdr: signedXdr },
     });
   }
 
@@ -781,6 +836,27 @@
   document.addEventListener("visibilitychange", function() {
     if (document.hidden) { stopPolling(); } else { startPolling(); poll(); }
   });
+
+  // Server-Sent Events: listen for invalidation events to refresh quickly
+  if (typeof EventSource !== "undefined") {
+    try {
+      const es = new EventSource("/api/stream");
+      es.addEventListener("invalidate", function(e) {
+        try {
+          const payload = JSON.parse(e.data);
+          // On any invalidation, run a quick poll to refresh current view
+          poll();
+        } catch (err) { poll(); }
+      });
+      es.addEventListener("ping", function() {});
+      es.onerror = function() {
+        // Close noisy stream errors; polling remains as a fallback
+        try { es.close(); } catch (e) {}
+      };
+    } catch (e) {
+      // ignore SSE setup failures — polling is the primary mechanism
+    }
+  }
 
   // Initial render
   navigate();

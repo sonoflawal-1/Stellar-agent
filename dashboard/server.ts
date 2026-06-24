@@ -10,6 +10,8 @@ import {
   invalidateJobs,
   identity,
   commerce,
+  events,
+  getFeeBps,
 } from "./lib/discovery.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -100,7 +102,7 @@ app.get("/api/stats", async (_req, res) => {
     const [agents, jobs, feeBps] = await Promise.all([
       getAllAgents(),
       getAllJobs(),
-      commerce.feeBps(),
+      getFeeBps(),
     ]);
     const activeJobs = jobs.filter(
       (j) => j.status === "Funded" || j.status === "Submitted",
@@ -114,6 +116,41 @@ app.get("/api/stats", async (_req, res) => {
   } catch (err: unknown) {
     res.status(500).json({ error: (err as Error).message });
   }
+});
+
+// Server-Sent Events: simple real-time stream for dashboard clients
+app.get("/api/stream", (req, res) => {
+  // Headers for SSE
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders?.();
+
+  const send = (event: string, data: unknown) => {
+    try {
+      res.write(`event: ${event}\n`);
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    } catch (e) {
+      // ignore
+    }
+  };
+
+  // Emit a welcome ping
+  send("hello", { message: "connected" });
+
+  const onInvalidate = (payload: unknown) => {
+    send("invalidate", payload);
+  };
+
+  events.on("invalidate", onInvalidate);
+
+  // heartbeat
+  const hb = setInterval(() => send("ping", { t: Date.now() }), 25000);
+
+  req.on("close", () => {
+    clearInterval(hb);
+    events.off("invalidate", onInvalidate);
+  });
 });
 
 // GET /api/wallets

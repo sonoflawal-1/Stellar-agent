@@ -1,6 +1,7 @@
 import { IdentityClient, CommerceClient } from "marc-stellar-sdk";
 import type { Agent, Job } from "marc-stellar-sdk";
 import { cfg } from "./config.js";
+import EventEmitter from "events";
 
 const identity = new IdentityClient(cfg);
 const commerce = new CommerceClient(cfg);
@@ -9,6 +10,14 @@ const commerce = new CommerceClient(cfg);
 let agentCache: { data: Agent[]; ts: number } = { data: [], ts: 0 };
 let jobCache: { data: Job[]; ts: number } = { data: [], ts: 0 };
 const CACHE_TTL = 3_000; // 3s — fast refresh for demo
+
+// Contract-level caches (longer TTL — 30s)
+let feeBpsCache: { value: number | null; ts: number } = { value: null, ts: 0 };
+let versionCache: { value: number | null; ts: number } = { value: null, ts: 0 };
+const CONTRACT_CACHE_TTL = 30_000; // 30s TTL for RPC getters like feeBps()/version()
+
+// Event emitter used to notify server of invalidations for SSE
+export const events = new EventEmitter();
 
 /** Find the max existing ID via exponential probe + binary search */
 async function findMaxId(
@@ -80,9 +89,31 @@ export async function getAllJobs(force = false): Promise<Job[]> {
 
 export function invalidateAgents() {
   agentCache.ts = 0;
+  events.emit("invalidate", { type: "agents" });
 }
 export function invalidateJobs() {
   jobCache.ts = 0;
+  events.emit("invalidate", { type: "jobs" });
+}
+
+/** Cached getter for commerce.feeBps() with 30s TTL */
+export async function getFeeBps(force = false): Promise<number> {
+  if (!force && feeBpsCache.value !== null && Date.now() - feeBpsCache.ts < CONTRACT_CACHE_TTL) {
+    return feeBpsCache.value as number;
+  }
+  const v = await commerce.feeBps();
+  feeBpsCache = { value: v, ts: Date.now() };
+  return v;
+}
+
+/** Cached getter for contract version (identity.version() example) */
+export async function getVersion(force = false): Promise<number> {
+  if (!force && versionCache.value !== null && Date.now() - versionCache.ts < CONTRACT_CACHE_TTL) {
+    return versionCache.value as number;
+  }
+  const v = await identity.version();
+  versionCache = { value: v, ts: Date.now() };
+  return v;
 }
 
 export { identity, commerce };
