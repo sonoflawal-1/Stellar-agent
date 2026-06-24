@@ -2,7 +2,7 @@ import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 import { Keypair, rpc, Account, TransactionBuilder, BASE_FEE, Address, nativeToScVal, Contract, xdr, scValToNative } from "@stellar/stellar-sdk";
-import { cfg, buyerKeypair, sellerKeypair, getKeypair } from "./lib/config.js";
+import { cfg, buyerKeypair, sellerKeypair, getKeypair, DEMO_MODE } from "./lib/config.js";
 import {
   getAllAgents,
   getAllJobs,
@@ -94,6 +94,17 @@ async function getTokenBalance(pubkey: string): Promise<string> {
 
 // --- API Routes ---
 
+// GET /api/demo-mode — lets the frontend know whether to skip Freighter auth
+app.get("/api/demo-mode", (_req, res) => {
+  res.json({
+    enabled: DEMO_MODE,
+    ...(DEMO_MODE && {
+      buyer: buyerKeypair.publicKey(),
+      seller: sellerKeypair.publicKey(),
+    }),
+  });
+});
+
 // GET /api/stats
 app.get("/api/stats", async (_req, res) => {
   try {
@@ -181,6 +192,13 @@ app.post("/api/jobs/create", async (req, res) => {
     const providerAddr = provider || sellerKeypair.publicKey();
     const evaluatorAddr = evaluator || kp.publicKey();
     const budgetBn = BigInt(budget || 10_000_000); // default 1 MUSD
+
+    const agentId = await identity.agentOf(providerAddr);
+    if (agentId === null) {
+      res.status(400).json({ error: `Provider ${providerAddr} is not a registered agent` });
+      return;
+    }
+
     const jobId = await commerce.createJob(
       kp,
       providerAddr,
@@ -238,6 +256,38 @@ app.post("/api/jobs/:id/cancel", async (req, res) => {
   }
 });
 
+// PUT /api/jobs/:id — cancel a job; builds unsigned XDR when publicKey provided,
+// or invokes directly when wallet (server keypair) is provided.
+app.put("/api/jobs/:id", async (req, res) => {
+  try {
+    const { action, publicKey, wallet } = req.body;
+    if (action !== "cancel") {
+      res.status(400).json({ error: "unsupported action; use action: 'cancel'" });
+      return;
+    }
+    const jobId = BigInt(req.params.id);
+
+    if (publicKey) {
+      // Freighter path: return unsigned XDR for client-side signing
+      const op = commerceContract.call(
+        "cancel",
+        new Address(publicKey).toScVal(),
+        nativeToScVal(jobId, { type: "u64" }),
+      );
+      const txXdr = await buildTxXdr(publicKey, op);
+      res.json({ xdr: txXdr });
+    } else {
+      // Server-keypair path: sign and submit directly
+      const kp = getKeypair(wallet);
+      await commerce.cancel(kp, jobId);
+      invalidateJobs();
+      res.json({ success: true });
+    }
+  } catch (err: unknown) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
 // --- Freighter wallet endpoints: build unsigned XDR ---
 
 const identityContract = new Contract(cfg.identityContract);
@@ -280,6 +330,13 @@ app.post("/api/build/createJob", async (req, res) => {
     const providerAddr = provider || sellerKeypair.publicKey();
     const evaluatorAddr = evaluator || publicKey;
     const budgetBn = BigInt(budget || 10_000_000);
+
+    const agentId = await identity.agentOf(providerAddr);
+    if (agentId === null) {
+      res.status(400).json({ error: `Provider ${providerAddr} is not a registered agent` });
+      return;
+    }
+
     const op = commerceContract.call(
       "create_job",
       new Address(publicKey).toScVal(),
