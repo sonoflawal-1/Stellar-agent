@@ -350,9 +350,9 @@
 
   <script src="app.js"></script>
   <script>
-    // #83: Load contract addresses from deployments/testnet.json
-    fetch('/deployments/testnet.json')
-      .then(r => r.ok ? r.json() : null)
+    // Load contract addresses from API endpoint, fall back to deployments file
+    fetch('/api/contract-addresses.json')
+      .then(r => r.ok ? r.json() : fetch('/deployments/testnet.json').then(r2 => r2.ok ? r2.json() : null))
       .then(data => {
         if (!data) return;
         document.querySelectorAll('.contract-addr').forEach(btn => {
