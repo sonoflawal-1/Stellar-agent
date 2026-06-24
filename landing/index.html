@@ -268,7 +268,7 @@
         </div>
         <div class="tryit-embed fade-in">
           <iframe
-            src="https://stackblitz.com/edit/bear-stellar-sdk?embed=1&file=index.ts&view=editor&hideNavigation=1"
+            data-src="https://stackblitz.com/edit/bear-stellar-sdk?embed=1&file=index.ts&view=editor&hideNavigation=1"
             title="Bear SDK Playground"
             loading="lazy"
             allow="cross-origin-isolated"
@@ -371,6 +371,26 @@
         });
       })
       .catch(() => {}); // fallback: keep hardcoded addresses
+
+    // Defer the sandbox until the user reaches the Try It section.
+    const tryItSection = document.getElementById('try-it');
+    const tryItFrame = document.querySelector('.tryit-embed iframe');
+    const loadTryItFrame = () => {
+      if (!tryItFrame || tryItFrame.src) return;
+      const src = tryItFrame.dataset.src;
+      if (src) tryItFrame.src = src;
+    };
+    if (tryItSection && tryItFrame && 'IntersectionObserver' in window) {
+      const observer = new IntersectionObserver((entries, io) => {
+        if (entries.some(entry => entry.isIntersecting)) {
+          loadTryItFrame();
+          io.disconnect();
+        }
+      }, { rootMargin: '200px 0px' });
+      observer.observe(tryItSection);
+    } else {
+      loadTryItFrame();
+    }
 
     // #82: Hamburger menu toggle
     const hamburger = document.getElementById('hamburger');

@@ -45,8 +45,8 @@ app.use("/api/work", marcPaywall({
   price: servicePrice,           // ← driven by env var, not hardcoded
   network: "stellar:testnet",
   description: "One MARC-protected API call",
-  facilitatorUrl: process.env.X402_FACILITATOR_URL,
-  facilitatorApiKey: process.env.X402_FACILITATOR_API_KEY,
+  facilitatorUrl: process.env.FACILITATOR_URL ?? process.env.X402_FACILITATOR_URL,
+  facilitatorApiKey: process.env.FACILITATOR_API_KEY ?? process.env.X402_FACILITATOR_API_KEY,
 }));
 
 app.get("/api/work", (_req, res) => {

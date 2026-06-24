@@ -102,6 +102,7 @@ If anything in this file contradicts those docs, those docs win.
 | 2026-04-12 | stellar-sdk 12→14 upgrade | ✅ | 12.x and 13.x fail with "Bad union switch: 4" (protocol 25 XDR). 14.6.1 works. x402-stellar's `^12.0.0` peer dep is type-only — no runtime impact. |
 | 2026-04-12 | Phase 5.1–5.3: demo scripts | ✅ | seller-agent.ts (marcPaywall on /api/work), buyer-agent.ts (marcFetch + full job lifecycle), lifecycle.ts (orchestrator spawns seller, runs buyer, exits 0). All typecheck clean. |
 | 2026-04-12 | Phase 5.4: testnet dry run | ✅ | Full lifecycle completes on testnet. Job #1 created, funded (10M MUSD escrow), submitted, completed. 99/1 split verified on-chain: seller +9.9M, treasury +100K, contract 0. x402 micropayments fail (facilitator not reachable) but contract flow is fully functional. Used custom MUSD SAC (`CCWHIM2BEG5OEDNLQ5DBQE2KY5TZMVN627HQ6NLUJHWP5GQDBO5SXLBS`) since we can't mint Circle's testnet USDC. |
+| 2026-06-24 | Demo and landing polish | ✅ | buyer-agent.ts now uses configurable exponential backoff via BUYER_POLL_* env vars, seller-agent.ts accepts FACILITATOR_URL/API_KEY aliases, demo/.env.example now includes the missing secrets and contract vars, and landing/index.html defers the StackBlitz embed until the Try It section scrolls into view. |
 
 ## Gotchas learned (append after each surprise)
 

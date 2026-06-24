@@ -14,6 +14,13 @@ const buyer = Keypair.fromSecret(process.env.BUYER_SECRET!);
 const sellerPubkey = process.env.SELLER_PUBKEY!;
 const sellerPort = Number(process.env.SELLER_PORT ?? 4402);
 
+const pollConfig = {
+  baseMs: Number(process.env.BUYER_POLL_BASE_MS ?? 2_000),
+  multiplier: Number(process.env.BUYER_POLL_MULTIPLIER ?? 2),
+  maxAttempts: Number(process.env.BUYER_POLL_MAX_ATTEMPTS ?? 10),
+  capMs: Number(process.env.BUYER_POLL_CAP_MS ?? 30_000),
+};
+
 console.log(`\n=== BUYER DEMO ===`);
 console.log(`Buyer: ${buyer.publicKey()}\n`);
 
@@ -53,7 +60,7 @@ if (!agentId) {
       return false;
     },
     "buyer agent registration",
-    { baseMs: 2_000, maxAttempts: 8 },
+    { ...pollConfig, maxAttempts: 8 },
   );
   console.log(`[1] Registered on-chain as agent #${agentId}`);
 } else {
@@ -80,7 +87,7 @@ await pollWithBackoff(
     return !!j;
   },
   `job #${jobId} on-chain confirmation`,
-  { baseMs: 3_000, maxAttempts: 10 },
+  pollConfig,
 );
 
 // Step 3: Call seller's paywalled API via marcFetch (auto-pays 402)
@@ -100,7 +107,7 @@ await pollWithBackoff(
     return j?.status === "completed";
   },
   `job #${jobId} completion confirmation`,
-  { baseMs: 3_000, maxAttempts: 10 },
+  pollConfig,
 );
 
 const job = await commerce.getJob(jobId);
