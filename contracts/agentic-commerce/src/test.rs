@@ -25,6 +25,33 @@ fn deploy_token<'a>(
     )
 }
 
+/// create_job() must persist the description field so dashboards can display
+/// human-readable job details without a separate metadata lookup.
+#[test]
+fn create_job_stores_and_returns_description() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let (token_addr, _token, stellar_token) = deploy_token(&env, &admin);
+    stellar_token.mint(&buyer, &1_000_000);
+
+    let description = String::from_str(&env, "Generate a product description for SKU-42");
+    let job_id = client.create_job(
+        &buyer,
+        &seller,
+        &buyer,
+        &token_addr,
+        &100_000i128,
+        &description,
+    );
+
+    let job = client.get_job(&job_id).unwrap();
+    assert_eq!(job.description, description);
+}
+
 #[test]
 fn init_sets_admin_and_treasury() {
     let env = Env::default();
