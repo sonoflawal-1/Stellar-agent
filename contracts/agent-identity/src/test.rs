@@ -2,6 +2,23 @@ use super::*;
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{Address, Env, String};
 
+/// register() must return the new agent's id directly so callers never need a
+/// follow-up agentOf() query to learn the assigned id.
+#[test]
+fn register_return_value_is_the_stored_agent_id() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AgentIdentityContract, ());
+    let client = AgentIdentityContractClient::new(&env, &contract_id);
+
+    let alice = Address::generate(&env);
+    let returned_id = client.register(&alice, &String::from_str(&env, "ipfs://alice.json"));
+    let stored = client.get_agent(&returned_id).unwrap();
+
+    // The value returned by register() equals the id field inside the stored Agent.
+    assert_eq!(returned_id, stored.id);
+}
+
 #[test]
 fn contract_can_be_deployed() {
     let env = Env::default();
