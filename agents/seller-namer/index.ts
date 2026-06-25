@@ -64,6 +64,12 @@ const limiter = rateLimit({
 const app = express();
 app.use(express.json());
 
+app.use((req, res, next) => {
+  console.log(`[${AGENT_ID}] → ${req.method} ${req.path}`, JSON.stringify(req.body));
+  res.on("finish", () => console.log(`[${AGENT_ID}] ← ${res.statusCode}`));
+  next();
+});
+
 app.get("/", (_req, res) => res.json(JSON.parse(fs.readFileSync("agent.json", "utf8"))));
 
 app.post("/job", limiter, async (req, res) => {

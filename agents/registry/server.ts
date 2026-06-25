@@ -3,11 +3,12 @@
  * Serves agent.json manifests so the buyer can discover available sellers.
  * Tracks agent liveness via heartbeat — dead agents auto-deregister.
  *
- * GET  /agents              → list alive agents (heartbeating)
- * GET  /agents?include_inactive=true → list all agents including deregistered
- * GET  /agents/:id     → get a specific agent manifest
- * POST /heartbeat      → agent pings with { agentId }
- * GET  /health         → registry + agent count
+ * GET    /agents              → list alive agents (heartbeating)
+ * GET    /agents?include_inactive=true → list all agents including deregistered
+ * GET    /agents/:id     → get a specific agent manifest
+ * DELETE /agents/:id     → manually deregister an agent
+ * POST   /heartbeat      → agent pings with { agentId }
+ * GET    /health         → registry + agent count
  */
 import express from "express";
 import fs from "node:fs";
@@ -144,6 +145,16 @@ app.get("/agents/:id", (req, res) => {
   const manifest = isAlive(req.params.id) ? activeAgents.get(req.params.id)!.manifest : null;
   if (!manifest) return res.status(404).json({ error: "agent not found or not alive" });
   res.json(manifest);
+});
+
+app.delete("/agents/:id", (req, res) => {
+  const { id } = req.params;
+  if (!activeAgents.has(id)) {
+    return res.status(404).json({ error: "agent not found" });
+  }
+  activeAgents.delete(id);
+  console.log(`[registry] Manually deregistered agent: ${id}`);
+  res.json({ status: "ok", agentId: id });
 });
 
 app.get("/health", (_req, res) => {

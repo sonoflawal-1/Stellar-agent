@@ -90,12 +90,18 @@ const limiter = rateLimit({
 const app = express();
 app.use(express.json());
 
+app.use((req, res, next) => {
+  console.log(`[${AGENT_ID}] → ${req.method} ${req.path}`, JSON.stringify(req.body));
+  res.on("finish", () => console.log(`[${AGENT_ID}] ← ${res.statusCode}`));
+  next();
+});
+
 app.get("/", (_req, res) => res.json(JSON.parse(fs.readFileSync("agent.json", "utf8"))));
 
 app.use(`/${OUTPUT_DIR}`, express.static(OUTPUT_DIR));
 
 app.post("/job", limiter, async (req, res) => {
-  const { jobId, task } = req.body;
+  const { jobId, task, tone, audience, keywords } = req.body;
   if (!jobId || !task) {
     res.status(400).json({ error: "missing jobId or task" });
     return;
@@ -105,8 +111,13 @@ app.post("/job", limiter, async (req, res) => {
 
   try {
     console.log(`[${AGENT_ID}] Calling Groq...`);
+    const brandContext = [
+      tone ? `Tone: ${tone}` : "",
+      audience ? `Target audience: ${audience}` : "",
+      keywords?.length ? `Keywords to include: ${Array.isArray(keywords) ? keywords.join(", ") : keywords}` : "",
+    ].filter(Boolean).join("\n");
     const copy = await generate(
-      `You are a professional copywriter. Write compelling website copy for:\n\n${task}\n\nStructure in markdown: # Headline, ## Subheadline, ## Body, ## CTA.`
+      `You are a professional copywriter. Write compelling website copy for:\n\n${task}${brandContext ? `\n\nBrand guidelines:\n${brandContext}` : ""}\n\nStructure in markdown: # Headline, ## Subheadline, ## Body, ## CTA.`
     );
     if (copy.length < 20) {
       throw new Error(`Generated copy too short (${copy.length} chars)`);
