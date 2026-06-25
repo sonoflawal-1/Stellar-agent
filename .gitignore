@@ -7,10 +7,18 @@ Cargo.lock
 node_modules/
 dist/
 *.tsbuildinfo
+*.js.map
+
+# Package manager
+.pnp
+.pnp.js
+.yarn/cache
+.yarn/unplugged
 
 # Env
 .env
 .env.local
+.env.*.local
 
 # Deployments (keep directory, ignore generated json)
 deployments/*.json
@@ -18,6 +26,19 @@ deployments/*.json
 
 # OS / editor
 .DS_Store
+Thumbs.db
 .vscode/
 .idea/
 *.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+
+# Build outputs
+build/
+out/
+
+# Mutation testing results
+mutation-results-*/
