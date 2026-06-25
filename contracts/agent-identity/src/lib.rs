@@ -43,6 +43,15 @@ pub struct Deregistered {
     pub agent_id: u64,
 }
 
+/// Emitted when an agent's owner address is transferred to a new wallet.
+#[contractevent]
+pub struct OwnerTransferred {
+    #[topic]
+    pub old_owner: Address,
+    pub new_owner: Address,
+    pub agent_id: u64,
+}
+
 #[contract]
 pub struct AgentIdentityContract;
 
@@ -142,6 +151,47 @@ impl AgentIdentityContract {
     /// Look up the agent id owned by `owner`, if any.
     pub fn agent_of(env: Env, owner: Address) -> Option<u64> {
         env.storage().persistent().get(&DataKey::OwnerToId(owner))
+    }
+
+    /// Transfer ownership of an agent to `new_owner`. Requires auth from both
+    /// the current owner (`caller`) and the incoming `new_owner`.
+    pub fn update_owner(env: Env, caller: Address, id: u64, new_owner: Address) {
+        caller.require_auth();
+        new_owner.require_auth();
+
+        let mut agent: Agent = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Agent(id))
+            .unwrap_or_else(|| panic!("agent not found"));
+        if agent.owner != caller {
+            panic!("not agent owner");
+        }
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::OwnerToId(new_owner.clone()))
+        {
+            panic!("new owner already registered");
+        }
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::OwnerToId(agent.owner.clone()));
+        env.storage()
+            .persistent()
+            .set(&DataKey::OwnerToId(new_owner.clone()), &id);
+
+        let old_owner = agent.owner.clone();
+        agent.owner = new_owner.clone();
+        env.storage().persistent().set(&DataKey::Agent(id), &agent);
+
+        OwnerTransferred {
+            old_owner,
+            new_owner,
+            agent_id: id,
+        }
+        .publish(&env);
     }
 
     /// Contract version. Bump on ABI changes.
