@@ -31,15 +31,24 @@ interface ResearchOutput {
   sources: { title: string; url: string }[];
 }
 
-async function generate(task: string): Promise<ResearchOutput> {
+type ResearchDepth = "brief" | "standard" | "deep";
+
+const DEPTH_CONFIG: Record<ResearchDepth, { sourceRange: string; detail: string }> = {
+  brief:    { sourceRange: "2-3", detail: "Write a concise 1-2 paragraph summary." },
+  standard: { sourceRange: "3-8", detail: "Write a comprehensive multi-section summary in markdown." },
+  deep:     { sourceRange: "8-15", detail: "Write an exhaustive, deeply detailed analysis with sections, subsections, key findings, and critical evaluation of sources." },
+};
+
+async function generate(task: string, depth: ResearchDepth = "standard"): Promise<ResearchOutput> {
+  const { sourceRange, detail } = DEPTH_CONFIG[depth];
   const res = await groq.chat.completions.create({
     model: "llama-3.3-70b-versatile",
     messages: [
       {
         role: "user",
-        content: `You are a research analyst. Research the following topic thoroughly and return ONLY valid JSON (no markdown, no code fences) with this exact schema:
+        content: `You are a research analyst. Research the following topic and return ONLY valid JSON (no markdown, no code fences) with this exact schema:
 {
-  "summary": "comprehensive research summary in markdown format",
+  "summary": "research summary in markdown format",
   "sources": [
     { "title": "Source title", "url": "https://..." }
   ]
@@ -47,7 +56,7 @@ async function generate(task: string): Promise<ResearchOutput> {
 
 Topic: ${task}
 
-Each source must have a real, verifiable URL. Include 3-8 sources. The summary should cite sources by their index [1], [2], etc.`,
+Each source must have a real, verifiable URL. Include ${sourceRange} sources. ${detail} The summary should cite sources by their index [1], [2], etc.`,
       },
     ],
   });
@@ -89,18 +98,25 @@ const limiter = rateLimit({
 const app = express();
 app.use(express.json());
 
+app.use((req, res, next) => {
+  console.log(`[${AGENT_ID}] → ${req.method} ${req.path}`, JSON.stringify(req.body));
+  res.on("finish", () => console.log(`[${AGENT_ID}] ← ${res.statusCode}`));
+  next();
+});
+
 app.get("/", (_req, res) => res.json(JSON.parse(fs.readFileSync("agent.json", "utf8"))));
 
 app.get("/health", (_req, res) => res.json({ status: "ok", agentId: AGENT_ID, uptime: process.uptime() }));
 
 app.post("/job", limiter, async (req, res) => {
-  const { jobId, task } = req.body;
-  console.log(`[${AGENT_ID}] Job #${jobId}: ${task}`);
-  res.json({ status: "accepted", jobId });
+  const { jobId, task, depth } = req.body;
+  const resolvedDepth: ResearchDepth = ["brief", "standard", "deep"].includes(depth) ? depth : "standard";
+  console.log(`[${AGENT_ID}] Job #${jobId} (depth=${resolvedDepth}): ${task}`);
+  res.json({ status: "accepted", jobId, depth: resolvedDepth });
 
   try {
     console.log(`[${AGENT_ID}] Calling Groq...`);
-    const research = await generate(task);
+    const research = await generate(task, resolvedDepth);
     const sourceCount = research.sources.length;
     fs.mkdirSync("output", { recursive: true });
     fs.writeFileSync(OUTPUT_FILE, JSON.stringify(research, null, 2));
