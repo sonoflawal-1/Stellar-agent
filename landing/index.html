@@ -5,6 +5,33 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Bear on Stellar — The Commerce Layer for Agent Payments</title>
   <meta name="description" content="The commerce layer for AI agent payments on Stellar. Job escrow with delivery guarantees, on-chain agent identity, on top of x402 and MPP.">
+
+  <!-- Favicon -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%230A0A0A'/><text x='50' y='73' font-family='Georgia,serif' font-size='62' font-weight='700' fill='%23F59E0B' text-anchor='middle'>B</text></svg>">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://marc-stellar.vercel.app/">
+  <meta property="og:title" content="Bear on Stellar — The Commerce Layer for Agent Payments">
+  <meta property="og:description" content="The commerce layer for AI agent payments on Stellar. Job escrow with delivery guarantees, on-chain agent identity, on top of x402 and MPP.">
+  <meta property="og:image" content="https://marc-stellar.vercel.app/og-image.svg">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:site_name" content="Bear on Stellar">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:site" content="@mmhhmm">
+  <meta name="twitter:title" content="Bear on Stellar — The Commerce Layer for Agent Payments">
+  <meta name="twitter:description" content="The commerce layer for AI agent payments on Stellar. Job escrow with delivery guarantees, on-chain agent identity, on top of x402 and MPP.">
+  <meta name="twitter:image" content="https://marc-stellar.vercel.app/og-image.svg">
+
+  <!-- Analytics: Umami (privacy-first, no cookies, GDPR-compliant).
+       1. Create a free account at https://umami.is
+       2. Add this site and copy the Website ID
+       3. Replace YOUR_WEBSITE_ID below -->
+  <script defer src="https://cloud.umami.is/script.js" data-website-id="YOUR_WEBSITE_ID"></script>
+
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@600;700&family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
@@ -37,7 +64,7 @@
         <a href="https://developers.stellar.org/docs/build" target="_blank" rel="noopener" class="icon-btn" aria-label="Docs">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
         </a>
-        <a href="/app" class="btn btn-primary">Launch App</a>
+        <a href="/app" class="btn btn-primary" data-umami-event="cta-launch-app" data-umami-event-location="nav">Launch App</a>
       </div>
     </div>
   </nav>
@@ -80,8 +107,8 @@
         </h1>
         <p class="hero-subtitle fade-up" style="--delay:0.4s">Job escrow with delivery guarantees, on-chain agent identity, and HTTP 402 micropayments. All in one protocol on Stellar.</p>
         <div class="hero-ctas fade-up" style="--delay:0.55s">
-          <a href="/app" class="btn btn-primary">Launch Dashboard</a>
-          <a href="https://github.com/mmhhmm/marc-stellar" target="_blank" rel="noopener" class="btn btn-secondary">View on GitHub</a>
+          <a href="/app" class="btn btn-primary" data-umami-event="cta-launch-app" data-umami-event-location="hero">Launch Dashboard</a>
+          <a href="https://github.com/mmhhmm/marc-stellar" target="_blank" rel="noopener" class="btn btn-secondary" data-umami-event="cta-github" data-umami-event-location="hero">View on GitHub</a>
         </div>
       </div>
       <div class="scroll-hint fade-up" style="--delay:0.8s">
@@ -253,7 +280,7 @@
           </div>
         </div>
         <div class="guide-cta fade-in">
-          <a href="/app" class="btn btn-primary">Launch Dashboard</a>
+          <a href="/app" class="btn btn-primary" data-umami-event="cta-launch-app" data-umami-event-location="guide">Launch Dashboard</a>
         </div>
       </div>
     </section>
@@ -275,7 +302,7 @@
             sandbox="allow-forms allow-modals allow-popups allow-presentation allow-same-origin allow-scripts"
           ></iframe>
           <div class="tryit-fallback">
-            <p>Sandbox failed to load. <a href="https://stackblitz.com/edit/bear-stellar-sdk" target="_blank" rel="noopener">Open in StackBlitz →</a></p>
+            <p>Sandbox failed to load. <a href="https://stackblitz.com/edit/bear-stellar-sdk" target="_blank" rel="noopener" data-umami-event="cta-stackblitz-fallback">Open in StackBlitz →</a></p>
           </div>
         </div>
       </div>
@@ -340,7 +367,7 @@
         <p class="footer-tagline">The commerce layer for agent payments.</p>
       </div>
       <div class="footer-links">
-        <a href="https://github.com/mmhhmm/marc-stellar" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/mmhhmm/marc-stellar" target="_blank" rel="noopener" data-umami-event="cta-github" data-umami-event-location="footer">GitHub</a>
         <a href="https://developers.stellar.org/docs/build" target="_blank" rel="noopener">Soroban Docs</a>
         <a href="https://x402.org" target="_blank" rel="noopener">x402 Protocol</a>
       </div>
@@ -372,13 +399,44 @@
       })
       .catch(() => {}); // fallback: keep hardcoded addresses
 
+    // Analytics helpers
+    const track = (name, data) => { try { window.umami?.track(name, data); } catch (_) {} };
+
+    // Track section engagement (fires once per section per page load)
+    const sectionIds = ['hero', 'about', 'protocol', 'how-it-works', 'ecosystem', 'guide', 'try-it', 'contracts'];
+    if ('IntersectionObserver' in window) {
+      const sectionObserver = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+          if (entry.isIntersecting) {
+            track('section-view', { section: entry.target.id });
+            sectionObserver.unobserve(entry.target);
+          }
+        });
+      }, { threshold: 0.3 });
+      sectionIds.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) sectionObserver.observe(el);
+      });
+    }
+
+    // Track contract address copies
+    document.querySelectorAll('.contract-addr').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const label = btn.closest('.contract-card')?.querySelector('.contract-label')?.textContent?.trim();
+        track('copy-contract-address', { contract: label });
+      });
+    });
+
     // Defer the sandbox until the user reaches the Try It section.
     const tryItSection = document.getElementById('try-it');
     const tryItFrame = document.querySelector('.tryit-embed iframe');
     const loadTryItFrame = () => {
       if (!tryItFrame || tryItFrame.src) return;
       const src = tryItFrame.dataset.src;
-      if (src) tryItFrame.src = src;
+      if (src) {
+        tryItFrame.src = src;
+        track('sandbox-loaded');
+      }
     };
     if (tryItSection && tryItFrame && 'IntersectionObserver' in window) {
       const observer = new IntersectionObserver((entries, io) => {

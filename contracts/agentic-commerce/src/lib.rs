@@ -26,6 +26,7 @@ pub struct Job {
     pub status: JobStatus,
     pub description: String,
     pub deliverable: String,
+    pub funded_at: u64,
 }
 
 #[contracttype]
@@ -40,6 +41,7 @@ enum DataKey {
 const DEFAULT_FEE_BPS: u32 = 100; // 1%
 const MAX_FEE_BPS: u32 = 500; // 5% hard cap
 const BPS_DENOM: i128 = 10_000;
+const REFUND_TIMEOUT_SECS: u64 = 7 * 24 * 3600; // 7 days
 
 // --- Events ---
 
@@ -68,6 +70,15 @@ pub struct JobCompleted {
     pub job_id: u64,
     pub payout: i128,
     pub fee: i128,
+    pub timestamp: u64,
+}
+
+/// Emitted when a buyer claims a refund after provider timeout.
+#[contractevent]
+pub struct JobRefunded {
+    #[topic]
+    pub client: Address,
+    pub job_id: u64,
 }
 
 /// Emitted when a job is cancelled and refunded.
@@ -98,6 +109,20 @@ impl AgenticCommerceContract {
 
     /// Create a job and escrow `budget` from the `client_addr` into the contract.
     /// Returns the assigned sequential job id.
+    ///
+    /// # Pre-approval required
+    ///
+    /// This function pulls `budget` tokens from `client_addr` into the contract
+    /// using a direct `transfer` call on the Stellar Asset Contract (SAC).
+    /// Because SAC's `transfer` requires the sender to authorise the call,
+    /// **the client must invoke `token.approve(contract_address, budget)`
+    /// (or `increaseAllowance`) before calling `create_job`**.
+    ///
+    /// SDK callers should use `CommerceClient.approveAndCreateJob(...)`, which
+    /// handles the two-step approve + create_job flow automatically in a single
+    /// RPC round-trip.  If you call `create_job` directly without a prior
+    /// approval the transaction will fail with an auth error from the token
+    /// contract.
     pub fn create_job(
         env: Env,
         client_addr: Address,
@@ -133,6 +158,7 @@ impl AgenticCommerceContract {
             status: JobStatus::Funded,
             description,
             deliverable: String::from_str(&env, ""),
+            funded_at: env.ledger().timestamp(),
         };
         env.storage().persistent().set(&DataKey::Job(next), &job);
         env.storage().instance().set(&DataKey::NextId, &(next + 1));
@@ -206,6 +232,7 @@ impl AgenticCommerceContract {
             job_id: id,
             payout,
             fee,
+            timestamp: env.ledger().timestamp(),
         }
         .publish(&env);
     }
@@ -267,6 +294,15 @@ impl AgenticCommerceContract {
         env.storage().instance().get(&DataKey::FeeBps).unwrap()
     }
 
+    /// Read-only helper: estimate the platform fee for a given budget and fee rate.
+    ///
+    /// Returns `budget * fee_bps / 10_000`. No state is read or written.
+    /// Intended for frontends that want to display the estimated fee before
+    /// calling `create_job`.
+    pub fn simulate_job_fee(_env: Env, budget: i128, fee_bps: u32) -> i128 {
+        (budget * (fee_bps as i128)) / BPS_DENOM
+    }
+
     /// Fetch a job by id.
     pub fn get_job(env: Env, id: u64) -> Option<Job> {
         env.storage().persistent().get(&DataKey::Job(id))
@@ -275,6 +311,43 @@ impl AgenticCommerceContract {
     /// Contract version. Bump on ABI changes.
     pub fn version(_env: Env) -> u32 {
         1
+    }
+
+    /// Total number of jobs ever created (for dashboard stats).
+    pub fn job_count(env: Env) -> u64 {
+        let next: u64 = env.storage().instance().get(&DataKey::NextId).unwrap_or(1u64);
+        next - 1
+    }
+
+    /// Buyer claims a full refund if provider never submitted and the timeout has passed.
+    pub fn claim_refund(env: Env, caller: Address, id: u64) {
+        caller.require_auth();
+        let mut job: Job = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Job(id))
+            .unwrap_or_else(|| panic!("job not found"));
+        if caller != job.client {
+            panic!("not client");
+        }
+        if job.status != JobStatus::Funded {
+            panic!("invalid status");
+        }
+        let now = env.ledger().timestamp();
+        if now < job.funded_at + REFUND_TIMEOUT_SECS {
+            panic!("timeout not reached");
+        }
+        let token_client = token::TokenClient::new(&env, &job.token);
+        let contract_addr = env.current_contract_address();
+        token_client.transfer(&contract_addr, &job.client, &job.budget);
+        job.status = JobStatus::Cancelled;
+        env.storage().persistent().set(&DataKey::Job(id), &job);
+
+        JobRefunded {
+            client: caller,
+            job_id: id,
+        }
+        .publish(&env);
     }
 }
 

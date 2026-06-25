@@ -13,6 +13,12 @@ export interface MarcPaywallOptions {
   price: string;
   /** Network identifier. */
   network?: "stellar:testnet" | "stellar:pubnet";
+  /**
+   * Token contract address or well-known alias.
+   * Use `"native"` for XLM, a Soroban contract address for custom SAC/tokens,
+   * or omit to default to USDC on testnet.
+   */
+  token?: string;
   /** Human-readable description of what's being purchased. */
   description?: string;
   /** MIME type of the response. */
@@ -35,6 +41,7 @@ export function marcPaywall(opts: MarcPaywallOptions): RequestHandler {
     payTo,
     price,
     network = "stellar:testnet",
+    token,
     description = "MARC-protected API call",
     mimeType = "application/json",
     facilitatorUrl = "https://channels.openzeppelin.com/x402/testnet",
@@ -66,6 +73,7 @@ export function marcPaywall(opts: MarcPaywallOptions): RequestHandler {
           price,
           network,
           payTo,
+          ...(token && { token }),
         },
       ],
       description,

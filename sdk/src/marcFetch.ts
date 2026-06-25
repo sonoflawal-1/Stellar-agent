@@ -17,6 +17,8 @@ export interface MarcFetchOptions {
   rpcUrl?: string;
   /** Network: testnet or pubnet. Default: testnet. */
   network?: "testnet" | "pubnet";
+  /** Custom HTTP headers forwarded on every request (e.g. API keys, auth tokens). */
+  headers?: Record<string, string>;
 }
 
 /**
@@ -31,6 +33,7 @@ export function marcFetch(opts: MarcFetchOptions) {
     signer,
     rpcUrl,
     network = "testnet",
+    headers: customHeaders,
   } = opts;
 
   const caip2 =
@@ -44,5 +47,13 @@ export function marcFetch(opts: MarcFetchOptions) {
   const client = new x402Client();
   client.register(caip2, stellarScheme);
 
-  return wrapFetchWithPayment(fetch, client);
+  const baseFetch: typeof fetch = customHeaders
+    ? (input, init) =>
+        fetch(input, {
+          ...init,
+          headers: { ...customHeaders, ...(init?.headers as Record<string, string> | undefined) },
+        })
+    : fetch;
+
+  return wrapFetchWithPayment(baseFetch, client);
 }

@@ -12,10 +12,11 @@
  */
 import "dotenv/config";
 import express from "express";
-import { Keypair } from "@stellar/stellar-sdk";
+import { Keypair, scValToNative, xdr } from "@stellar/stellar-sdk";
 import {
   IdentityClient,
   CommerceClient,
+  JobStatus,
   marcPaywall,
   marcFetch,
   TESTNET,
@@ -35,6 +36,31 @@ const BASE_PORT = 4410;
 const NUM_SELLERS = 4;
 const NUM_BUYERS = 5;
 const BUDGET = BigInt(10_000_000); // 1 USDC
+
+/** Decode a raw ScVal hex/base64 string to a native JS value for readable logging. */
+function decodeScVal(raw: unknown): unknown {
+  if (typeof raw !== "string") return raw;
+  for (const enc of ["hex", "base64"] as const) {
+    try {
+      return scValToNative(xdr.ScVal.fromXDR(raw, enc));
+    } catch { /* try next encoding */ }
+  }
+  return raw;
+}
+
+/** Format an error, decoding any embedded XDR/ScVal hex in the message. */
+function fmtError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  // Replace long hex runs that look like XDR payloads with their decoded form.
+  return err.message.replace(/\b([0-9a-f]{32,})\b/gi, (hex) => {
+    try {
+      const decoded = scValToNative(xdr.ScVal.fromXDR(hex, "hex"));
+      return `[ScVal: ${JSON.stringify(decoded)}]`;
+    } catch {
+      return hex;
+    }
+  });
+}
 
 function tag(role: string, i: number) {
   return `[${role}-${i}]`;
@@ -142,11 +168,103 @@ async function runBuyer(
   // Buyer (evaluator) completes job → 99/1 split
   await commerce.complete(kp, jobId);
   const job = await commerce.getJob(jobId);
-  console.log(`${t} job #${jobId} completed — status: ${job?.status} — 99% to seller, 1% fee`);
+  console.log(`${t} job #${jobId} completed — status: ${job?.status ?? "unknown"} — 99% to seller, 1% fee`);
+}
+
+// --- Stress test: N parallel jobs, each with its own seller+buyer keypair ---
+async function runStressTest(n: number): Promise<void> {
+  console.log(`\n=== MARC STRESS TEST: ${n} parallel jobs ===\n`);
+
+  // Independent keypair pair per slot avoids nonce conflicts across concurrent txs.
+  const slots = Array.from({ length: n }, (_, i) => ({
+    seller: Keypair.random(),
+    buyer: Keypair.random(),
+    index: i + 1,
+  }));
+
+  console.log(`Funding ${n * 2} accounts via Friendbot...`);
+  await Promise.all(
+    slots.flatMap(({ seller, buyer }) => [
+      fundAccount(seller.publicKey()),
+      fundAccount(buyer.publicKey()),
+    ]),
+  );
+  console.log("  All accounts funded.\n");
+
+  const identity = new IdentityClient(cfg);
+  const commerce = new CommerceClient(cfg);
+
+  // Register both agents and create job — all N slots in parallel.
+  console.log(`Creating ${n} jobs in parallel...`);
+  const jobSlots = await Promise.all(
+    slots.map(async ({ seller, buyer, index }) => {
+      await Promise.all([
+        identity.register(seller, `ipfs://stress-seller-${index}.json`),
+        identity.register(buyer, `ipfs://stress-buyer-${index}.json`),
+      ]);
+      const jobId = await commerce.createJob(
+        buyer,
+        seller.publicKey(),
+        buyer.publicKey(),
+        cfg.usdcToken,
+        BUDGET,
+        `Stress job ${index}/${n}`,
+      );
+      console.log(`  [${index}/${n}] job #${jobId} created`);
+      return { seller, buyer, jobId, index };
+    }),
+  );
+
+  // Each seller submits their own deliverable — all in parallel.
+  console.log(`\nSubmitting ${n} deliverables in parallel...`);
+  await Promise.all(
+    jobSlots.map(async ({ seller, jobId, index }) => {
+      await commerce.submit(seller, jobId, `ipfs://stress-result-${jobId}.json`);
+      console.log(`  [${index}/${n}] job #${jobId} submitted`);
+    }),
+  );
+
+  // Each buyer completes their job — all in parallel.
+  console.log(`\nCompleting ${n} jobs in parallel...`);
+  await Promise.all(
+    jobSlots.map(async ({ buyer, jobId, index }) => {
+      await commerce.complete(buyer, jobId);
+      console.log(`  [${index}/${n}] job #${jobId} completed`);
+    }),
+  );
+
+  // Verify every job reached Completed status.
+  console.log(`\nVerifying ${n} outcomes...`);
+  const results = await Promise.all(
+    jobSlots.map(async ({ jobId, index }) => {
+      const job = await commerce.getJob(jobId);
+      const pass = job?.status === JobStatus.Completed;
+      console.log(`  [${index}/${n}] job #${jobId}: ${pass ? "PASS" : "FAIL"} (status=${job?.status ?? "null"})`);
+      return pass;
+    }),
+  );
+
+  const passed = results.filter(Boolean).length;
+  console.log(`\n=== STRESS RESULT: ${passed}/${n} passed ===`);
+  if (passed < n) {
+    console.error(`${n - passed} job(s) failed verification.`);
+    process.exit(1);
+  }
 }
 
 // --- Main ---
 async function main() {
+  const stressIdx = process.argv.indexOf("--stress");
+  if (stressIdx !== -1) {
+    const n = parseInt(process.argv[stressIdx + 1] ?? "", 10);
+    if (!Number.isFinite(n) || n < 1) {
+      console.error("Usage: npm run simulate -- --stress <N>  (N must be >= 1)");
+      process.exit(1);
+    }
+    await runStressTest(n);
+    process.exit(0);
+  }
+
   console.log("=== MARC MARKETPLACE SIMULATION ===");
   console.log(`${NUM_SELLERS} sellers, ${NUM_BUYERS} buyers\n`);
 
@@ -170,6 +288,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(err);
+  console.error("FATAL:", fmtError(err));
   process.exit(1);
 });
