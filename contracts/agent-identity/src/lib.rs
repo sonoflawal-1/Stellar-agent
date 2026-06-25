@@ -76,7 +76,9 @@ impl AgentIdentityContract {
         env.storage()
             .persistent()
             .set(&DataKey::OwnerToId(owner.clone()), &next);
-        env.storage().instance().set(&DataKey::NextId, &(next + 1));
+        env.storage()
+            .instance()
+            .set(&DataKey::NextId, &next.checked_add(1).expect("agent id overflow"));
 
         Registered {
             owner,
