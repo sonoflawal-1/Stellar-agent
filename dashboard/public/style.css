@@ -946,6 +946,28 @@ button { font: inherit; cursor: pointer; border: none; background: none; color: 
   margin-top: 24px;
 }
 
+/* ── Transaction History ── */
+.history-list { display: flex; flex-direction: column; gap: 8px; }
+.history-row {
+  display: flex; align-items: center; gap: 14px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px 18px;
+  transition: border-color 0.2s;
+}
+.history-row:hover { border-color: var(--border-hover); }
+.history-icon {
+  width: 36px; height: 36px; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.history-icon.hist-job { background: rgba(59,130,246,0.12); color: #60a5fa; }
+.history-icon.hist-agent { background: rgba(245,158,11,0.12); color: var(--accent); }
+.history-body { flex: 1; min-width: 0; }
+.history-label { font-size: 14px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.history-meta { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+.history-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; }
+.history-id { font-size: 12px; color: var(--text-dim); font-family: var(--mono); }
+
 /* ── Responsive ── */
 @media (max-width: 768px) {
   .sidebar { transform: translateX(-100%); }

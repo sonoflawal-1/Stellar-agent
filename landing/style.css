@@ -480,6 +480,84 @@ button { font: inherit; cursor: pointer; border: none; background: none; color: 
   line-height: 1.7;
 }
 
+/* ── Animated Protocol Stack Diagram ── */
+.stack-diagram {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+  margin-top: 32px;
+  max-width: 280px;
+}
+.stack-layer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 10px 16px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  animation: stack-float 3s ease-in-out infinite;
+}
+.stack-layer.layer-commerce {
+  background: rgba(245,158,11,0.10);
+  border-color: rgba(245,158,11,0.30);
+  animation-delay: 0s;
+}
+.stack-layer.layer-identity {
+  background: rgba(99,102,241,0.10);
+  border-color: rgba(99,102,241,0.30);
+  animation-delay: 0.2s;
+}
+.stack-layer.layer-payments {
+  background: rgba(16,185,129,0.10);
+  border-color: rgba(16,185,129,0.30);
+  animation-delay: 0.4s;
+}
+@keyframes stack-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-3px); }
+}
+.stack-layer-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: 0.02em;
+}
+.stack-layer-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  letter-spacing: 0.04em;
+}
+.layer-commerce .stack-layer-badge { background: rgba(245,158,11,0.18); color: #F59E0B; }
+.layer-identity .stack-layer-badge { background: rgba(99,102,241,0.18); color: #818CF8; }
+.layer-payments .stack-layer-badge { background: rgba(16,185,129,0.18); color: #34D399; }
+.stack-connector {
+  width: 1px;
+  height: 18px;
+  margin-left: 24px;
+  background: linear-gradient(to bottom, rgba(255,255,255,0.08), rgba(255,255,255,0.08));
+  position: relative;
+  overflow: visible;
+}
+.stack-pulse {
+  position: absolute;
+  top: 0; left: -3px;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse-down 1.6s ease-in-out infinite;
+  opacity: 0;
+}
+@keyframes pulse-down {
+  0% { top: 0; opacity: 0; }
+  20% { opacity: 1; }
+  80% { opacity: 1; }
+  100% { top: 100%; opacity: 0; }
+}
+
 /* ── How It Works (horizontal scroll driven by vertical scroll) ── */
 .hiw-scroll {
   position: relative;
