@@ -109,6 +109,20 @@ impl AgenticCommerceContract {
 
     /// Create a job and escrow `budget` from the `client_addr` into the contract.
     /// Returns the assigned sequential job id.
+    ///
+    /// # Pre-approval required
+    ///
+    /// This function pulls `budget` tokens from `client_addr` into the contract
+    /// using a direct `transfer` call on the Stellar Asset Contract (SAC).
+    /// Because SAC's `transfer` requires the sender to authorise the call,
+    /// **the client must invoke `token.approve(contract_address, budget)`
+    /// (or `increaseAllowance`) before calling `create_job`**.
+    ///
+    /// SDK callers should use `CommerceClient.approveAndCreateJob(...)`, which
+    /// handles the two-step approve + create_job flow automatically in a single
+    /// RPC round-trip.  If you call `create_job` directly without a prior
+    /// approval the transaction will fail with an auth error from the token
+    /// contract.
     pub fn create_job(
         env: Env,
         client_addr: Address,
@@ -278,6 +292,15 @@ impl AgenticCommerceContract {
     /// Current fee in basis points.
     pub fn fee_bps(env: Env) -> u32 {
         env.storage().instance().get(&DataKey::FeeBps).unwrap()
+    }
+
+    /// Read-only helper: estimate the platform fee for a given budget and fee rate.
+    ///
+    /// Returns `budget * fee_bps / 10_000`. No state is read or written.
+    /// Intended for frontends that want to display the estimated fee before
+    /// calling `create_job`.
+    pub fn simulate_job_fee(_env: Env, budget: i128, fee_bps: u32) -> i128 {
+        (budget * (fee_bps as i128)) / BPS_DENOM
     }
 
     /// Fetch a job by id.

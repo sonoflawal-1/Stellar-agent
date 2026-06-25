@@ -112,3 +112,71 @@ export const TESTNET = {
   usdcToken:
     "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA" as Address,
 } as const;
+
+/**
+ * Symbol topic names emitted by the `agentic_commerce` contract events.
+ *
+ * The Soroban `#[contractevent]` macro publishes the struct name (converted to
+ * the Symbol string below) as the first topic of every event.  Use these
+ * constants when filtering `getEvents` results so callers never have to
+ * hardcode magic strings.
+ *
+ * Example:
+ *   const events = await server.getEvents({ filters: [{ topics: [[CommerceEvents.JobCreated]] }] });
+ */
+export const CommerceEvents = {
+  JobCreated: "JobCreated",
+  JobSubmitted: "JobSubmitted",
+  JobCompleted: "JobCompleted",
+  JobRefunded: "JobRefunded",
+  JobCancelled: "JobCancelled",
+} as const;
+
+export type CommerceEventName = (typeof CommerceEvents)[keyof typeof CommerceEvents];
+
+/** Decoded payload for a `JobCreated` event. */
+export interface JobCreatedEvent {
+  type: typeof CommerceEvents.JobCreated;
+  client: Address;
+  jobId: bigint;
+  budget: bigint;
+}
+
+/** Decoded payload for a `JobSubmitted` event. */
+export interface JobSubmittedEvent {
+  type: typeof CommerceEvents.JobSubmitted;
+  provider: Address;
+  jobId: bigint;
+}
+
+/** Decoded payload for a `JobCompleted` event. */
+export interface JobCompletedEvent {
+  type: typeof CommerceEvents.JobCompleted;
+  evaluator: Address;
+  jobId: bigint;
+  payout: bigint;
+  fee: bigint;
+  timestamp: bigint;
+}
+
+/** Decoded payload for a `JobRefunded` event. */
+export interface JobRefundedEvent {
+  type: typeof CommerceEvents.JobRefunded;
+  client: Address;
+  jobId: bigint;
+}
+
+/** Decoded payload for a `JobCancelled` event. */
+export interface JobCancelledEvent {
+  type: typeof CommerceEvents.JobCancelled;
+  client: Address;
+  jobId: bigint;
+}
+
+/** Discriminated union of all agentic-commerce contract events. */
+export type JobEvent =
+  | JobCreatedEvent
+  | JobSubmittedEvent
+  | JobCompletedEvent
+  | JobRefundedEvent
+  | JobCancelledEvent;

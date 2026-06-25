@@ -31,7 +31,21 @@ export class IdentityClient {
     this.contract = new Contract(cfg.identityContract);
   }
 
-  /** Register a new agent and return its on-chain ID. */
+  /**
+   * Register a new agent and return its on-chain ID.
+   *
+   * Accepts the owner's `Keypair` and handles the full transaction lifecycle
+   * automatically: builds the transaction, fetches the account sequence number,
+   * calls `prepareTransaction` to simulate and attach the Soroban footprint,
+   * signs with the provided keypair, submits via `sendTransaction`, and polls
+   * until the transaction is finalized on-chain. The caller does not need to
+   * build or sign anything manually.
+   *
+   * @param owner - The owner's Keypair. Used both as the on-chain `owner`
+   *                address and to sign the transaction.
+   * @param uri   - Metadata URI for the agent (e.g. a DID document URL).
+   * @returns The assigned on-chain agent ID as a `bigint`.
+   */
   async register(owner: Keypair, uri: string): Promise<bigint> {
     const op = this.contract.call(
       "register",
