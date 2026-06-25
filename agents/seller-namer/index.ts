@@ -66,6 +66,8 @@ app.use(express.json());
 
 app.get("/", (_req, res) => res.json(JSON.parse(fs.readFileSync("agent.json", "utf8"))));
 
+app.get("/health", (_req, res) => res.json({ status: "ok", agentId: AGENT_ID, uptime: process.uptime() }));
+
 app.post("/job", limiter, async (req, res) => {
   const { jobId, task } = req.body;
   console.log(`[${AGENT_ID}] Job #${jobId}: ${task}`);

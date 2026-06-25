@@ -88,22 +88,38 @@ app.use(express.json());
 
 app.get("/", (_req, res) => res.json(JSON.parse(fs.readFileSync("agent.json", "utf8"))));
 
+app.get("/health", (_req, res) => res.json({ status: "ok", agentId: AGENT_ID, uptime: process.uptime() }));
+
 app.use(`/${OUTPUT_DIR}`, express.static(OUTPUT_DIR));
 
+interface BuildSpec {
+  framework?: string;
+  pages?: string[];
+  theme?: string;
+}
+
+function buildPrompt(task: string, spec?: BuildSpec): string {
+  const base = `You are a professional web developer. Build a complete, self-contained HTML/CSS website for:\n\n${task}`;
+  if (!spec) return `${base}\n\nReturn ONLY raw HTML — no markdown, no code fences. Must have inline CSS, ready to open in a browser.`;
+  const constraints: string[] = [];
+  if (spec.framework) constraints.push(`Framework/style: ${spec.framework}`);
+  if (spec.pages && spec.pages.length > 0) constraints.push(`Pages to include: ${spec.pages.join(", ")}`);
+  if (spec.theme) constraints.push(`Color theme: ${spec.theme}`);
+  return `${base}\n\nBuild specs:\n${constraints.join("\n")}\n\nReturn ONLY raw HTML — no markdown, no code fences. Must have inline CSS, ready to open in a browser.`;
+}
+
 app.post("/job", limiter, async (req, res) => {
-  const { jobId, task } = req.body;
+  const { jobId, task, buildSpec } = req.body as { jobId?: string; task?: string; buildSpec?: BuildSpec };
   if (!jobId || !task) {
     res.status(400).json({ error: "missing jobId or task" });
     return;
   }
-  console.log(`[${AGENT_ID}] Job #${jobId}: ${task}`);
+  console.log(`[${AGENT_ID}] Job #${jobId}: ${task}${buildSpec ? ` (buildSpec: ${JSON.stringify(buildSpec)})` : ""}`);
   res.json({ status: "accepted", jobId });
 
   try {
     console.log(`[${AGENT_ID}] Calling Groq...`);
-    const html = await generate(
-      `You are a professional web developer. Build a complete, self-contained HTML/CSS website for:\n\n${task}\n\nReturn ONLY raw HTML — no markdown, no code fences. Must have inline CSS, ready to open in a browser.`
-    );
+    const html = await generate(buildPrompt(task, buildSpec));
 
     const stripped = html.replace(/```html\s*/gi, "").replace(/```/g, "").trim();
     if (stripped.length < 50 || !/<!DOCTYPE html|<html/i.test(stripped)) {

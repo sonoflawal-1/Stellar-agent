@@ -133,11 +133,26 @@ app.post("/heartbeat", (req, res) => {
   res.json({ status: "ok", agentId });
 });
 
+function filterByTags(agents: Record<string, unknown>[], rawTags: string): Record<string, unknown>[] {
+  const tags = rawTags.split(",").map((t) => t.trim().toLowerCase()).filter(Boolean);
+  if (tags.length === 0) return agents;
+  return agents.filter((a) => {
+    const agentTags = Array.isArray(a.tags) ? (a.tags as string[]).map((t) => t.toLowerCase()) : [];
+    return tags.every((t) => agentTags.includes(t));
+  });
+}
+
 app.get("/agents", (req, res) => {
+  let result: Record<string, unknown>[];
   if (req.query.include_inactive === "true") {
-    return res.json(getAllAgentsWithStatus());
+    result = getAllAgentsWithStatus();
+  } else {
+    result = getAliveAgents();
   }
-  return res.json(getAliveAgents());
+  if (typeof req.query.tags === "string" && req.query.tags) {
+    result = filterByTags(result, req.query.tags);
+  }
+  return res.json(result);
 });
 
 app.get("/agents/:id", (req, res) => {
