@@ -839,6 +839,7 @@
         hideTxOverlay();
         toast("Agent #" + res.agentId + " registered!");
       }
+      await loadAgents();
       renderAgents();
     } catch (e) {
       hideTxOverlay();
