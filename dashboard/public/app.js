@@ -12,7 +12,7 @@
     jobs: null,
     history: null,
     loading: { stats: false, wallets: false, agents: false, jobs: false },
-    jobFilter: "All",
+    jobFilter: "Active",
   };
 
   // ── Stellar Wallets Kit integration ──
@@ -478,8 +478,15 @@
 
   function renderJobList() {
     const jobs = state.jobs || [];
-    const filters = ["All", "Funded", "Submitted", "Completed", "Cancelled"];
-    const filtered = state.jobFilter === "All" ? jobs : jobs.filter(function(j) { return j.status === state.jobFilter; });
+    const filters = ["Active", "All", "Funded", "Submitted", "Completed", "Cancelled"];
+    let filtered;
+    if (state.jobFilter === "Active") {
+      filtered = jobs.filter(function(j) { return j.status === "Funded" || j.status === "Submitted"; });
+    } else if (state.jobFilter === "All") {
+      filtered = jobs;
+    } else {
+      filtered = jobs.filter(function(j) { return j.status === state.jobFilter; });
+    }
 
     let tabs = '<div class="filter-tabs">';
     for (const f of filters) {
@@ -489,7 +496,14 @@
 
     let content = '';
     if (filtered.length === 0) {
-      const label = state.jobFilter === "All" ? "" : state.jobFilter.toLowerCase() + " ";
+      let label = "";
+      if (state.jobFilter === "All") {
+        label = "";
+      } else if (state.jobFilter === "Active") {
+        label = "active ";
+      } else {
+        label = state.jobFilter.toLowerCase() + " ";
+      }
       content = '<div class="empty-state">'
         + '<div class="empty-icon"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg></div>'
         + '<div class="empty-title">No ' + label + 'jobs</div>'
