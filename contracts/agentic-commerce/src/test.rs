@@ -73,7 +73,7 @@ fn init_allows_reinit_by_same_admin() {
 fn init_rejects_reinit_by_different_admin() {
     let env = Env::default();
     env.mock_all_auths();
-    let (client, admin, treasury) = setup(&env);
+    let (client, _admin, treasury) = setup(&env);
     let different_admin = Address::generate(&env);
     // Re-initialization by a different admin should panic
     client.init(&different_admin, &treasury);
