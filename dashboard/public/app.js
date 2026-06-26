@@ -222,7 +222,8 @@
   // ── Transaction Overlay ──
   function showTxOverlay(text) {
     const overlay = document.getElementById("tx-overlay");
-    overlay.querySelector(".tx-text").textContent = text || "Submitting to Stellar...";
+    const modal = overlay.querySelector(".tx-modal");
+    modal.innerHTML = '<div class="tx-spinner"></div><div class="tx-text">' + escapeHtml(text || "Submitting to Stellar...") + '</div>';
     overlay.classList.add("active");
   }
   function hideTxOverlay() {
