@@ -60,12 +60,23 @@ fn init_sets_admin_and_treasury() {
 }
 
 #[test]
-#[should_panic(expected = "already initialized")]
-fn init_rejects_double_initialization() {
+fn init_allows_reinit_by_same_admin() {
     let env = Env::default();
     env.mock_all_auths();
     let (client, admin, treasury) = setup(&env);
+    // Re-initialization by the same admin should succeed (for updating treasury/fee params)
     client.init(&admin, &treasury);
+}
+
+#[test]
+#[should_panic(expected = "not admin")]
+fn init_rejects_reinit_by_different_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, treasury) = setup(&env);
+    let different_admin = Address::generate(&env);
+    // Re-initialization by a different admin should panic
+    client.init(&different_admin, &treasury);
 }
 
 #[test]
