@@ -194,6 +194,46 @@ fn registered_count_tracks_live_registrations() {
 }
 
 #[test]
+fn list_agents_returns_page_of_existing_agents() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AgentIdentityContract, ());
+    let client = AgentIdentityContractClient::new(&env, &contract_id);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let carol = Address::generate(&env);
+    client.register(&alice, &String::from_str(&env, "ipfs://alice.json"));
+    client.register(&bob, &String::from_str(&env, "ipfs://bob.json"));
+    let id_carol = client.register(&carol, &String::from_str(&env, "ipfs://carol.json"));
+
+    // All 3 from start_id=1, limit=10
+    let page = client.list_agents(&1u32, &10u32);
+    assert_eq!(page.len(), 3);
+
+    // Deregister bob (id=2); listing skips the gap
+    client.deregister(&bob, &2u64);
+    let page2 = client.list_agents(&1u32, &10u32);
+    assert_eq!(page2.len(), 2);
+
+    // Paging: start at id=3, limit=1 → only carol
+    let page3 = client.list_agents(&3u32, &1u32);
+    assert_eq!(page3.len(), 1);
+    assert_eq!(page3.get(0).unwrap().id, id_carol);
+}
+
+#[test]
+fn list_agents_empty_range_returns_empty_vec() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AgentIdentityContract, ());
+    let client = AgentIdentityContractClient::new(&env, &contract_id);
+
+    let page = client.list_agents(&1u32, &5u32);
+    assert_eq!(page.len(), 0);
+}
+
+#[test]
 fn deregister_allows_same_owner_to_re_register() {
     let env = Env::default();
     env.mock_all_auths();

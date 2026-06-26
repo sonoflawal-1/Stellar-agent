@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, Env, String};
+use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, Env, String, Vec};
 
 /// A registered agent in the MARC agent-identity registry.
 #[derive(Clone)]
@@ -215,6 +215,26 @@ impl AgentIdentityContract {
             agent_id: id,
         }
         .publish(&env);
+    }
+
+    /// Returns up to `limit` agents starting from `start_id`, skipping gaps left
+    /// by deregistered agents. Useful for paginated dashboard queries.
+    pub fn list_agents(env: Env, start_id: u32, limit: u32) -> Vec<Agent> {
+        let mut result = Vec::new(&env);
+        let next_id: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::NextId)
+            .unwrap_or(1u64);
+
+        let mut id = start_id as u64;
+        while result.len() < limit && id < next_id {
+            if let Some(agent) = env.storage().persistent().get(&DataKey::Agent(id)) {
+                result.push_back(agent);
+            }
+            id += 1;
+        }
+        result
     }
 
     /// Returns the number of currently-registered (non-deregistered) agents.
