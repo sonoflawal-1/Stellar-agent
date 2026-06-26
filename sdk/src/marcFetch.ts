@@ -54,12 +54,25 @@ export function marcFetch(opts: MarcFetchOptions) {
   client.register(caip2, stellarScheme);
 
   const baseFetch: typeof fetch = customHeaders
-    ? (input, init) =>
-        fetch(input, {
+    ? (input, init) => {
+        const finalInit = {
           ...init,
           headers: { ...customHeaders, ...(init?.headers as Record<string, string> | undefined) },
-        })
+        };
+        return fetch(input, finalInit);
+      }
     : fetch;
+
+  // Wrap baseFetch to handle non-402 HTTP errors gracefully
+  const wrappedFetch: typeof fetch = async (input, init) => {
+    const response = await baseFetch(input, init);
+    // Pass through non-error responses and 402 (payment required)
+    if (response.ok || response.status === 402) {
+      return response;
+    }
+    // For other error status codes, return as-is without attempting payment parsing
+    return response;
+  };
 
   if (onPayment) {
     const originalBuildAndPay = stellarScheme.pay?.bind(stellarScheme);
@@ -78,5 +91,5 @@ export function marcFetch(opts: MarcFetchOptions) {
     }
   }
 
-  return wrapFetchWithPayment(baseFetch, client);
+  return wrapFetchWithPayment(wrappedFetch, client);
 }
