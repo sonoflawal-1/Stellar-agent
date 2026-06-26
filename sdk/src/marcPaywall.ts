@@ -4,7 +4,10 @@ import { ExactStellarScheme } from "@x402/stellar/exact/server";
 import type { RequestHandler } from "express";
 
 /**
- * Options for the MARC paywall Express middleware.
+ * Configuration options for the marcPaywall Express middleware.
+ *
+ * Defines payment requirements, price, token, and facilitator details
+ * for protecting API routes with the x402 v2 payment protocol.
  */
 export interface MarcPaywallOptions {
   /** Stellar address to receive payment (G...). */
@@ -30,11 +33,32 @@ export interface MarcPaywallOptions {
 }
 
 /**
- * Creates Express middleware implementing the x402 v2 payment protocol.
+ * Create an Express middleware that protects routes with x402 payment requirements.
  *
- * Returns a middleware that protects the given route pattern.
- * When a request arrives without payment, it returns 402 with payment requirements.
- * When payment is provided, it verifies and settles via the facilitator.
+ * Returns a middleware that intercepts incoming requests and enforces payment
+ * via the x402 v2 protocol. When a request lacks valid payment proof:
+ * 1. Returns HTTP 402 with payment requirements in headers
+ * 2. Client builds and signs a Stellar payment transaction
+ * 3. Client retries with payment proof headers
+ * 4. Middleware verifies payment via facilitator and allows access
+ *
+ * Verified payments are settled with the configured facilitator service.
+ *
+ * @param opts - Configuration including payee address, price, network, and token
+ * @returns An Express middleware function for route protection
+ *
+ * @example
+ * ```typescript
+ * const paywall = marcPaywall({
+ *   payTo: "GBUQWP3BOUZX34ULNQG23RQ6F4YUSXHTBVDJ42LPBK4EK4YLYL2QQ5K",
+ *   price: "$0.01",
+ *   network: "stellar:testnet",
+ *   facilitatorUrl: "https://channels.openzeppelin.com/x402/testnet",
+ * });
+ * app.get("/api/protected", paywall, (req, res) => {
+ *   res.json({ data: "This costs money" });
+ * });
+ * ```
  */
 export function marcPaywall(opts: MarcPaywallOptions): RequestHandler {
   const {

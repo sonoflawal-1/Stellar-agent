@@ -14,23 +14,54 @@ import type { Job, JobStatus, MarcConfig } from "./types.js";
 
 // --- ScVal helpers (exported for custom contract interactions) ---
 
+/** Encode a bigint as a 128-bit signed integer ScVal. */
 export const i128ToScVal = (v: bigint) => nativeToScVal(v, { type: "i128" });
+
+/** Encode a bigint as a 128-bit unsigned integer ScVal. */
 export const u128ToScVal = (v: bigint) => nativeToScVal(v, { type: "u128" });
+
+/** Encode a bigint as a 64-bit unsigned integer ScVal. */
 export const u64ToScVal  = (v: bigint) => nativeToScVal(v, { type: "u64" });
+
+/** Encode a number as a 32-bit unsigned integer ScVal. */
 export const u32ToScVal  = (v: number) => nativeToScVal(v, { type: "u32" });
+
+/** Encode a string as a string ScVal. */
 export const strToScVal  = (v: string) => nativeToScVal(v, { type: "string" });
+
+/** Encode a Stellar address string as an address ScVal. */
 export const addrToScVal = (v: string) => new Address(v).toScVal();
 
 /**
  * Typed wrapper around the `agentic_commerce` Soroban contract.
  *
- * Handles job lifecycle: create → submit → complete/cancel, plus
- * admin helpers (setTreasury, setFeeBps) and read-only queries.
+ * Handles the complete job lifecycle: create → submit → complete/cancel, plus
+ * admin helpers (setTreasury, setFeeBps) and read-only queries. Automatically
+ * manages ScVal encoding/decoding, transaction building, and RPC submission.
+ *
+ * @example
+ * ```typescript
+ * const client = new CommerceClient(TESTNET);
+ * const jobId = await client.createJob(
+ *   clientKeypair,
+ *   providerAddress,
+ *   evaluatorAddress,
+ *   tokenAddress,
+ *   1_000_000n, // 1 USDC (with 6 decimals)
+ *   "Build me a website"
+ * );
+ * await client.disconnect();
+ * ```
  */
 export class CommerceClient {
   private server: rpc.Server;
   private contract: Contract;
 
+  /**
+   * Initialize the CommerceClient with a configuration.
+   *
+   * @param cfg - Configuration containing RPC URL, network passphrase, contract address, etc.
+   */
   constructor(private cfg: MarcConfig) {
     this.server = new rpc.Server(cfg.rpcUrl, {
       allowHttp: cfg.rpcUrl.startsWith("http://"),
@@ -40,8 +71,19 @@ export class CommerceClient {
   }
 
   /**
-   * Create a funded job. Pulls `budget` of `token` from `client` into escrow.
-   * Returns the new job ID.
+   * Create a new job with token held in escrow.
+   *
+   * Transfers `budget` tokens from the client to the contract escrow account.
+   * The client, provider, and evaluator must all have received auth-signatures
+   * for the contract invocation (handled automatically by this method).
+   *
+   * @param client - The job creator's keypair (must sign the transaction)
+   * @param provider - The service provider's Stellar address
+   * @param evaluator - The evaluator's Stellar address (approves completion)
+   * @param token - Token contract address (e.g., USDC SAC)
+   * @param budget - Token amount in smallest units (e.g., 1_000_000 = 1 USDC with 6 decimals)
+   * @param description - Human-readable job description
+   * @returns The newly assigned job ID
    */
   async createJob(
     client: Keypair,
@@ -63,7 +105,13 @@ export class CommerceClient {
     return await this.invoke(client, op, (v) => BigInt(scValToNative(v) as string));
   }
 
-  /** Provider submits a deliverable for a funded job. */
+  /**
+   * Submit a deliverable for a funded job (provider-only).
+   *
+   * @param provider - The service provider's keypair (must match the job's provider)
+   * @param jobId - The ID of the job being worked on
+   * @param deliverable - IPFS hash or URL pointing to the completed work
+   */
   async submit(
     provider: Keypair,
     jobId: bigint,
@@ -78,7 +126,15 @@ export class CommerceClient {
     await this.invoke(provider, op, () => undefined);
   }
 
-  /** Evaluator marks a submitted job as completed (triggers 99/1 payout). */
+  /**
+   * Mark a submitted job as completed and trigger payout (evaluator-only).
+   *
+   * Splits the budget 99% to provider, 1% to treasury. Requires auth from
+   * the evaluator address recorded during job creation.
+   *
+   * @param evaluator - The evaluator's keypair (must match the job's evaluator)
+   * @param jobId - The ID of the job to complete
+   */
   async complete(evaluator: Keypair, jobId: bigint): Promise<void> {
     const op = this.contract.call(
       "complete",
@@ -88,7 +144,15 @@ export class CommerceClient {
     await this.invoke(evaluator, op, () => undefined);
   }
 
-  /** Client cancels a funded job (full refund). */
+  /**
+   * Cancel a funded job and refund the full budget (client-only).
+   *
+   * Only callable while the job is in the Funded state. After cancellation,
+   * the full budget is returned to the client's token balance.
+   *
+   * @param client - The job creator's keypair (must match the job's client)
+   * @param jobId - The ID of the job to cancel
+   */
   async cancel(client: Keypair, jobId: bigint): Promise<void> {
     const op = this.contract.call(
       "cancel",
@@ -98,7 +162,12 @@ export class CommerceClient {
     await this.invoke(client, op, () => undefined);
   }
 
-  /** Read a job by ID. Returns null if not found. */
+  /**
+   * Read a job by ID.
+   *
+   * @param jobId - The job's ID
+   * @returns The job record, or null if the ID does not exist
+   */
   async getJob(jobId: bigint): Promise<Job | null> {
     const op = this.contract.call(
       "get_job",
@@ -124,13 +193,22 @@ export class CommerceClient {
     });
   }
 
-  /** Read the current fee in basis points. */
+  /**
+   * Read the current treasury fee in basis points (e.g., 100 = 1%).
+   *
+   * @returns Fee as an integer (1-500, capped at 5%)
+   */
   async feeBps(): Promise<number> {
     const op = this.contract.call("fee_bps");
     return await this.simulate(op, (v) => Number(scValToNative(v)));
   }
 
-  /** Admin: update the treasury address. */
+  /**
+   * Update the treasury address (admin-only).
+   *
+   * @param admin - The admin keypair (must be authorized in contract state)
+   * @param newTreasury - The new treasury's Stellar address
+   */
   async setTreasury(admin: Keypair, newTreasury: string): Promise<void> {
     const op = this.contract.call(
       "set_treasury",
@@ -140,7 +218,12 @@ export class CommerceClient {
     await this.invoke(admin, op, () => undefined);
   }
 
-  /** Admin: update the fee (capped at 500 bps / 5%). */
+  /**
+   * Update the treasury fee in basis points (admin-only, capped at 500 = 5%).
+   *
+   * @param admin - The admin keypair (must be authorized in contract state)
+   * @param newBps - New fee in basis points (1-500)
+   */
   async setFeeBps(admin: Keypair, newBps: number): Promise<void> {
     const op = this.contract.call(
       "set_fee_bps",

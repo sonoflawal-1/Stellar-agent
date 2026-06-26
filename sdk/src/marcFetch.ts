@@ -11,7 +11,10 @@ import {
 export type PaymentStatus = "signing" | "pending" | "settled" | "failed";
 
 /**
- * Configuration for the auto-paying fetch wrapper.
+ * Configuration options for the auto-paying marcFetch wrapper.
+ *
+ * Controls how payment transactions are built, which network is used, and
+ * provides optional callbacks for monitoring payment progress.
  */
 export interface MarcFetchOptions {
   /** Keypair used to sign payment transactions. */
@@ -27,11 +30,29 @@ export interface MarcFetchOptions {
 }
 
 /**
- * Returns a `fetch`-compatible function that automatically handles HTTP 402
- * responses by building, signing, and submitting a Stellar payment, then
- * retrying the original request with the payment headers.
+ * Create a fetch wrapper that automatically handles HTTP 402 payment responses.
  *
- * Uses the x402 v2 protocol with @x402/fetch and @x402/stellar.
+ * Wraps the native `fetch` function to intercept 402 "Payment Required" responses.
+ * When a 402 is received, the wrapper automatically:
+ * 1. Parses payment requirements from response headers
+ * 2. Builds and signs a Stellar payment transaction
+ * 3. Submits the payment via Soroban
+ * 4. Retries the original request with payment proof headers
+ *
+ * Uses the x402 v2 protocol with @x402/fetch and @x402/stellar libraries.
+ *
+ * @param opts - Configuration including signer keypair, RPC URL, and network
+ * @returns A fetch-compatible function that auto-pays on 402 responses
+ *
+ * @example
+ * ```typescript
+ * const fetch = marcFetch({
+ *   signer: myKeypair,
+ *   network: "testnet",
+ *   onPayment: (status) => console.log(`Payment: ${status}`),
+ * });
+ * const response = await fetch("https://api.example.com/protected");
+ * ```
  */
 export function marcFetch(opts: MarcFetchOptions) {
   const {
