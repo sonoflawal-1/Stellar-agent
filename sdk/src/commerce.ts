@@ -151,6 +151,14 @@ export class CommerceClient {
   }
 
   /**
+   * Clean up and close the underlying RPC connection.
+   * Call this when the client is no longer needed, especially in long-running processes.
+   */
+  disconnect(): void {
+    this.server.close();
+  }
+
+  /**
    * Get the balance of `address` for a given token.
    * Pass `"native"` for XLM (returns stroops as bigint),
    * or a Soroban token contract address for SAC/custom tokens.
