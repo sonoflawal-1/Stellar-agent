@@ -62,6 +62,10 @@ impl AgentIdentityContract {
     pub fn register(env: Env, owner: Address, uri: String) -> u64 {
         owner.require_auth();
 
+        if uri.len() == 0 {
+            panic!("metadata_uri cannot be empty");
+        }
+
         if env
             .storage()
             .persistent()

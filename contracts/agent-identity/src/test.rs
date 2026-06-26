@@ -161,6 +161,18 @@ fn update_owner_rejects_new_owner_already_registered() {
 }
 
 #[test]
+#[should_panic(expected = "metadata_uri cannot be empty")]
+fn register_rejects_empty_uri() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AgentIdentityContract, ());
+    let client = AgentIdentityContractClient::new(&env, &contract_id);
+
+    let alice = Address::generate(&env);
+    client.register(&alice, &String::from_str(&env, ""));
+}
+
+#[test]
 fn deregister_allows_same_owner_to_re_register() {
     let env = Env::default();
     env.mock_all_auths();
