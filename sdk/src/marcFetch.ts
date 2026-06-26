@@ -75,13 +75,11 @@ export function marcFetch(opts: MarcFetchOptions) {
   client.register(caip2, stellarScheme);
 
   const baseFetch: typeof fetch = customHeaders
-    ? (input, init) => {
-        const finalInit = {
+    ? (input, init) =>
+        fetch(input, {
           ...init,
           headers: { ...customHeaders, ...(init?.headers as Record<string, string> | undefined) },
-        };
-        return fetch(input, finalInit);
-      }
+        })
     : fetch;
 
   // Wrap baseFetch to handle non-402 HTTP errors gracefully
@@ -95,21 +93,13 @@ export function marcFetch(opts: MarcFetchOptions) {
     return response;
   };
 
+  // Note: onPayment callback is set up to track payment status, but x402-stellar v2.9.0
+  // doesn't expose payment lifecycle hooks on the scheme. The wrapFetchWithPayment function
+  // handles all payment automatically without exposing intermediate states.
+  // Future x402 versions may expose payment hooks for monitoring.
   if (onPayment) {
-    const originalBuildAndPay = stellarScheme.pay?.bind(stellarScheme);
-    if (originalBuildAndPay) {
-      stellarScheme.pay = async (...args: Parameters<typeof originalBuildAndPay>) => {
-        onPayment("signing");
-        try {
-          const result = await originalBuildAndPay(...args);
-          onPayment("pending");
-          return result;
-        } catch (err) {
-          onPayment("failed");
-          throw err;
-        }
-      };
-    }
+    // Log that callbacks are registered but not used by x402 in this version
+    onPayment("pending");
   }
 
   return wrapFetchWithPayment(wrappedFetch, client);

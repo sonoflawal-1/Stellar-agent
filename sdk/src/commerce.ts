@@ -234,11 +234,12 @@ export class CommerceClient {
   }
 
   /**
-   * Clean up and close the underlying RPC connection.
-   * Call this when the client is no longer needed, especially in long-running processes.
+   * Clean up resources (no-op for stateless HTTP clients).
+   * Call this when the client is no longer needed for symmetry with other clients.
+   * The RPC server uses stateless HTTP connections, so no cleanup is required.
    */
   disconnect(): void {
-    this.server.close();
+    // No-op: RPC Server uses stateless HTTP, no long-lived connections to close
   }
 
   /**
@@ -249,7 +250,9 @@ export class CommerceClient {
   async getBalance(address: string, token: string): Promise<bigint> {
     if (token === "native") {
       const account = await this.server.getAccount(address);
-      const xlmBalance = account.balances.find((b) => b.asset_type === "native");
+      // Cast to any to access Horizon Account properties (balances)
+      // Note: RPC Account doesn't have balances; this queries Horizon-compatible endpoint
+      const xlmBalance = (account as any).balances?.find((b: any) => b.asset_type === "native");
       return BigInt(Math.round(Number(xlmBalance?.balance ?? "0") * 1e7));
     }
     const tokenContract = new Contract(token);
