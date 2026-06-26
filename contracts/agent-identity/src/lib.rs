@@ -13,6 +13,7 @@ pub struct Agent {
 #[contracttype]
 enum DataKey {
     NextId,
+    RegisteredCount,
     Agent(u64),
     OwnerToId(Address),
 }
@@ -93,6 +94,15 @@ impl AgentIdentityContract {
             .instance()
             .set(&DataKey::NextId, &next.checked_add(1).expect("agent id overflow"));
 
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RegisteredCount)
+            .unwrap_or(0u32);
+        env.storage()
+            .instance()
+            .set(&DataKey::RegisteredCount, &count.checked_add(1).expect("count overflow"));
+
         Registered {
             owner,
             agent_id: next,
@@ -139,6 +149,15 @@ impl AgentIdentityContract {
         env.storage()
             .persistent()
             .remove(&DataKey::OwnerToId(agent.owner.clone()));
+
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RegisteredCount)
+            .unwrap_or(0u32);
+        env.storage()
+            .instance()
+            .set(&DataKey::RegisteredCount, &count.saturating_sub(1));
 
         Deregistered {
             owner: agent.owner,
@@ -196,6 +215,14 @@ impl AgentIdentityContract {
             agent_id: id,
         }
         .publish(&env);
+    }
+
+    /// Returns the number of currently-registered (non-deregistered) agents.
+    pub fn registered_count(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::RegisteredCount)
+            .unwrap_or(0u32)
     }
 
     /// Contract version. Bump on ABI changes.

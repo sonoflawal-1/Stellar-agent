@@ -173,6 +173,27 @@ fn register_rejects_empty_uri() {
 }
 
 #[test]
+fn registered_count_tracks_live_registrations() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AgentIdentityContract, ());
+    let client = AgentIdentityContractClient::new(&env, &contract_id);
+
+    assert_eq!(client.registered_count(), 0);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let id_a = client.register(&alice, &String::from_str(&env, "ipfs://alice.json"));
+    assert_eq!(client.registered_count(), 1);
+
+    client.register(&bob, &String::from_str(&env, "ipfs://bob.json"));
+    assert_eq!(client.registered_count(), 2);
+
+    client.deregister(&alice, &id_a);
+    assert_eq!(client.registered_count(), 1);
+}
+
+#[test]
 fn deregister_allows_same_owner_to_re_register() {
     let env = Env::default();
     env.mock_all_auths();

@@ -247,6 +247,18 @@
                       "val": {
                         "u64": "3"
                       }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "RegisteredCount"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u32": 2
+                      }
                     }
                   ]
                 }
