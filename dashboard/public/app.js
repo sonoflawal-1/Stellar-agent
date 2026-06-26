@@ -211,12 +211,13 @@
   }
 
   // ── Toast ──
-  function toast(msg, type = "success") {
+  function toast(msg, type = "success", duration = null) {
     const el = document.createElement("div");
     el.className = "toast " + type;
     el.textContent = msg;
     document.getElementById("toasts").appendChild(el);
-    setTimeout(() => el.remove(), 3000);
+    const autoDismissDuration = duration || (type === "error" ? 8000 : 3000);
+    setTimeout(() => el.remove(), autoDismissDuration);
   }
 
   // ── Transaction Overlay ──
