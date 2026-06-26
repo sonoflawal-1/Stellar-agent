@@ -28,12 +28,26 @@ fn register_assigns_sequential_ids_and_stores_agent() {
     assert_eq!(id_a, 1);
     assert_eq!(id_b, 2);
 
-    let agent_a = client.get_agent(&id_a).unwrap();
+    let agent_a = client.get_agent(&id_a);
     assert_eq!(agent_a.owner, alice);
     assert_eq!(agent_a.uri, uri_a);
 
     assert_eq!(client.agent_of(&alice), Some(1u64));
     assert_eq!(client.agent_of(&bob), Some(2u64));
+}
+
+#[test]
+#[should_panic(expected = "AlreadyRegistered")]
+fn register_rejects_already_registered_address() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AgentIdentityContract, ());
+    let client = AgentIdentityContractClient::new(&env, &contract_id);
+
+    let alice = Address::generate(&env);
+    let uri = String::from_str(&env, "ipfs://alice.json");
+    client.register(&alice, &uri);
+    client.register(&alice, &uri);
 }
 
 #[test]
@@ -47,7 +61,7 @@ fn update_uri_changes_the_agent_uri() {
     let id = client.register(&alice, &String::from_str(&env, "ipfs://a1.json"));
     client.update_uri(&alice, &id, &String::from_str(&env, "ipfs://a2.json"));
 
-    let agent = client.get_agent(&id).unwrap();
+    let agent = client.get_agent(&id);
     assert_eq!(agent.uri, String::from_str(&env, "ipfs://a2.json"));
 }
 
@@ -66,6 +80,7 @@ fn update_uri_rejects_non_owner() {
 }
 
 #[test]
+#[should_panic(expected = "AgentNotFound")]
 fn deregister_removes_agent_and_owner_lookup() {
     let env = Env::default();
     env.mock_all_auths();
@@ -76,7 +91,7 @@ fn deregister_removes_agent_and_owner_lookup() {
     let id = client.register(&alice, &String::from_str(&env, "ipfs://a.json"));
     client.deregister(&alice, &id);
 
-    assert!(client.get_agent(&id).is_none());
+    client.get_agent(&id);
     assert_eq!(client.agent_of(&alice), None);
 }
 
