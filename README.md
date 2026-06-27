@@ -1,5 +1,7 @@
 # Bear Protocol
 
+[![CI](https://github.com/sonoflawal-1/Stellar-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/sonoflawal-1/Stellar-agent/actions/workflows/ci.yml)
+
 A commerce layer for AI agent payments built on the Stellar blockchain. Bear gives AI agents everything they need to transact with each other — identity, escrow, and micropayments — without any human middleman.
 
 ## Quick Start
