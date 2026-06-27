@@ -110,7 +110,7 @@ function parseBudget(value: string | number | undefined, defaultValue = 10_000_0
 
 function respondWithValidationError(err: unknown, res: Response): boolean {
   if (err instanceof ZodError) {
-    res.status(400).json({ error: "Invalid request payload", details: err.errors });
+    res.status(400).json({ error: "Invalid request payload", details: err.issues });
     return true;
   }
   return false;
@@ -350,7 +350,7 @@ app.post("/api/jobs/create", async (req, res) => {
       evaluatorAddr,
       cfg.usdcToken,
       budgetBn,
-      parsed.description || "Dashboard test job",
+      description || "Dashboard test job",
     );
     invalidateJobs();
     res.json({ jobId: jobId.toString() });
@@ -489,14 +489,14 @@ app.post("/api/build/createJob", async (req, res) => {
 
     const op = commerceContract.call(
       "create_job",
-      new Address(parsed.publicKey).toScVal(),
+      new Address(publicKey).toScVal(),
       new Address(providerAddr).toScVal(),
       new Address(evaluatorAddr).toScVal(),
       new Address(cfg.usdcToken).toScVal(),
       nativeToScVal(budgetBn, { type: "i128" }),
-      nativeToScVal(parsed.description || "Dashboard test job", { type: "string" }),
+      nativeToScVal(description || "Dashboard test job", { type: "string" }),
     );
-    const txXdr = await buildTxXdr(parsed.publicKey, op);
+    const txXdr = await buildTxXdr(publicKey, op);
     res.json({ xdr: txXdr });
   } catch (err: unknown) {
     if (respondWithValidationError(err, res)) return;
@@ -616,7 +616,7 @@ function errorHandler(err: unknown, _req: Request, res: Response, _next: NextFun
     return res.status(400).json({ error: "Malformed JSON payload" });
   }
   if (err instanceof ZodError) {
-    return res.status(400).json({ error: "Invalid request payload", details: err.errors });
+      return res.status(400).json({ error: "Invalid request payload", details: err.issues });
   }
   console.error("Unhandled server error:", err);
   res.status(500).json({ error: "Internal server error" });
