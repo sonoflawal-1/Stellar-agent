@@ -12,7 +12,7 @@ const cfg: MarcConfig = {
 };
 
 const seller = Keypair.fromSecret(process.env.SELLER_SECRET!);
-const jobId = Number(process.env.JOB_ID!);
+const jobId = BigInt(process.env.JOB_ID!);
 
 /**
  * Service price for the x402 paywall.
@@ -44,6 +44,7 @@ app.use("/api/work", marcPaywall({
   payTo: seller.publicKey(),
   price: servicePrice,           // ← driven by env var, not hardcoded
   network: "stellar:testnet",
+  token: cfg.usdcToken,
   description: "One MARC-protected API call",
   facilitatorUrl: process.env.FACILITATOR_URL ?? process.env.X402_FACILITATOR_URL,
   facilitatorApiKey: process.env.FACILITATOR_API_KEY ?? process.env.X402_FACILITATOR_API_KEY,

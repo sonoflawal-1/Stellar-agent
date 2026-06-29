@@ -106,6 +106,23 @@ export class IdentityClient {
     return agents;
   }
 
+  /**
+   * Transfer ownership of an agent to a new wallet.
+   *
+   * The contract requires auth from both the current owner and the new owner.
+   * Pass both keypairs; the transaction is submitted by `owner` and signed by
+   * `newOwner` as well.
+   */
+  async updateOwner(owner: Keypair, id: bigint, newOwner: Keypair): Promise<void> {
+    const op = this.contract.call(
+      "update_owner",
+      new Address(owner.publicKey()).toScVal(),
+      nativeToScVal(id, { type: "u64" }),
+      new Address(newOwner.publicKey()).toScVal(),
+    );
+    await this.invokeMultiSig(owner, newOwner, op);
+  }
+
   /** Permanently remove an agent (owner-only). */
   async deregister(owner: Keypair, id: bigint): Promise<void> {
     const op = this.contract.call(
@@ -116,7 +133,52 @@ export class IdentityClient {
     await this.invoke(owner, op, () => undefined);
   }
 
+  /**
+   * Get the balance of `address` for a given token.
+   * Pass `"native"` for XLM (returns stroops as bigint),
+   * or a Soroban token contract address for SAC/custom tokens.
+   */
+  async getBalance(address: string, token: string): Promise<bigint> {
+    if (token === "native") {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const account = (await this.server.getAccount(address)) as any;
+      const xlmBalance = account.balances.find((b: any) => b.asset_type === "native");
+      return BigInt(Math.round(Number(xlmBalance?.balance ?? "0") * 1e7));
+    }
+    const tokenContract = new Contract(token);
+    const op = tokenContract.call("balance", new Address(address).toScVal());
+    return await this.simulate(op, (v) => BigInt(scValToNative(v) as string));
+  }
+
   // --- internals ---
+
+  /** Submit a transaction signed by two keypairs (old owner + new owner). */
+  private async invokeMultiSig(signer1: Keypair, signer2: Keypair, op: xdr.Operation): Promise<void> {
+    const account = await this.server.getAccount(signer1.publicKey());
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: this.cfg.networkPassphrase,
+    })
+      .addOperation(op)
+      .setTimeout(30)
+      .build();
+    const prepared = await this.server.prepareTransaction(tx);
+    prepared.sign(signer1);
+    prepared.sign(signer2);
+    const sent = await this.server.sendTransaction(prepared);
+    if (sent.status === "ERROR") throw new Error(`submit failed: ${sent.errorResult}`);
+    let getResp = await this.server.getTransaction(sent.hash);
+    while (getResp.status === "NOT_FOUND") {
+      await new Promise((r) => setTimeout(r, 1000));
+      getResp = await this.server.getTransaction(sent.hash);
+    }
+    if (getResp.status !== "SUCCESS") {
+      const failed = getResp as rpc.Api.GetFailedTransactionResponse;
+      const detail = failed.resultXdr?.result()?.switch()?.name ?? getResp.status;
+      throw new Error(`tx failed: ${detail}`);
+    }
+    this.cfg.onTx?.(sent.hash, "identity");
+  }
 
   private async invoke<T>(
     signer: Keypair,

@@ -2,6 +2,23 @@ use super::*;
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{Address, Env, String};
 
+/// register() must return the new agent's id directly so callers never need a
+/// follow-up agentOf() query to learn the assigned id.
+#[test]
+fn register_return_value_is_the_stored_agent_id() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AgentIdentityContract, ());
+    let client = AgentIdentityContractClient::new(&env, &contract_id);
+
+    let alice = Address::generate(&env);
+    let returned_id = client.register(&alice, &String::from_str(&env, "ipfs://alice.json"));
+    let stored = client.get_agent(&returned_id).unwrap();
+
+    // The value returned by register() equals the id field inside the stored Agent.
+    assert_eq!(returned_id, stored.id);
+}
+
 #[test]
 fn contract_can_be_deployed() {
     let env = Env::default();
@@ -107,6 +124,55 @@ fn deregister_rejects_non_owner() {
     let mallory = Address::generate(&env);
     let id = client.register(&alice, &String::from_str(&env, "ipfs://a.json"));
     client.deregister(&mallory, &id);
+}
+
+#[test]
+fn update_owner_transfers_ownership_to_new_wallet() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AgentIdentityContract, ());
+    let client = AgentIdentityContractClient::new(&env, &contract_id);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let id = client.register(&alice, &String::from_str(&env, "ipfs://alice.json"));
+    client.update_owner(&alice, &id, &bob);
+
+    let agent = client.get_agent(&id).unwrap();
+    assert_eq!(agent.owner, bob);
+    assert_eq!(client.agent_of(&bob), Some(id));
+    assert_eq!(client.agent_of(&alice), None);
+}
+
+#[test]
+#[should_panic(expected = "not agent owner")]
+fn update_owner_rejects_non_owner_caller() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AgentIdentityContract, ());
+    let client = AgentIdentityContractClient::new(&env, &contract_id);
+
+    let alice = Address::generate(&env);
+    let mallory = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let id = client.register(&alice, &String::from_str(&env, "ipfs://alice.json"));
+    client.update_owner(&mallory, &id, &bob);
+}
+
+#[test]
+#[should_panic(expected = "new owner already registered")]
+fn update_owner_rejects_new_owner_already_registered() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AgentIdentityContract, ());
+    let client = AgentIdentityContractClient::new(&env, &contract_id);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    client.register(&alice, &String::from_str(&env, "ipfs://alice.json"));
+    client.register(&bob, &String::from_str(&env, "ipfs://bob.json"));
+    let id_a = client.agent_of(&alice).unwrap();
+    client.update_owner(&alice, &id_a, &bob);
 }
 
 #[test]

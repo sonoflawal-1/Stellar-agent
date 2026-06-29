@@ -13,8 +13,7 @@ const CACHE_TTL = 3_000; // 3s — fast refresh for demo
 
 // Contract-level caches (longer TTL — 30s)
 let feeBpsCache: { value: number | null; ts: number } = { value: null, ts: 0 };
-let versionCache: { value: number | null; ts: number } = { value: null, ts: 0 };
-const CONTRACT_CACHE_TTL = 30_000; // 30s TTL for RPC getters like feeBps()/version()
+const CONTRACT_CACHE_TTL = 30_000; // 30s TTL for RPC getters like feeBps()
 
 // Event emitter used to notify server of invalidations for SSE
 export const events = new EventEmitter();
@@ -103,16 +102,6 @@ export async function getFeeBps(force = false): Promise<number> {
   }
   const v = await commerce.feeBps();
   feeBpsCache = { value: v, ts: Date.now() };
-  return v;
-}
-
-/** Cached getter for contract version (identity.version() example) */
-export async function getVersion(force = false): Promise<number> {
-  if (!force && versionCache.value !== null && Date.now() - versionCache.ts < CONTRACT_CACHE_TTL) {
-    return versionCache.value as number;
-  }
-  const v = await identity.version();
-  versionCache = { value: v, ts: Date.now() };
   return v;
 }
 

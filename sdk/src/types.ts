@@ -66,6 +66,9 @@ export interface Job {
   status: JobStatus;
   description: string;
   deliverable: string;
+  funded_at: bigint;
+  created_at: bigint;
+  updated_at: bigint;
 }
 
 /**

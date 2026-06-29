@@ -7,6 +7,9 @@ import {
   STELLAR_PUBNET_CAIP2,
 } from "@x402/stellar";
 
+/** Payment lifecycle status passed to the onPayment callback. */
+export type PaymentStatus = "signing" | "pending" | "settled" | "failed";
+
 /**
  * Configuration for the auto-paying fetch wrapper.
  */
@@ -19,6 +22,8 @@ export interface MarcFetchOptions {
   network?: "testnet" | "pubnet";
   /** Custom HTTP headers forwarded on every request (e.g. API keys, auth tokens). */
   headers?: Record<string, string>;
+  /** Optional callback invoked with payment lifecycle status for progress UI. */
+  onPayment?: (status: PaymentStatus) => void;
 }
 
 /**
@@ -34,6 +39,7 @@ export function marcFetch(opts: MarcFetchOptions) {
     rpcUrl,
     network = "testnet",
     headers: customHeaders,
+    onPayment,
   } = opts;
 
   const caip2 =
@@ -54,6 +60,25 @@ export function marcFetch(opts: MarcFetchOptions) {
           headers: { ...customHeaders, ...(init?.headers as Record<string, string> | undefined) },
         })
     : fetch;
+
+  if (onPayment) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const scheme = stellarScheme as any;
+    const originalBuildAndPay = scheme.pay?.bind(stellarScheme);
+    if (originalBuildAndPay) {
+      scheme.pay = async (...args: unknown[]) => {
+        onPayment("signing");
+        try {
+          const result = await originalBuildAndPay(...args);
+          onPayment("pending");
+          return result;
+        } catch (err) {
+          onPayment("failed");
+          throw err;
+        }
+      };
+    }
+  }
 
   return wrapFetchWithPayment(baseFetch, client);
 }

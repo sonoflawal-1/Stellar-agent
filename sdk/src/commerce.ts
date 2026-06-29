@@ -12,6 +12,15 @@ import {
 } from "@stellar/stellar-sdk";
 import type { Job, JobStatus, MarcConfig } from "./types.js";
 
+// --- ScVal helpers (exported for custom contract interactions) ---
+
+export const i128ToScVal = (v: bigint) => nativeToScVal(v, { type: "i128" });
+export const u128ToScVal = (v: bigint) => nativeToScVal(v, { type: "u128" });
+export const u64ToScVal  = (v: bigint) => nativeToScVal(v, { type: "u64" });
+export const u32ToScVal  = (v: number) => nativeToScVal(v, { type: "u32" });
+export const strToScVal  = (v: string) => nativeToScVal(v, { type: "string" });
+export const addrToScVal = (v: string) => new Address(v).toScVal();
+
 /**
  * Typed wrapper around the `agentic_commerce` Soroban contract.
  *
@@ -89,6 +98,61 @@ export class CommerceClient {
     await this.invoke(client, op, () => undefined);
   }
 
+  /**
+   * Create a job and poll until completion, cancellation, or rejection.
+   *
+   * Returns the final Job object when status transitions from "Funded" to
+   * a terminal state (Completed, Cancelled, Rejected). Throws on timeout.
+   *
+   * @param client The funding/cancelling client keypair
+   * @param provider Provider address (string)
+   * @param evaluator Evaluator address (string)
+   * @param token Token contract address
+   * @param budget Funding amount in base units
+   * @param description Job description
+   * @param pollInterval Milliseconds between status checks (default: 2000)
+   * @param timeout Total timeout in milliseconds (default: 5 minutes)
+   */
+  async createJobAndWait(
+    client: Keypair,
+    provider: string,
+    evaluator: string,
+    token: string,
+    budget: bigint,
+    description: string,
+    pollInterval: number = 2000,
+    timeout: number = 5 * 60 * 1000,
+  ): Promise<Job> {
+    // Create the job and get its ID
+    const jobId = await this.createJob(client, provider, evaluator, token, budget, description);
+
+    // Poll until terminal state
+    const startTime = Date.now();
+    while (true) {
+      const elapsed = Date.now() - startTime;
+      if (elapsed > timeout) {
+        throw new Error(`Timeout waiting for job ${jobId} to reach terminal state after ${timeout}ms`);
+      }
+
+      const job = await this.getJob(jobId);
+      if (!job) {
+        throw new Error(`Job ${jobId} not found`);
+      }
+
+      // Terminal states
+      if (
+        job.status === "Completed" ||
+        job.status === "Cancelled" ||
+        job.status === "Rejected"
+      ) {
+        return job;
+      }
+
+      // Still in Funded or Submitted state, keep polling
+      await new Promise((r) => setTimeout(r, pollInterval));
+    }
+  }
+
   /** Read a job by ID. Returns null if not found. */
   async getJob(jobId: bigint): Promise<Job | null> {
     const op = this.contract.call(
@@ -108,6 +172,9 @@ export class CommerceClient {
         status: (Array.isArray(native.status) ? native.status[0] : native.status) as JobStatus,
         description: native.description,
         deliverable: native.deliverable,
+        funded_at: BigInt(native.funded_at ?? 0),
+        created_at: BigInt(native.created_at ?? 0),
+        updated_at: BigInt(native.updated_at ?? 0),
       } as Job;
     });
   }
@@ -136,6 +203,23 @@ export class CommerceClient {
       nativeToScVal(newBps, { type: "u32" }),
     );
     await this.invoke(admin, op, () => undefined);
+  }
+
+  /**
+   * Get the balance of `address` for a given token.
+   * Pass `"native"` for XLM (returns stroops as bigint),
+   * or a Soroban token contract address for SAC/custom tokens.
+   */
+  async getBalance(address: string, token: string): Promise<bigint> {
+    if (token === "native") {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const account = (await this.server.getAccount(address)) as any;
+      const xlmBalance = account.balances.find((b: any) => b.asset_type === "native");
+      return BigInt(Math.round(Number(xlmBalance?.balance ?? "0") * 1e7));
+    }
+    const tokenContract = new Contract(token);
+    const op = tokenContract.call("balance", new Address(address).toScVal());
+    return await this.simulate(op, (v) => BigInt(scValToNative(v) as string));
   }
 
   // --- internals (same pattern as IdentityClient) ---

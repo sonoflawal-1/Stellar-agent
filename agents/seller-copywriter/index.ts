@@ -6,7 +6,7 @@ import rateLimit from "express-rate-limit";
 import Groq from "groq-sdk";
 import { Keypair } from "@stellar/stellar-sdk";
 import { IdentityClient, CommerceClient, TESTNET, type MarcConfig } from "marc-stellar-sdk";
-import { retryWithBackoff } from "../shared.js";
+import { retryWithBackoff, startHeartbeat } from "../shared.js";
 
 const cfg: MarcConfig = {
   rpcUrl: process.env.STELLAR_RPC_URL ?? TESTNET.rpcUrl,
@@ -60,24 +60,8 @@ if (!agentId) {
 }
 
 const registryUrl = (process.env.REGISTRY_URL ?? "http://localhost:4500").replace(/\/+$/, "");
-
-async function heartbeat() {
-  try {
-    const res = await fetch(`${registryUrl}/heartbeat`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agentId: AGENT_ID }),
-    });
-    if (!res.ok) {
-      console.warn(`[${AGENT_ID}] Heartbeat failed (${res.status})`);
-    }
-  } catch {
-    console.warn(`[${AGENT_ID}] Registry unreachable at ${registryUrl}`);
-  }
-}
-
-setInterval(heartbeat, 60_000);
-heartbeat();
+const registryApiKey = process.env.REGISTRY_API_KEY?.trim();
+await startHeartbeat(AGENT_ID, registryUrl, { apiKey: registryApiKey, maxAttempts: 6, baseDelayMs: 2000 });
 
 const limiter = rateLimit({
   windowMs: 60_000,
@@ -90,12 +74,20 @@ const limiter = rateLimit({
 const app = express();
 app.use(express.json());
 
+app.use((req, res, next) => {
+  console.log(`[${AGENT_ID}] → ${req.method} ${req.path}`, JSON.stringify(req.body));
+  res.on("finish", () => console.log(`[${AGENT_ID}] ← ${res.statusCode}`));
+  next();
+});
+
 app.get("/", (_req, res) => res.json(JSON.parse(fs.readFileSync("agent.json", "utf8"))));
+
+app.get("/health", (_req, res) => res.json({ status: "ok", agentId: AGENT_ID, uptime: process.uptime() }));
 
 app.use(`/${OUTPUT_DIR}`, express.static(OUTPUT_DIR));
 
 app.post("/job", limiter, async (req, res) => {
-  const { jobId, task } = req.body;
+  const { jobId, task, tone, audience, keywords } = req.body;
   if (!jobId || !task) {
     res.status(400).json({ error: "missing jobId or task" });
     return;
@@ -105,8 +97,13 @@ app.post("/job", limiter, async (req, res) => {
 
   try {
     console.log(`[${AGENT_ID}] Calling Groq...`);
+    const brandContext = [
+      tone ? `Tone: ${tone}` : "",
+      audience ? `Target audience: ${audience}` : "",
+      keywords?.length ? `Keywords to include: ${Array.isArray(keywords) ? keywords.join(", ") : keywords}` : "",
+    ].filter(Boolean).join("\n");
     const copy = await generate(
-      `You are a professional copywriter. Write compelling website copy for:\n\n${task}\n\nStructure in markdown: # Headline, ## Subheadline, ## Body, ## CTA.`
+      `You are a professional copywriter. Write compelling website copy for:\n\n${task}${brandContext ? `\n\nBrand guidelines:\n${brandContext}` : ""}\n\nStructure in markdown: # Headline, ## Subheadline, ## Body, ## CTA.`
     );
     if (copy.length < 20) {
       throw new Error(`Generated copy too short (${copy.length} chars)`);

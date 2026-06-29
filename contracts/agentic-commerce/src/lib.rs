@@ -27,6 +27,8 @@ pub struct Job {
     pub description: String,
     pub deliverable: String,
     pub funded_at: u64,
+    pub created_at: u64,
+    pub updated_at: u64,
 }
 
 #[contracttype]
@@ -89,22 +91,43 @@ pub struct JobCancelled {
     pub job_id: u64,
 }
 
+/// Emitted when the contract is emergency-paused.
+#[contractevent]
+pub struct Paused {
+    #[topic]
+    pub admin: Address,
+    pub timestamp: u64,
+}
+
+/// Emitted when the contract is unpaused.
+#[contractevent]
+pub struct Unpaused {
+    #[topic]
+    pub admin: Address,
+    pub timestamp: u64,
+}
+
 #[contract]
 pub struct AgenticCommerceContract;
 
 #[contractimpl]
 impl AgenticCommerceContract {
-    /// One-time initializer. Sets admin, treasury, default fee (1%), and job id counter.
-    /// Panics if already initialized.
+    /// Initializer. Sets admin, treasury, default fee (1%), and job id counter.
+    /// Can be re-called by the existing admin to update treasury/fee params.
+    /// Panics if already initialized and caller is not the admin.
     pub fn init(env: Env, admin: Address, treasury: Address) {
         admin.require_auth();
         if env.storage().instance().has(&DataKey::Admin) {
-            panic!("already initialized");
+            let current_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+            if admin != current_admin {
+                panic!("not admin");
+            }
+        } else {
+            env.storage().instance().set(&DataKey::NextId, &1u64);
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Treasury, &treasury);
         env.storage().instance().set(&DataKey::FeeBps, &DEFAULT_FEE_BPS);
-        env.storage().instance().set(&DataKey::NextId, &1u64);
     }
 
     /// Create a job and escrow `budget` from the `client_addr` into the contract.
@@ -148,6 +171,7 @@ impl AgenticCommerceContract {
         let contract_addr = env.current_contract_address();
         token_client.transfer(&client_addr, &contract_addr, &budget);
 
+        let now = env.ledger().timestamp();
         let job = Job {
             id: next,
             client: client_addr.clone(),
@@ -158,7 +182,9 @@ impl AgenticCommerceContract {
             status: JobStatus::Funded,
             description,
             deliverable: String::from_str(&env, ""),
-            funded_at: env.ledger().timestamp(),
+            funded_at: now,
+            created_at: now,
+            updated_at: now,
         };
         env.storage().persistent().set(&DataKey::Job(next), &job);
         env.storage().instance().set(&DataKey::NextId, &(next + 1));
@@ -189,6 +215,7 @@ impl AgenticCommerceContract {
         }
         job.status = JobStatus::Submitted;
         job.deliverable = deliverable;
+        job.updated_at = env.ledger().timestamp();
         env.storage().persistent().set(&DataKey::Job(id), &job);
 
         JobSubmitted {
@@ -225,6 +252,7 @@ impl AgenticCommerceContract {
         }
 
         job.status = JobStatus::Completed;
+        job.updated_at = env.ledger().timestamp();
         env.storage().persistent().set(&DataKey::Job(id), &job);
 
         JobCompleted {
@@ -255,6 +283,7 @@ impl AgenticCommerceContract {
         let contract_addr = env.current_contract_address();
         token_client.transfer(&contract_addr, &job.client, &job.budget);
         job.status = JobStatus::Cancelled;
+        job.updated_at = env.ledger().timestamp();
         env.storage().persistent().set(&DataKey::Job(id), &job);
 
         JobCancelled {
@@ -341,6 +370,7 @@ impl AgenticCommerceContract {
         let contract_addr = env.current_contract_address();
         token_client.transfer(&contract_addr, &job.client, &job.budget);
         job.status = JobStatus::Cancelled;
+        job.updated_at = now;
         env.storage().persistent().set(&DataKey::Job(id), &job);
 
         JobRefunded {
