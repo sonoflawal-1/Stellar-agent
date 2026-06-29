@@ -82,12 +82,22 @@ export function marcFetch(opts: MarcFetchOptions) {
         })
     : fetch;
 
-  // Wrap baseFetch to handle non-402 HTTP errors gracefully
-  const wrappedFetch: typeof fetch = async (input, init) => {
-    const response = await baseFetch(input, init);
-    // Pass through non-error responses and 402 (payment required)
-    if (response.ok || response.status === 402) {
-      return response;
+  if (onPayment) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const scheme = stellarScheme as any;
+    const originalBuildAndPay = scheme.pay?.bind(stellarScheme);
+    if (originalBuildAndPay) {
+      scheme.pay = async (...args: unknown[]) => {
+        onPayment("signing");
+        try {
+          const result = await originalBuildAndPay(...args);
+          onPayment("pending");
+          return result;
+        } catch (err) {
+          onPayment("failed");
+          throw err;
+        }
+      };
     }
     // For other error status codes, return as-is without attempting payment parsing
     return response;

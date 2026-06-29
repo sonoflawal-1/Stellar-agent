@@ -36,6 +36,7 @@ import {
 import {
   IdentityClient,
   CommerceClient,
+  JobStatus,
   TESTNET,
   type MarcConfig,
 } from "marc-stellar-sdk";
@@ -176,7 +177,7 @@ await commerce.cancel(buyer, jobId);
 await pollWithBackoff(
   async () => {
     const j = await commerce.getJob(jobId);
-    return j?.status === "cancelled";
+    return j?.status === JobStatus.Cancelled;
   },
   `job #${jobId} cancellation confirmation`,
   { baseMs: 2_000, maxAttempts: 10 },

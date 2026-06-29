@@ -188,10 +188,9 @@ export class IdentityClient {
    */
   async getBalance(address: string, token: string): Promise<bigint> {
     if (token === "native") {
-      const account = await this.server.getAccount(address);
-      // Cast to any to access Horizon Account properties (balances)
-      // Note: RPC Account doesn't have balances; this queries Horizon-compatible endpoint
-      const xlmBalance = (account as any).balances?.find((b: any) => b.asset_type === "native");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const account = (await this.server.getAccount(address)) as any;
+      const xlmBalance = account.balances.find((b: any) => b.asset_type === "native");
       return BigInt(Math.round(Number(xlmBalance?.balance ?? "0") * 1e7));
     }
     const tokenContract = new Contract(token);

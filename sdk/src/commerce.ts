@@ -163,11 +163,61 @@ export class CommerceClient {
   }
 
   /**
-   * Read a job by ID.
+   * Create a job and poll until completion, cancellation, or rejection.
    *
-   * @param jobId - The job's ID
-   * @returns The job record, or null if the ID does not exist
+   * Returns the final Job object when status transitions from "Funded" to
+   * a terminal state (Completed, Cancelled, Rejected). Throws on timeout.
+   *
+   * @param client The funding/cancelling client keypair
+   * @param provider Provider address (string)
+   * @param evaluator Evaluator address (string)
+   * @param token Token contract address
+   * @param budget Funding amount in base units
+   * @param description Job description
+   * @param pollInterval Milliseconds between status checks (default: 2000)
+   * @param timeout Total timeout in milliseconds (default: 5 minutes)
    */
+  async createJobAndWait(
+    client: Keypair,
+    provider: string,
+    evaluator: string,
+    token: string,
+    budget: bigint,
+    description: string,
+    pollInterval: number = 2000,
+    timeout: number = 5 * 60 * 1000,
+  ): Promise<Job> {
+    // Create the job and get its ID
+    const jobId = await this.createJob(client, provider, evaluator, token, budget, description);
+
+    // Poll until terminal state
+    const startTime = Date.now();
+    while (true) {
+      const elapsed = Date.now() - startTime;
+      if (elapsed > timeout) {
+        throw new Error(`Timeout waiting for job ${jobId} to reach terminal state after ${timeout}ms`);
+      }
+
+      const job = await this.getJob(jobId);
+      if (!job) {
+        throw new Error(`Job ${jobId} not found`);
+      }
+
+      // Terminal states
+      if (
+        job.status === "Completed" ||
+        job.status === "Cancelled" ||
+        job.status === "Rejected"
+      ) {
+        return job;
+      }
+
+      // Still in Funded or Submitted state, keep polling
+      await new Promise((r) => setTimeout(r, pollInterval));
+    }
+  }
+
+  /** Read a job by ID. Returns null if not found. */
   async getJob(jobId: bigint): Promise<Job | null> {
     const op = this.contract.call(
       "get_job",
@@ -249,10 +299,9 @@ export class CommerceClient {
    */
   async getBalance(address: string, token: string): Promise<bigint> {
     if (token === "native") {
-      const account = await this.server.getAccount(address);
-      // Cast to any to access Horizon Account properties (balances)
-      // Note: RPC Account doesn't have balances; this queries Horizon-compatible endpoint
-      const xlmBalance = (account as any).balances?.find((b: any) => b.asset_type === "native");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const account = (await this.server.getAccount(address)) as any;
+      const xlmBalance = account.balances.find((b: any) => b.asset_type === "native");
       return BigInt(Math.round(Number(xlmBalance?.balance ?? "0") * 1e7));
     }
     const tokenContract = new Contract(token);
