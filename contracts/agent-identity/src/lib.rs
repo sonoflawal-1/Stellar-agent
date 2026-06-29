@@ -20,6 +20,7 @@ pub struct Agent {
 #[contracttype]
 enum DataKey {
     NextId,
+    RegisteredCount,
     Agent(u64),
     OwnerToId(Address),
 }
@@ -76,6 +77,10 @@ impl AgentIdentityContract {
     pub fn register(env: Env, owner: Address, uri: String) -> u64 {
         owner.require_auth();
 
+        if uri.len() == 0 {
+            panic!("metadata_uri cannot be empty");
+        }
+
         if env
             .storage()
             .persistent()
@@ -102,6 +107,15 @@ impl AgentIdentityContract {
         env.storage()
             .instance()
             .set(&DataKey::NextId, &next.checked_add(1).expect("agent id overflow"));
+
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RegisteredCount)
+            .unwrap_or(0u32);
+        env.storage()
+            .instance()
+            .set(&DataKey::RegisteredCount, &count.checked_add(1).expect("count overflow"));
 
         Registered {
             owner,
@@ -149,6 +163,15 @@ impl AgentIdentityContract {
         env.storage()
             .persistent()
             .remove(&DataKey::OwnerToId(agent.owner.clone()));
+
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RegisteredCount)
+            .unwrap_or(0u32);
+        env.storage()
+            .instance()
+            .set(&DataKey::RegisteredCount, &count.saturating_sub(1));
 
         Deregistered {
             owner: agent.owner,
@@ -209,6 +232,34 @@ impl AgentIdentityContract {
             agent_id: id,
         }
         .publish(&env);
+    }
+
+    /// Returns up to `limit` agents starting from `start_id`, skipping gaps left
+    /// by deregistered agents. Useful for paginated dashboard queries.
+    pub fn list_agents(env: Env, start_id: u32, limit: u32) -> Vec<Agent> {
+        let mut result = Vec::new(&env);
+        let next_id: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::NextId)
+            .unwrap_or(1u64);
+
+        let mut id = start_id as u64;
+        while result.len() < limit && id < next_id {
+            if let Some(agent) = env.storage().persistent().get(&DataKey::Agent(id)) {
+                result.push_back(agent);
+            }
+            id += 1;
+        }
+        result
+    }
+
+    /// Returns the number of currently-registered (non-deregistered) agents.
+    pub fn registered_count(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::RegisteredCount)
+            .unwrap_or(0u32)
     }
 
     /// Contract version. Bump on ABI changes.

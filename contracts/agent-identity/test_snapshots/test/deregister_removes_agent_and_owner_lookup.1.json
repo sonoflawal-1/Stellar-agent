@@ -54,7 +54,7 @@
     []
   ],
   "ledger": {
-    "protocol_version": 25,
+    "protocol_version": 26,
     "sequence_number": 0,
     "timestamp": 0,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
@@ -88,6 +88,18 @@
                       },
                       "val": {
                         "u64": "2"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "RegisteredCount"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u32": 0
                       }
                     }
                   ]
