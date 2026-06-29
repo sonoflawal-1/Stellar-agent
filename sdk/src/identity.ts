@@ -15,14 +15,27 @@ import type { Agent, MarcConfig } from "./types.js";
 /**
  * Typed wrapper around the `agent_identity` Soroban contract.
  *
- * Provides `register`, `getAgent`, `agentOf`, `updateUri`, and `deregister`
- * methods that handle ScVal encoding/decoding, transaction building, and
- * submission via Soroban RPC.
+ * Provides methods to register agents, query agent data, update URIs, and manage
+ * ownership. All methods handle ScVal encoding/decoding, transaction building, and
+ * submission via Soroban RPC automatically.
+ *
+ * @example
+ * ```typescript
+ * const client = new IdentityClient(TESTNET);
+ * const agentId = await client.register(ownerKeypair, "ipfs://metadata-uri");
+ * const agent = await client.getAgent(agentId);
+ * await client.disconnect();
+ * ```
  */
 export class IdentityClient {
   private server: rpc.Server;
   private contract: Contract;
 
+  /**
+   * Initialize the IdentityClient with a configuration.
+   *
+   * @param cfg - Configuration containing RPC URL, network passphrase, contract address, etc.
+   */
   constructor(private cfg: MarcConfig) {
     this.server = new rpc.Server(cfg.rpcUrl, {
       allowHttp: cfg.rpcUrl.startsWith("http://"),
@@ -55,7 +68,12 @@ export class IdentityClient {
     return await this.invoke(owner, op, (v) => BigInt(scValToNative(v) as string));
   }
 
-  /** Look up an agent by its numeric ID. Returns null if not found. */
+  /**
+   * Look up an agent by its numeric ID.
+   *
+   * @param id - The agent's on-chain ID
+   * @returns The agent record, or null if the ID does not exist
+   */
   async getAgent(id: bigint): Promise<Agent | null> {
     const op = this.contract.call(
       "get_agent",
@@ -72,7 +90,12 @@ export class IdentityClient {
     });
   }
 
-  /** Reverse-lookup: find the agent ID owned by `owner`. */
+  /**
+   * Reverse-lookup: find the agent ID owned by an address.
+   *
+   * @param owner - The owner's Stellar address
+   * @returns The agent ID owned by this address, or null if none exists
+   */
   async agentOf(owner: string): Promise<bigint | null> {
     const op = this.contract.call(
       "agent_of",
@@ -84,7 +107,13 @@ export class IdentityClient {
     });
   }
 
-  /** Update an agent's metadata URI (owner-only). */
+  /**
+   * Update an agent's metadata URI (owner-only).
+   *
+   * @param owner - The agent's owner keypair for authorization
+   * @param id - The agent's ID
+   * @param uri - New metadata URI (e.g., IPFS or HTTP URL)
+   */
   async updateUri(owner: Keypair, id: bigint, uri: string): Promise<void> {
     const op = this.contract.call(
       "update_uri",
@@ -95,7 +124,12 @@ export class IdentityClient {
     await this.invoke(owner, op, () => undefined);
   }
 
-  /** List all registered agents by scanning sequential IDs until a gap. */
+  /**
+   * List all registered agents by scanning sequential IDs until a gap.
+   *
+   * @param maxId - Maximum ID to scan (default 200). Stops at first gap.
+   * @returns Array of all registered agents with IDs from 1 to maxId
+   */
   async listAgents(maxId = 200n): Promise<Agent[]> {
     const agents: Agent[] = [];
     for (let id = 1n; id <= maxId; id++) {
@@ -123,7 +157,12 @@ export class IdentityClient {
     await this.invokeMultiSig(owner, newOwner, op);
   }
 
-  /** Permanently remove an agent (owner-only). */
+  /**
+   * Permanently remove an agent from the registry (owner-only).
+   *
+   * @param owner - The agent's owner keypair for authorization
+   * @param id - The agent's ID to deregister
+   */
   async deregister(owner: Keypair, id: bigint): Promise<void> {
     const op = this.contract.call(
       "deregister",
@@ -131,6 +170,15 @@ export class IdentityClient {
       nativeToScVal(id, { type: "u64" }),
     );
     await this.invoke(owner, op, () => undefined);
+  }
+
+  /**
+   * Clean up resources (no-op for stateless HTTP clients).
+   * Call this when the client is no longer needed for symmetry with other clients.
+   * The RPC server uses stateless HTTP connections, so no cleanup is required.
+   */
+  disconnect(): void {
+    // No-op: RPC Server uses stateless HTTP, no long-lived connections to close
   }
 
   /**

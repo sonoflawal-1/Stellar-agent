@@ -11,7 +11,19 @@ import type { MarcPaywallCoreOptions } from "./marcPaywallCore.js";
 export type MarcPaywallOptions = MarcPaywallCoreOptions;
 
 /**
- * Creates Express middleware implementing the x402 v2 payment protocol.
+ * Create an Express middleware that protects routes with x402 payment requirements.
+ *
+ * Returns a middleware that intercepts incoming requests and enforces payment
+ * via the x402 v2 protocol. When a request lacks valid payment proof:
+ * 1. Returns HTTP 402 with payment requirements in headers
+ * 2. Client builds and signs a Stellar payment transaction
+ * 3. Client retries with payment proof headers
+ * 4. Middleware verifies payment via facilitator and allows access
+ *
+ * Verified payments are settled with the configured facilitator service.
+ *
+ * @param opts - Configuration including payee address, price, network, and token
+ * @returns An Express middleware function for route protection
  *
  * Returns a middleware that protects the given route pattern.
  * When a request arrives without payment, it returns 402 with payment requirements.

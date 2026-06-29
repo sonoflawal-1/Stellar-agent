@@ -14,6 +14,15 @@ import {
   events,
   getFeeBps,
 } from "./lib/discovery.js";
+import {
+  generateNonce,
+  verifyNonceSignature,
+  createSession,
+  verifySession,
+  invalidateSession,
+  requireAuth,
+  requireMatchingWallet,
+} from "./lib/auth.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -134,6 +143,100 @@ app.options("*", (_req, res) => res.sendStatus(204));
 
 app.get("/health", (_req, res) => res.json({ status: "ok" }));
 app.get("/healthz", (_req, res) => res.send("ok"));
+
+// --- Authentication Endpoints ---
+
+/** GET /api/auth/challenge — Request a nonce to sign for wallet verification */
+app.get("/api/auth/challenge", (req, res) => {
+  try {
+    const publicKeySchema = z.object({
+      publicKey: stellarAddressSchema,
+    });
+    const parsed = publicKeySchema.parse(req.query);
+    const nonce = generateNonce(parsed.publicKey);
+    res.json({
+      nonce,
+      message: `Sign this nonce to authenticate: ${nonce}`,
+    });
+  } catch (err: unknown) {
+    if (respondWithValidationError(err, res)) return;
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+/**
+ * POST /api/auth/verify — Verify signed nonce and receive session token.
+ * Body: { publicKey, nonce, signedXdr }
+ */
+app.post("/api/auth/verify", (req, res) => {
+  try {
+    const authSchema = z.object({
+      publicKey: stellarAddressSchema,
+      nonce: z.string().min(1),
+      signedXdr: z.string().min(1),
+    });
+    const parsed = authSchema.parse(req.body);
+
+    // Verify the signature proves wallet ownership
+    if (!verifyNonceSignature(parsed.publicKey, parsed.nonce, parsed.signedXdr)) {
+      res.status(401).json({ error: "Invalid signature or expired nonce" });
+      return;
+    }
+
+    // Create authenticated session
+    const token = createSession(parsed.publicKey);
+    res.json({ token, publicKey: parsed.publicKey });
+  } catch (err: unknown) {
+    if (respondWithValidationError(err, res)) return;
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+/** POST /api/auth/logout — Invalidate session token */
+app.post("/api/auth/logout", (req, res) => {
+  try {
+    const token = req.headers.authorization?.replace("Bearer ", "");
+    if (token) {
+      invalidateSession(token);
+    }
+    res.json({ success: true });
+  } catch (err: unknown) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+/**
+ * Middleware: Require auth except in DEMO_MODE.
+ * In DEMO_MODE, auth is optional to allow testing without Freighter.
+ * In production, all state-changing operations require wallet authentication.
+ */
+function optionalAuthMiddleware(req: Request, res: Response, next: NextFunction) {
+  if (DEMO_MODE) {
+    // In demo mode, auth is optional - allow demo wallets to bypass
+    const wallet = req.body.wallet || req.body.publicKey;
+    if (wallet === "buyer" || wallet === "seller") {
+      // Demo wallet - no auth needed
+      (req as any).walletAddress = getKeypair(wallet).publicKey();
+      return next();
+    }
+  }
+
+  // In production or for unknown wallets, require auth
+  const token = req.headers.authorization?.replace("Bearer ", "");
+  if (!token) {
+    res.status(401).json({ error: "Authentication required. Use /api/auth/challenge and /api/auth/verify to authenticate." });
+    return;
+  }
+
+  const publicKey = verifySession(token);
+  if (!publicKey) {
+    res.status(401).json({ error: "Invalid or expired authentication token" });
+    return;
+  }
+
+  (req as any).walletAddress = publicKey;
+  next();
+}
 
 // --- Helpers ---
 
@@ -301,7 +404,7 @@ app.get("/api/agents", async (_req, res) => {
 });
 
 // POST /api/agents/register
-app.post("/api/agents/register", async (req, res) => {
+app.post("/api/agents/register", optionalAuthMiddleware, async (req, res) => {
   try {
     const parsed = registerAgentSchema.parse(req.body);
     const kp = getKeypair(parsed.wallet);
@@ -330,7 +433,7 @@ app.get("/api/jobs", async (req, res) => {
 });
 
 // POST /api/jobs/create
-app.post("/api/jobs/create", async (req, res) => {
+app.post("/api/jobs/create", optionalAuthMiddleware, async (req, res) => {
   try {
     const { wallet, provider, evaluator, budget, description } = req.body;
     const kp = getKeypair(wallet);
@@ -361,7 +464,7 @@ app.post("/api/jobs/create", async (req, res) => {
 });
 
 // POST /api/jobs/:id/submit
-app.post("/api/jobs/:id/submit", async (req, res) => {
+app.post("/api/jobs/:id/submit", optionalAuthMiddleware, async (req, res) => {
   try {
     const params = numericIdParamSchema.parse(req.params);
     const parsed = submitJobSchema.parse(req.body);
@@ -376,7 +479,7 @@ app.post("/api/jobs/:id/submit", async (req, res) => {
 });
 
 // POST /api/jobs/:id/complete
-app.post("/api/jobs/:id/complete", async (req, res) => {
+app.post("/api/jobs/:id/complete", optionalAuthMiddleware, async (req, res) => {
   try {
     const params = numericIdParamSchema.parse(req.params);
     const parsed = walletOnlySchema.parse(req.body);
@@ -391,7 +494,7 @@ app.post("/api/jobs/:id/complete", async (req, res) => {
 });
 
 // POST /api/jobs/:id/cancel
-app.post("/api/jobs/:id/cancel", async (req, res) => {
+app.post("/api/jobs/:id/cancel", optionalAuthMiddleware, async (req, res) => {
   try {
     const params = numericIdParamSchema.parse(req.params);
     const parsed = walletOnlySchema.parse(req.body);
@@ -407,7 +510,7 @@ app.post("/api/jobs/:id/cancel", async (req, res) => {
 
 // PUT /api/jobs/:id — cancel a job; builds unsigned XDR when publicKey provided,
 // or invokes directly when wallet (server keypair) is provided.
-app.put("/api/jobs/:id", async (req, res) => {
+app.put("/api/jobs/:id", optionalAuthMiddleware, async (req, res) => {
   try {
     const { action, publicKey, wallet } = req.body;
     if (action !== "cancel") {
@@ -457,7 +560,7 @@ async function buildTxXdr(publicKey: string, op: xdr.Operation): Promise<string>
 }
 
 // POST /api/build/register — build unsigned register agent tx
-app.post("/api/build/register", async (req, res) => {
+app.post("/api/build/register", optionalAuthMiddleware, async (req, res) => {
   try {
     const parsed = buildRegisterSchema.parse(req.body);
     const op = identityContract.call(
@@ -474,7 +577,7 @@ app.post("/api/build/register", async (req, res) => {
 });
 
 // POST /api/build/createJob — build unsigned create_job tx
-app.post("/api/build/createJob", async (req, res) => {
+app.post("/api/build/createJob", optionalAuthMiddleware, async (req, res) => {
   try {
     const { publicKey, provider, evaluator, budget, description } = req.body;
     const providerAddr = provider || sellerKeypair.publicKey();
@@ -505,7 +608,7 @@ app.post("/api/build/createJob", async (req, res) => {
 });
 
 // POST /api/build/submit — build unsigned submit tx
-app.post("/api/build/submit", async (req, res) => {
+app.post("/api/build/submit", optionalAuthMiddleware, async (req, res) => {
   try {
     const parsed = buildUnsignedActionSchema.parse(req.body);
     const op = commerceContract.call(
@@ -523,7 +626,7 @@ app.post("/api/build/submit", async (req, res) => {
 });
 
 // POST /api/build/complete — build unsigned complete tx
-app.post("/api/build/complete", async (req, res) => {
+app.post("/api/build/complete", optionalAuthMiddleware, async (req, res) => {
   try {
     const parsed = buildUnsignedActionSchema.parse(req.body);
     const op = commerceContract.call(
@@ -540,7 +643,7 @@ app.post("/api/build/complete", async (req, res) => {
 });
 
 // POST /api/build/cancel — build unsigned cancel tx
-app.post("/api/build/cancel", async (req, res) => {
+app.post("/api/build/cancel", optionalAuthMiddleware, async (req, res) => {
   try {
     const parsed = buildUnsignedActionSchema.parse(req.body);
     const op = commerceContract.call(
@@ -557,7 +660,7 @@ app.post("/api/build/cancel", async (req, res) => {
 });
 
 // POST /api/submit — submit a Freighter-signed transaction
-app.post("/api/submit", async (req, res) => {
+app.post("/api/submit", optionalAuthMiddleware, async (req, res) => {
   try {
     const parsed = submitXdrSchema.parse(req.body);
     const tx = TransactionBuilder.fromXDR(parsed.signedXdr, cfg.networkPassphrase);
