@@ -5,6 +5,20 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "type": "module",
+  "browser": "dist/browser.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "node": "./dist/index.js",
+      "browser": "./dist/browser.js",
+      "import": "./dist/index.js"
+    },
+    "./browser": {
+      "types": "./dist/browser.d.ts",
+      "browser": "./dist/browser.js",
+      "import": "./dist/browser.js"
+    }
+  },
   "files": [
     "dist",
     "README.md",
@@ -14,7 +28,8 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && npm run build:browser",
+    "build:browser": "esbuild src/browser.ts --bundle --platform=browser --target=es2022 --format=esm --outfile=dist/browser.js --sourcemap && tsc --project tsconfig.browser.json --declaration --emitDeclarationOnly --outDir dist",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run clean && npm run build"
   },
@@ -30,6 +45,7 @@
   "devDependencies": {
     "@types/express": "^4.17.21",
     "@types/node": "^22.0.0",
+    "esbuild": "^0.23.1",
     "typescript": "^5.6.0"
   }
 }

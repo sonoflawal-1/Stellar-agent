@@ -62,9 +62,11 @@ export function marcFetch(opts: MarcFetchOptions) {
     : fetch;
 
   if (onPayment) {
-    const originalBuildAndPay = stellarScheme.pay?.bind(stellarScheme);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const scheme = stellarScheme as any;
+    const originalBuildAndPay = scheme.pay?.bind(stellarScheme);
     if (originalBuildAndPay) {
-      stellarScheme.pay = async (...args: Parameters<typeof originalBuildAndPay>) => {
+      scheme.pay = async (...args: unknown[]) => {
         onPayment("signing");
         try {
           const result = await originalBuildAndPay(...args);

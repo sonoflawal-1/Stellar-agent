@@ -140,8 +140,9 @@ export class IdentityClient {
    */
   async getBalance(address: string, token: string): Promise<bigint> {
     if (token === "native") {
-      const account = await this.server.getAccount(address);
-      const xlmBalance = account.balances.find((b) => b.asset_type === "native");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const account = (await this.server.getAccount(address)) as any;
+      const xlmBalance = account.balances.find((b: any) => b.asset_type === "native");
       return BigInt(Math.round(Number(xlmBalance?.balance ?? "0") * 1e7));
     }
     const tokenContract = new Contract(token);
