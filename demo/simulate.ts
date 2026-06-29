@@ -108,6 +108,7 @@ async function startSeller(kp: Keypair, index: number): Promise<{ agent: Agent; 
     payTo: kp.publicKey(),
     price: "$0.01",
     network: "stellar:testnet",
+    token: cfg.usdcToken,
     description: `Work from seller-${index}`,
     facilitatorUrl: process.env.X402_FACILITATOR_URL,
     facilitatorApiKey: process.env.X402_FACILITATOR_API_KEY,

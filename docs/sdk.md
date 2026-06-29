@@ -42,6 +42,9 @@ const cfg: MarcConfig = {
 ### `register(keypair, uri)`
 Register a new agent on-chain. Returns the agent's sequential ID.
 
+> **Note:** Agent IDs are append-only and are never reused, even if the agent
+> is later deregistered.
+
 ```typescript
 const identity = new IdentityClient(cfg);
 const agentId = await identity.register(keypair, "ipfs://my-agent-metadata.json");
