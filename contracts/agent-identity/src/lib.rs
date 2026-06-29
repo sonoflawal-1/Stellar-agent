@@ -1,5 +1,12 @@
 #![no_std]
-use soroban_sdk::{contract, contractevent, contractimpl, contracttype, Address, Env, String};
+use soroban_sdk::{contract, contractevent, contractimpl, contracttype, contracterror, Address, Env, String};
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Error {
+    AgentNotFound = 1,
+    AlreadyRegistered = 2,
+}
 
 /// A registered agent in the MARC agent-identity registry.
 #[derive(Clone)]
@@ -59,6 +66,13 @@ pub struct AgentIdentityContract;
 impl AgentIdentityContract {
     /// Register a new agent owned by `owner`. Caller must sign for `owner`.
     /// Returns the newly-assigned sequential agent id (starts at 1).
+    ///
+    /// # ID Semantics
+    ///
+    /// Agent IDs are **append-only**. Once assigned, an ID is never reused,
+    /// even if the corresponding agent is later deregistered. `next_id`
+    /// therefore represents the total number of registrations ever performed,
+    /// not the current number of active agents.
     pub fn register(env: Env, owner: Address, uri: String) -> u64 {
         owner.require_auth();
 
@@ -67,7 +81,7 @@ impl AgentIdentityContract {
             .persistent()
             .has(&DataKey::OwnerToId(owner.clone()))
         {
-            panic!("owner already registered");
+            panic_with_error!(&env, Error::AlreadyRegistered);
         }
 
         let next: u64 = env
@@ -144,8 +158,11 @@ impl AgentIdentityContract {
     }
 
     /// Fetch an agent by id.
-    pub fn get_agent(env: Env, id: u64) -> Option<Agent> {
-        env.storage().persistent().get(&DataKey::Agent(id))
+    pub fn get_agent(env: Env, id: u64) -> Agent {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Agent(id))
+            .unwrap_or_else(|| panic_with_error!(&env, Error::AgentNotFound))
     }
 
     /// Look up the agent id owned by `owner`, if any.

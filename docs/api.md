@@ -422,7 +422,7 @@ Contract address (testnet): `CAMPXYFZJTIPEVOPOAZPRG5OHXKNBDPGTPRCOIO4LVPGEM4TONP
 
 | Method | Auth | Params | Returns | Description |
 |---|---|---|---|---|
-| `register` | `owner` | `owner: Address, uri: String` | `u64` (id) | Register new agent, returns sequential ID |
+| `register` | `owner` | `owner: Address, uri: String` | `u64` (id) | Register new agent, returns sequential ID (never reused) |
 | `get_agent` | none | `id: u64` | `Option<Agent>` | Fetch agent by ID |
 | `agent_of` | none | `owner: Address` | `Option<u64>` | Reverse-lookup agent ID by owner |
 | `update_uri` | `caller` | `caller: Address, id: u64, new_uri: String` | void | Update agent URI (owner-only) |
