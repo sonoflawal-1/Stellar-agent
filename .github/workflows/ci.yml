@@ -11,7 +11,7 @@ jobs:
     name: Rust Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -32,7 +32,7 @@ jobs:
     name: Rust Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -54,7 +54,7 @@ jobs:
     name: Rust Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -75,7 +75,7 @@ jobs:
     name: Rust WASM Build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -96,7 +96,7 @@ jobs:
     name: Rust Audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: cargo audit
         uses: rustsec/audit-check@v2
         with:
@@ -106,7 +106,7 @@ jobs:
     name: Rust Deny (supply chain)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-deny
@@ -133,7 +133,7 @@ jobs:
       run:
         working-directory: ${{ matrix.workspace }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -155,7 +155,7 @@ jobs:
       run:
         working-directory: ${{ matrix.workspace }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
