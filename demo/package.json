@@ -19,7 +19,7 @@
     "@x402/stellar": "^2.9.0",
     "blessed": "^0.1.81",
     "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
+    "dotenv": "^17.4.2",
     "express": "^4.19.0",
     "marc-stellar-sdk": "file:../sdk"
   },
