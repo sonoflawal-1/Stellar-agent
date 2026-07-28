@@ -50,6 +50,10 @@ export class CommerceClient extends BaseClient {
     if (budget <= 0n) {
       throw new Error("budget must be greater than 0");
     }
+    const MAX_I128 = 170141183460469231731687303715884105727n;
+    if (budget > MAX_I128) {
+      throw new Error("budget exceeds i128 max");
+    }
 
     const op = this.contract.call(
       "create_job",
@@ -110,15 +114,17 @@ export class CommerceClient extends BaseClient {
     await this.invoke(client, op, () => undefined, "commerce");
   }
 
-  /** Read a job by ID. Returns null if not found. */
+  /** Read a job by ID. Returns null if not found, throws on RPC/network errors. */
   async getJob(jobId: bigint): Promise<Job | null> {
     const op = this.contract.call(
       "get_job",
       nativeToScVal(jobId, { type: "u64" }),
     );
+    // simulate() throws on RPC errors; a genuine not-found returns a void/None retval
     return await this.simulate(op, (v) => {
       const native = scValToNative(v);
-      if (!native) return null;
+      // Contract returns Option<Job>: None → void ScVal (switch === scvVoid)
+      if (v.switch() === xdr.ScValType.scvVoid() || !native) return null;
       return {
         id: BigInt(native.id),
         client: native.client,

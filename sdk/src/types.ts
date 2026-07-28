@@ -214,6 +214,11 @@ function getEnvRpcUrl(defaultRpcUrl: string) {
  *
  * Defaults to the latest deployed testnet addresses when available, while still
  * allowing environment overrides for custom RPC endpoints or deployment paths.
+ *
+ * NOTE: `usdcToken` defaults to Circle's testnet USDC SAC. The Bear Protocol
+ * demo and dashboard use a custom MUSD token instead. If you are running the
+ * demo locally, use the `DEMO` preset or override `usdcToken` with the MUSD
+ * contract address from your deployment.
  */
 export const TESTNET: PresetConfig = {
   network: "stellar-testnet",
