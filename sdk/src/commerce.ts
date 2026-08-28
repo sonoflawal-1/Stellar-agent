@@ -48,7 +48,7 @@ export class CommerceClient extends BaseClient {
    * Returns the new job ID.
    */
   async createJob(
-    client: Keypair,
+    client: Signer,
     provider: string,
     evaluator: string,
     token: string,
@@ -60,7 +60,7 @@ export class CommerceClient extends BaseClient {
 
     const op = this.contract.call(
       "create_job",
-      new Address(client.publicKey()).toScVal(),
+      new Address(signerPublicKey(client)).toScVal(),
       new Address(provider).toScVal(),
       new Address(evaluator).toScVal(),
       new Address(token).toScVal(),
@@ -86,7 +86,7 @@ export class CommerceClient extends BaseClient {
   async submit(provider: Keypair, jobId: bigint, deliverable: string): Promise<void> {
     const op = this.contract.call(
       "submit",
-      new Address(provider.publicKey()).toScVal(),
+      new Address(signerPublicKey(provider)).toScVal(),
       nativeToScVal(jobId, { type: "u64" }),
       nativeToScVal(deliverable, { type: "string" }),
     );
@@ -94,20 +94,20 @@ export class CommerceClient extends BaseClient {
   }
 
   /** Evaluator marks a submitted job as completed (triggers 99/1 payout). */
-  async complete(evaluator: Keypair, jobId: bigint): Promise<void> {
+  async complete(evaluator: Signer, jobId: bigint): Promise<void> {
     const op = this.contract.call(
       "complete",
-      new Address(evaluator.publicKey()).toScVal(),
+      new Address(signerPublicKey(evaluator)).toScVal(),
       nativeToScVal(jobId, { type: "u64" }),
     );
     await this.invoke(evaluator, op, () => undefined, "commerce");
   }
 
   /** Client cancels a funded job (full refund). */
-  async cancel(client: Keypair, jobId: bigint): Promise<void> {
+  async cancel(client: Signer, jobId: bigint): Promise<void> {
     const op = this.contract.call(
       "cancel",
-      new Address(client.publicKey()).toScVal(),
+      new Address(signerPublicKey(client)).toScVal(),
       nativeToScVal(jobId, { type: "u64" }),
     );
     await this.invoke(client, op, () => undefined, "commerce");
@@ -151,20 +151,20 @@ export class CommerceClient extends BaseClient {
   }
 
   /** Admin: update the treasury address. */
-  async setTreasury(admin: Keypair, newTreasury: string): Promise<void> {
+  async setTreasury(admin: Signer, newTreasury: string): Promise<void> {
     const op = this.contract.call(
       "set_treasury",
-      new Address(admin.publicKey()).toScVal(),
+      new Address(signerPublicKey(admin)).toScVal(),
       new Address(newTreasury).toScVal(),
     );
     await this.invoke(admin, op, () => undefined, "commerce");
   }
 
   /** Admin: update the fee (capped at 500 bps / 5%). */
-  async setFeeBps(admin: Keypair, newBps: number): Promise<void> {
+  async setFeeBps(admin: Signer, newBps: number): Promise<void> {
     const op = this.contract.call(
       "set_fee_bps",
-      new Address(admin.publicKey()).toScVal(),
+      new Address(signerPublicKey(admin)).toScVal(),
       nativeToScVal(newBps, { type: "u32" }),
     );
     await this.invoke(admin, op, () => undefined, "commerce");

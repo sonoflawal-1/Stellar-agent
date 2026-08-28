@@ -48,7 +48,7 @@ export class IdentityClient extends BaseClient {
   async register(owner: Keypair, uri: string): Promise<bigint> {
     const op = this.contract.call(
       "register",
-      new Address(owner.publicKey()).toScVal(),
+      new Address(signerPublicKey(owner)).toScVal(),
       nativeToScVal(uri, { type: "string" }),
     );
     return await this.invoke(owner, op, (v) => BigInt(scValToNative(v) as string), "identity");
@@ -78,10 +78,10 @@ export class IdentityClient extends BaseClient {
   }
 
   /** Update an agent's metadata URI (owner-only). */
-  async updateUri(owner: Keypair, id: bigint, uri: string): Promise<void> {
+  async updateUri(owner: Signer, id: bigint, uri: string): Promise<void> {
     const op = this.contract.call(
       "update_uri",
-      new Address(owner.publicKey()).toScVal(),
+      new Address(signerPublicKey(owner)).toScVal(),
       nativeToScVal(id, { type: "u64" }),
       nativeToScVal(uri, { type: "string" }),
     );
@@ -122,10 +122,10 @@ export class IdentityClient extends BaseClient {
   }
 
   /** Permanently remove an agent (owner-only). */
-  async deregister(owner: Keypair, id: bigint): Promise<void> {
+  async deregister(owner: Signer, id: bigint): Promise<void> {
     const op = this.contract.call(
       "deregister",
-      new Address(owner.publicKey()).toScVal(),
+      new Address(signerPublicKey(owner)).toScVal(),
       nativeToScVal(id, { type: "u64" }),
     );
     await this.invoke(owner, op, () => undefined, "identity");

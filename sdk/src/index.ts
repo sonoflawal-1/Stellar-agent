@@ -2,6 +2,7 @@ export * from "./types.js";
 export { formatAmount } from "./format.js";
 export { IdentityClient } from "./identity.js";
 export { CommerceClient } from "./commerce.js";
+export * from "./signer.js";
 export { marcPaywall, type MarcPaywallOptions } from "./marcPaywall.js";
 export { marcPaywallFastify, type MarcPaywallFastifyOptions } from "./marcPaywallFastify.js";
 export {
