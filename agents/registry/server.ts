@@ -1,16 +1,3 @@
-/**
- * Agent Registry — localhost only
- * Serves agent.json manifests so the buyer can discover available sellers.
- * Tracks agent liveness via heartbeat — dead agents auto-deregister.
- *
- * GET    /agents              → list alive agents (heartbeating)
- * GET    /agents?include_inactive=true → list all agents including deregistered
- * GET    /agents?tags=webdev,copywriting → filter alive agents by capability tags
- * GET    /agents/:id     → get a specific agent manifest
- * DELETE /agents/:id     → manually deregister an agent
- * POST   /heartbeat      → agent pings with { agentId }
- * GET    /health         → registry + agent count
- */
 import express from "express";
 import fs from "node:fs";
 import path from "node:path";
@@ -66,17 +53,6 @@ function validateManifest(m: unknown): string | null {
   return null;
 }
 
-/**
- * Extract and normalise capability tags from a manifest.
- *
- * Tags are sourced from:
- *   1. `manifest.tags`  — explicit capability tags (e.g. ["webdev", "html"])
- *   2. `manifest.tasks` — task descriptions used as implicit tags when no
- *                         explicit tags are provided
- *
- * All values are lower-cased and de-duplicated so tag queries are
- * case-insensitive.
- */
 function extractTags(manifest: Record<string, unknown>): string[] {
   if (Array.isArray(manifest.tags) && manifest.tags.length > 0) {
     return [
@@ -95,9 +71,6 @@ function extractTags(manifest: Record<string, unknown>): string[] {
 const app = express();
 app.use(express.json());
 
-// Parses a manifest file, tolerating malformed JSON. Schema validation (validateManifest)
-// is applied separately by callers that need it, so /heartbeat can still tell
-// "not found" (404) apart from "found but invalid" (422).
 function parseManifestFile(manifestPath: string): Record<string, unknown> | null {
   try {
     return JSON.parse(fs.readFileSync(manifestPath, "utf8"));

@@ -44,7 +44,12 @@
     if (btnWrapper) StellarWalletsKit.createButton(btnWrapper);
     // Listen for wallet state changes
     StellarWalletsKit.on(KitEventType.STATE_UPDATED, function (event) {
-      var addr = event.payload && (event.payload.address || (event.payload.accounts && event.payload.accounts[0] && event.payload.accounts[0].address));
+      var addr =
+        event.payload &&
+        (event.payload.address ||
+          (event.payload.accounts &&
+            event.payload.accounts[0] &&
+            event.payload.accounts[0].address));
       if (!addr || addr.length <= 10) {
         // Fallback: fetch current address from SWK
         StellarWalletsKit.getAddress()
@@ -1300,7 +1305,9 @@
       await new Promise((r) => setTimeout(r, 1500));
       await loadAgents();
       if (agentId !== null && state.agents) {
-        const found = state.agents.find(function (a) { return String(a.id) === String(agentId); });
+        const found = state.agents.find(function (a) {
+          return String(a.id) === String(agentId);
+        });
         if (!found && wallet.connected) {
           state.agents = state.agents.concat([
             {
