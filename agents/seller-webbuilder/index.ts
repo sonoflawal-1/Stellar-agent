@@ -5,7 +5,9 @@ import { fileURLToPath } from "node:url";
 import rateLimit from "express-rate-limit";
 import Groq from "groq-sdk";
 import { CommerceClient } from "marc-stellar-sdk";
-import { createSellerAgent } from "../shared.js";
+import { createSellerAgent, makeSellerResponse, validateEnv } from "../shared.js";
+
+validateEnv(["PORT", "SECRET_KEY", "REGISTRY_URL", "GROQ_API_KEY"]);
 
 const AGENT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.SELLER_PORT ?? 4501);
@@ -60,6 +62,7 @@ const limiter = rateLimit({
 
 app.post("/job", limiter, async (req, res) => {
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const startedAt = Date.now();
   const { jobId, task, buildSpec } = req.body as {
     jobId?: string;
     task?: string;
@@ -76,18 +79,22 @@ app.post("/job", limiter, async (req, res) => {
 
   if (!jobId || isNaN(Number(jobId))) {
     console.warn(`[${AGENT_ID}] [req:${requestId}] Rejected: invalid jobId`);
-    res.status(400).json({ error: "invalid jobId" });
+    res
+      .status(400)
+      .json({ success: false, error: "invalid jobId", execution_time_ms: Date.now() - startedAt });
     return;
   }
   if (!task) {
     console.warn(`[${AGENT_ID}] [req:${requestId}] Rejected: missing task`);
-    res.status(400).json({ error: "missing task" });
+    res
+      .status(400)
+      .json({ success: false, error: "missing task", execution_time_ms: Date.now() - startedAt });
     return;
   }
   console.log(
     `[${AGENT_ID}] Job #${jobId}: ${task}${buildSpec ? ` (buildSpec: ${JSON.stringify(buildSpec)})` : ""}`,
   );
-  const response = { status: "accepted", jobId };
+  const response = makeSellerResponse({ status: "accepted", jobId }, startedAt);
   console.log(`[${AGENT_ID}] [req:${requestId}] Response: ${JSON.stringify(response)}`);
   res.json(response);
 
@@ -128,4 +135,11 @@ app.post("/job", limiter, async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`[${AGENT_ID}] Listening on :${PORT}`));
+const server = app.listen(PORT, () => console.log(`[${AGENT_ID}] Listening on :${PORT}`));
+const shutdown = () => {
+  console.log(`[${AGENT_ID}] Shutting down...`);
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(1), 5000);
+};
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);

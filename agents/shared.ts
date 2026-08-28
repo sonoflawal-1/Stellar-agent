@@ -4,6 +4,42 @@ import express from "express";
 import { Keypair } from "@stellar/stellar-sdk";
 import { IdentityClient, TESTNET, type MarcConfig } from "marc-stellar-sdk";
 
+export interface StandardSellerResponse<T = unknown> {
+  success: boolean;
+  data: T;
+  execution_time_ms: number;
+}
+
+export function validateEnv(requiredKeys: string[]): void {
+  const aliases: Record<string, string[]> = {
+    PORT: ["PORT", "SELLER_PORT"],
+    SECRET_KEY: ["SECRET_KEY", "SELLER_SECRET"],
+    REGISTRY_URL: ["REGISTRY_URL"],
+    GROQ_API_KEY: ["GROQ_API_KEY"],
+  };
+
+  const missing = requiredKeys
+    .flatMap((key) => aliases[key] ?? [key])
+    .filter((envKey) => {
+      const value = process.env[envKey];
+      return typeof value !== "string" || value.trim() === "";
+    });
+
+  const uniqueMissing = [...new Set(missing)];
+  if (uniqueMissing.length > 0) {
+    console.error(`[startup] Missing required environment variables: ${uniqueMissing.join(", ")}`);
+    process.exit(1);
+  }
+}
+
+export function makeSellerResponse<T>(data: T, startTime = Date.now()): StandardSellerResponse<T> {
+  return {
+    success: true,
+    data,
+    execution_time_ms: Date.now() - startTime,
+  };
+}
+
 export async function createSellerAgent(options: {
   id: string;
   port: number;

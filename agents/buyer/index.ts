@@ -20,6 +20,32 @@ import {
 import { retryWithBackoff } from "../shared.js";
 import { watchFile, unwatchFile, readFileSync, existsSync } from "node:fs";
 
+const DEFAULT_JOB_BUDGET = 10_000_000n;
+
+function parseCliArgs(args: string[]) {
+  const values = {
+    budget: DEFAULT_JOB_BUDGET,
+    provider: undefined as string | undefined,
+    description: undefined as string | undefined,
+  };
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--budget") {
+      values.budget = BigInt(args[i + 1] ?? String(DEFAULT_JOB_BUDGET));
+      i += 1;
+    } else if (arg === "--provider") {
+      values.provider = args[i + 1];
+      i += 1;
+    } else if (arg === "--description") {
+      values.description = args[i + 1];
+      i += 1;
+    }
+  }
+  return values;
+}
+
+const cliArgs = parseCliArgs(process.argv.slice(2));
+
 const cfg: MarcConfig = {
   rpcUrl: process.env.STELLAR_RPC_URL ?? TESTNET.rpcUrl,
   networkPassphrase: process.env.STELLAR_NETWORK_PASSPHRASE ?? TESTNET.networkPassphrase,
@@ -297,8 +323,12 @@ function validateDeliverable(job: Job): { valid: boolean; reason?: string } {
 
 // ── Submit task ───────────────────────────────────────────────────────────────
 
-async function submitTask(task: string) {
-  const picked = agents[selectedIndex];
+async function submitTask(task: string, overrides?: { budget?: bigint; provider?: string }) {
+  const targetProvider = overrides?.provider ?? agents[selectedIndex]?.id;
+  const picked =
+    agents.find((agent) => agent.id === targetProvider || agent.name === targetProvider) ??
+    agents[selectedIndex];
+  const budget = overrides?.budget ?? DEFAULT_JOB_BUDGET;
   taskBox.hide();
   logBox.show();
   sellerLogBox.show();
@@ -329,10 +359,12 @@ async function submitTask(task: string) {
       picked.wallet,
       buyer.publicKey(),
       cfg.usdcToken,
-      BigInt(10_000_000),
+      budget,
       task,
     );
-    log(`{green-fg}Job #${jobId} created — 1 USDC locked in escrow{/green-fg}`);
+    log(
+      `{green-fg}Job #${jobId} created — ${Number(budget / 10_000_000n)} USDC locked in escrow{/green-fg}`,
+    );
 
     // Notify seller server with retry on 5xx
     log(`Sending job to ${picked.name} at ${picked.url}...`);
@@ -402,3 +434,10 @@ agentsBox.focus();
 screen.render();
 refreshBalances();
 await loadAgents();
+if (cliArgs.description) {
+  const provider = cliArgs.provider ? cliArgs.provider : agents[0]?.id;
+  if (provider)
+    selectedIndex = agents.findIndex((agent) => agent.id === provider || agent.name === provider);
+  if (selectedIndex < 0) selectedIndex = 0;
+  await submitTask(cliArgs.description, { budget: cliArgs.budget, provider });
+}
