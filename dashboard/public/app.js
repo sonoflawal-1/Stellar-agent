@@ -334,14 +334,72 @@
     return (Number(whole) + frac).toFixed(2);
   }
 
+  // ── Status tooltip descriptions (#466) ──
+  const STATUS_TOOLTIPS = {
+    Open:      "Job created but not yet funded — awaiting escrow deposit.",
+    Funded:    "Escrow deposit received; waiting for the provider to submit a deliverable.",
+    Submitted: "Provider has submitted a deliverable URI; waiting for evaluator approval.",
+    Completed: "Evaluator approved the deliverable and funds have been released to the provider.",
+    Rejected:  "Evaluator rejected the deliverable (reserved for future dispute resolution).",
+    Cancelled: "Job was cancelled by the client or timed out; budget has been refunded.",
+    Disputed:  "Client opened a dispute on the submitted deliverable; evaluator must resolve.",
+  };
+
   function statusBadge(status) {
     const safe = escapeHtml(status);
+    const tip = escapeHtml(STATUS_TOOLTIPS[status] || status);
     return (
-      '<span class="status-badge status-' + safe + '"><span class="dot"></span>' + safe + "</span>"
+      '<span class="status-badge status-' + safe + '" title="' + tip + '"><span class="dot"></span>' + safe + "</span>"
     );
   }
 
-  // ── Toast ──
+  // ── Identicon generator (#468) ──
+  // Generates a deterministic 5×5 symmetric SVG identicon from a Stellar public key.
+  function agentIdenticon(pubkey) {
+    if (!pubkey || pubkey.length < 10) {
+      return '<div class="agent-avatar">?</div>';
+    }
+    // Derive a numeric seed from the key characters
+    var seed = 0;
+    for (var i = 0; i < pubkey.length; i++) {
+      seed = (seed * 31 + pubkey.charCodeAt(i)) >>> 0;
+    }
+    // Simple seeded PRNG (xorshift32)
+    function rand() {
+      seed ^= seed << 13;
+      seed ^= seed >> 17;
+      seed ^= seed << 5;
+      seed = seed >>> 0;
+      return seed;
+    }
+    // Pick a hue from the key
+    var hue = rand() % 360;
+    var color = "hsl(" + hue + ",60%,65%)";
+    var bg = "hsl(" + hue + ",30%,15%)";
+    // Build 5×5 symmetric grid (only fill left 3 columns, mirror to right)
+    var cells = [];
+    for (var r = 0; r < 5; r++) {
+      for (var c = 0; c < 3; c++) {
+        cells.push(rand() % 2 === 1);
+      }
+    }
+    var size = 40;
+    var cell = size / 5;
+    var rects = "";
+    for (var row = 0; row < 5; row++) {
+      for (var col = 0; col < 5; col++) {
+        var srcCol = col < 3 ? col : 4 - col;
+        if (cells[row * 3 + srcCol]) {
+          rects += '<rect x="' + (col * cell) + '" y="' + (row * cell) + '" width="' + cell + '" height="' + cell + '" fill="' + color + '"/>';
+        }
+      }
+    }
+    var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + size + '" height="' + size + '" viewBox="0 0 ' + size + ' ' + size + '" style="border-radius:8px;display:block">'
+      + '<rect width="' + size + '" height="' + size + '" fill="' + bg + '"/>'
+      + rects
+      + '</svg>';
+    return '<div class="agent-avatar agent-avatar-svg" title="' + escapeHtml(pubkey) + '">' + svg + '</div>';
+  }
   function toast(msg, type = "success", duration = null) {
     const el = document.createElement("div");
     el.className = "toast " + type;
@@ -855,13 +913,10 @@
     } else {
       cards = '<div class="agent-grid">';
       for (const a of agents) {
-        var initial = a.owner ? a.owner.charAt(0) : "?";
         cards +=
           '<div class="agent-card">' +
           '<div class="agent-card-top">' +
-          '<div class="agent-avatar">' +
-          escapeHtml(initial) +
-          "</div>" +
+          agentIdenticon(a.owner) +
           '<div class="agent-id">Agent <span>#' +
           escapeHtml(String(a.id)) +
           "</span></div>" +
@@ -1371,10 +1426,12 @@
     });
   }
 
-  // ── Auto-refresh polling ──
-  // Re-fetch data every 4s and re-render current view for live updates
+  // ── Auto-refresh polling (#467) ──
+  // Interval is user-configurable via the dropdown in the header.
+  // 0 means off; otherwise the value is the interval in milliseconds.
   var pollTimer = null;
   var polling = false;
+  var pollIntervalMs = 10000; // default 10 s
 
   async function poll() {
     if (polling) return;
@@ -1425,7 +1482,8 @@
 
   function startPolling() {
     stopPolling();
-    pollTimer = setInterval(poll, 4000);
+    if (pollIntervalMs === 0) return; // Off
+    pollTimer = setInterval(poll, pollIntervalMs);
   }
   function stopPolling() {
     if (pollTimer) {
@@ -1433,6 +1491,28 @@
       pollTimer = null;
     }
   }
+
+  // Expose interval change handler for the dropdown
+  window.__setRefreshInterval = function (ms) {
+    pollIntervalMs = Number(ms);
+    startPolling();
+    if (pollIntervalMs === 0) {
+      toast("Auto-refresh disabled", "success");
+    } else {
+      toast("Auto-refresh set to " + pollIntervalMs / 1000 + "s", "success");
+    }
+    // Persist selection in localStorage so it survives page reloads
+    try { localStorage.setItem("bearRefreshInterval", String(pollIntervalMs)); } catch (e) {}
+    // Sync the dropdown in case it was changed programmatically
+    var sel = document.getElementById("refresh-interval-select");
+    if (sel) sel.value = String(pollIntervalMs);
+  };
+
+  // Restore saved preference
+  try {
+    var savedInterval = localStorage.getItem("bearRefreshInterval");
+    if (savedInterval !== null) pollIntervalMs = Number(savedInterval);
+  } catch (e) {}
 
   // Start polling on load, restart on visibility change
   startPolling();
@@ -1472,4 +1552,10 @@
 
   // Initial render
   navigate();
+
+  // Sync the refresh-interval dropdown to the restored/default interval
+  (function syncRefreshSelect() {
+    var sel = document.getElementById("refresh-interval-select");
+    if (sel) sel.value = String(pollIntervalMs);
+  })();
 })();

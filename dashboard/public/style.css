@@ -240,6 +240,45 @@ button {
   padding: 16px 20px;
   border-top: 1px solid var(--border);
 }
+/* Auto-refresh interval row (#467) */
+.refresh-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.refresh-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.refresh-select {
+  appearance: none;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-family: var(--font);
+  padding: 4px 24px 4px 8px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23868E96' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 6px center;
+}
+.refresh-select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.refresh-select option {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
 .testnet-badge {
   display: flex;
   align-items: center;
@@ -1038,6 +1077,13 @@ button {
   font-weight: 800;
   color: var(--accent);
   flex-shrink: 0;
+}
+/* Identicon variant: no text-based background, just wraps the SVG (#468) */
+.agent-avatar-svg {
+  background: none;
+  border: none;
+  padding: 0;
+  overflow: hidden;
 }
 .agent-id {
   font-size: 15px;
