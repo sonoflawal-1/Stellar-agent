@@ -4,6 +4,20 @@
 // backend API (Stellar addresses, contract state). No untrusted user input.
 
 (() => {
+  // ── Theme (dark/light) ── #461
+  (function initTheme() {
+    var saved = localStorage.getItem("bear-theme") || "dark";
+    document.documentElement.setAttribute("data-theme", saved);
+    var btn = document.getElementById("theme-toggle-btn");
+    if (btn) {
+      btn.addEventListener("click", function () {
+        var current = document.documentElement.getAttribute("data-theme") || "dark";
+        var next = current === "dark" ? "light" : "dark";
+        document.documentElement.setAttribute("data-theme", next);
+        localStorage.setItem("bear-theme", next);
+      });
+    }
+  })();
   // ── State Store ──
   const state = {
     stats: null,
@@ -257,13 +271,25 @@
   async function api(path, opts = {}) {
     const headers = opts.body ? { "Content-Type": "application/json" } : {};
     if (window.__sessionToken) headers.Authorization = "Bearer " + window.__sessionToken;
-    const res = await fetch(`/api${path}`, {
-      method: opts.method || "GET",
-      headers: headers,
-      body: opts.body ? JSON.stringify(opts.body) : undefined,
-    });
+    let res;
+    try {
+      res = await fetch(`/api${path}`, {
+        method: opts.method || "GET",
+        headers: headers,
+        body: opts.body ? JSON.stringify(opts.body) : undefined,
+      });
+    } catch (networkErr) {
+      // Network-level failure (offline, DNS, etc.)
+      var networkMsg = "Network error — could not reach the server";
+      if (!opts._silent) toast(networkMsg, "error");
+      throw new Error(networkMsg);
+    }
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Request failed");
+    if (!res.ok) {
+      var errMsg = data.error || "Request failed (" + res.status + ")";
+      if (!opts._silent) toast(errMsg, "error");
+      throw new Error(errMsg);
+    }
     return data;
   }
 
@@ -334,6 +360,41 @@
     return (Number(whole) + frac).toFixed(2);
   }
 
+  // ── Relative timestamp formatter ── #463
+  function formatRelativeTime(timestampSecs) {
+    if (!timestampSecs) return "Unknown";
+    var nowSecs = Math.floor(Date.now() / 1000);
+    var diff = nowSecs - Number(timestampSecs);
+    if (diff < 0) diff = 0;
+    if (diff < 60) return "Just now";
+    if (diff < 3600) {
+      var mins = Math.floor(diff / 60);
+      return mins + " minute" + (mins === 1 ? "" : "s") + " ago";
+    }
+    if (diff < 86400) {
+      var hrs = Math.floor(diff / 3600);
+      return hrs + " hour" + (hrs === 1 ? "" : "s") + " ago";
+    }
+    var days = Math.floor(diff / 86400);
+    return days + " day" + (days === 1 ? "" : "s") + " ago";
+  }
+
+  // ── Copy button HTML helper ── #462
+  function copyBtn(address) {
+    if (!address) return "";
+    var safe = escapeHtml(address);
+    return (
+      '<button class="copy-addr-btn" ' +
+      'onclick="event.stopPropagation();window.__copy(\'' + safe + '\')" ' +
+      'title="Copy full address: ' + safe + '" ' +
+      'aria-label="Copy address">' +
+      '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+      '<rect x="9" y="9" width="13" height="13" rx="2"/>' +
+      '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>' +
+      "</svg></button>"
+    );
+  }
+
   function statusBadge(status) {
     const safe = escapeHtml(status);
     return (
@@ -341,19 +402,39 @@
     );
   }
 
-  // ── Toast ──
-  function toast(msg, type = "success", duration = null) {
-    const el = document.createElement("div");
+  // ── Toast ── #465
+  function toast(msg, type, duration) {
+    type = type || "success";
+    var container = document.getElementById("toasts");
+    if (!container) return;
+    var el = document.createElement("div");
     el.className = "toast " + type;
-    el.textContent = msg;
-    el.title = "Click to dismiss";
-    el.addEventListener("click", function () {
-      el.remove();
-    });
-    document.getElementById("toasts").appendChild(el);
-    const autoDismissDuration = duration || (type === "error" ? 30000 : 3000);
-    setTimeout(() => el.remove(), autoDismissDuration);
+    el.setAttribute("role", "alert");
+    el.setAttribute("aria-live", type === "error" ? "assertive" : "polite");
+
+    var msgSpan = document.createElement("span");
+    msgSpan.textContent = msg;
+    el.appendChild(msgSpan);
+
+    var closeBtn = document.createElement("span");
+    closeBtn.className = "toast-close";
+    closeBtn.textContent = "×";
+    closeBtn.setAttribute("aria-label", "Dismiss");
+    el.appendChild(closeBtn);
+
+    function dismiss() {
+      el.style.animation = "toast-out 0.25s ease-in forwards";
+      setTimeout(function () { el.remove(); }, 260);
+    }
+    closeBtn.addEventListener("click", dismiss);
+
+    container.appendChild(el);
+    var autoDismiss = duration || 4000;
+    setTimeout(dismiss, autoDismiss);
   }
+
+  // Public alias required by the issue spec
+  window.showToast = toast;
 
   // ── Transaction Overlay ──
   function showTxOverlay(text) {
@@ -796,26 +877,32 @@
           "</div>" +
           '<div class="job-detail">' +
           '<div class="detail-grid">' +
-          '<div class="detail-item"><div class="detail-label">Client</div><div class="detail-value" style="cursor:pointer" onclick="window.__copy(\'' +
-          j.client +
-          "')\">" +
-          truncAddr(j.client) +
+          '<div class="detail-item"><div class="detail-label">Client</div>' +
+          '<div class="detail-value addr-with-copy">' +
+          '<span style="cursor:pointer" onclick="window.__copy(\'' + j.client + '\')">' + truncAddr(j.client) + '</span>' +
+          copyBtn(j.client) +
           "</div></div>" +
-          '<div class="detail-item"><div class="detail-label">Provider</div><div class="detail-value" style="cursor:pointer" onclick="window.__copy(\'' +
-          j.provider +
-          "')\">" +
-          truncAddr(j.provider) +
+          '<div class="detail-item"><div class="detail-label">Provider</div>' +
+          '<div class="detail-value addr-with-copy">' +
+          '<span style="cursor:pointer" onclick="window.__copy(\'' + j.provider + '\')">' + truncAddr(j.provider) + '</span>' +
+          copyBtn(j.provider) +
           "</div></div>" +
-          '<div class="detail-item"><div class="detail-label">Evaluator</div><div class="detail-value" style="cursor:pointer" onclick="window.__copy(\'' +
-          j.evaluator +
-          "')\">" +
-          truncAddr(j.evaluator) +
+          '<div class="detail-item"><div class="detail-label">Evaluator</div>' +
+          '<div class="detail-value addr-with-copy">' +
+          '<span style="cursor:pointer" onclick="window.__copy(\'' + j.evaluator + '\')">' + truncAddr(j.evaluator) + '</span>' +
+          copyBtn(j.evaluator) +
           "</div></div>" +
-          '<div class="detail-item"><div class="detail-label">Token</div><div class="detail-value" style="cursor:pointer" onclick="window.__copy(\'' +
-          j.token +
-          "')\">" +
-          truncAddr(j.token) +
+          '<div class="detail-item"><div class="detail-label">Token</div>' +
+          '<div class="detail-value addr-with-copy">' +
+          '<span style="cursor:pointer" onclick="window.__copy(\'' + j.token + '\')">' + truncAddr(j.token) + '</span>' +
+          copyBtn(j.token) +
           "</div></div>" +
+          (j.created_at
+            ? '<div class="detail-item"><div class="detail-label">Created</div>' +
+              '<div class="detail-value" title="' + escapeHtml(new Date(Number(j.created_at) * 1000).toISOString()) + '">' +
+              escapeHtml(formatRelativeTime(j.created_at)) +
+              "</div></div>"
+            : "") +
           deliverableHtml +
           "</div>" +
           '<div class="job-actions">' +
@@ -867,10 +954,11 @@
           "</span></div>" +
           "</div>" +
           '<div class="agent-field"><div class="agent-field-label">Owner</div>' +
-          '<div class="agent-field-value" style="cursor:pointer" onclick="window.__copy(\'' +
-          a.owner +
-          "')\">" +
+          '<div class="agent-field-value addr-with-copy">' +
+          '<span style="cursor:pointer" onclick="window.__copy(\'' + a.owner + '\')">' +
           truncAddr(a.owner) +
+          '</span>' +
+          copyBtn(a.owner) +
           "</div></div>" +
           '<div class="agent-field"><div class="agent-field-label">Metadata URI</div>' +
           '<div class="agent-field-value">' +
