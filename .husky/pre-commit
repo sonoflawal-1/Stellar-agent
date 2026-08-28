@@ -1,7 +1,25 @@
-#!/bin/sh
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Pre-commit hook: run prettier, clippy, and cargo test
+# Pre-commit hook: run prettier, clippy, and cargo test.
+# Some dev containers expose cargo only via rustup's shell setup, so initialize
+# the Rust environment explicitly before invoking cargo.
+for candidate in "$HOME/.cargo/env" "/usr/local/cargo/env" "/root/.cargo/env"; do
+  if [ -f "$candidate" ]; then
+    # shellcheck source=/dev/null
+    . "$candidate"
+    break
+  fi
+done
+
+if [ -d "$HOME/.cargo/bin" ] && [ -n "${PATH:-}" ]; then
+  export PATH="$HOME/.cargo/bin:$PATH"
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "cargo not found. Install Rust or ensure ~/.cargo/bin is available in PATH before running git commit."
+  exit 1
+fi
 
 echo "Checking code formatting with prettier..."
 npm run format:check || {

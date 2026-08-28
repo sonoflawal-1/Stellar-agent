@@ -360,9 +360,7 @@ async function submitTask(task: string) {
           log(`{green-fg}Deliverable received: ${job.deliverable}{/green-fg}`);
           break;
         }
-      } catch {
-        /* transient RPC error — retry */
-      }
+      } catch {}
       pollAttempts++;
       await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
     }
