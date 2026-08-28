@@ -1,6 +1,7 @@
 import { IdentityClient, CommerceClient } from "marc-stellar-sdk";
 import type { Agent, Job } from "marc-stellar-sdk";
 import { cfg } from "./config.js";
+import EventEmitter from "events";
 
 const identity = new IdentityClient(cfg);
 const commerce = new CommerceClient(cfg);
@@ -10,10 +11,17 @@ let agentCache: { data: Agent[]; ts: number } = { data: [], ts: 0 };
 let jobCache: { data: Job[]; ts: number } = { data: [], ts: 0 };
 const CACHE_TTL = 3_000; // 3s — fast refresh for demo
 
+// Contract-level caches (longer TTL — 30s)
+let feeBpsCache: { value: number | null; ts: number } = { value: null, ts: 0 };
+let versionCache: { value: number | null; ts: number } = { value: null, ts: 0 };
+const CONTRACT_CACHE_TTL = 30_000; // 30s TTL for RPC getters like feeBps()/version()
+const DEFAULT_AGENT_PAGE_SIZE = 24;
+
+// Event emitter used to notify server of invalidations for SSE
+export const events = new EventEmitter();
+
 /** Find the max existing ID via exponential probe + binary search */
-async function findMaxId(
-  getter: (id: bigint) => Promise<unknown | null>,
-): Promise<number> {
+async function findMaxId(getter: (id: bigint) => Promise<unknown | null>): Promise<number> {
   // Exponential probe
   let probe = 1;
   while (probe <= 1024) {
@@ -42,10 +50,7 @@ async function findMaxId(
 }
 
 /** Fetch all items 1..max in parallel batches */
-async function fetchAll<T>(
-  maxId: number,
-  getter: (id: bigint) => Promise<T | null>,
-): Promise<T[]> {
+async function fetchAll<T>(maxId: number, getter: (id: bigint) => Promise<T | null>): Promise<T[]> {
   const BATCH = 10;
   const results: T[] = [];
   for (let start = 1; start <= maxId; start += BATCH) {
@@ -70,6 +75,20 @@ export async function getAllAgents(force = false): Promise<Agent[]> {
   return agents;
 }
 
+export async function getAgentsPage(
+  page = 1,
+  pageSize = DEFAULT_AGENT_PAGE_SIZE,
+): Promise<{ items: Agent[]; page: number; pageSize: number; total: number; hasNext: boolean }> {
+  const max = await findMaxId((id) => identity.getAgent(id));
+  const start = (page - 1) * pageSize + 1;
+  const end = Math.min(start + pageSize - 1, max);
+  const items =
+    start <= max
+      ? await fetchAll(end - start + 1, (id) => identity.getAgent(id + BigInt(start - 1)))
+      : [];
+  return { items, page, pageSize, total: max, hasNext: end < max };
+}
+
 export async function getAllJobs(force = false): Promise<Job[]> {
   if (!force && Date.now() - jobCache.ts < CACHE_TTL) return jobCache.data;
   const max = await findMaxId((id) => commerce.getJob(id));
@@ -80,9 +99,31 @@ export async function getAllJobs(force = false): Promise<Job[]> {
 
 export function invalidateAgents() {
   agentCache.ts = 0;
+  events.emit("invalidate", { type: "agents" });
 }
 export function invalidateJobs() {
   jobCache.ts = 0;
+  events.emit("invalidate", { type: "jobs" });
+}
+
+/** Cached getter for commerce.feeBps() with 30s TTL */
+export async function getFeeBps(force = false): Promise<number> {
+  if (!force && feeBpsCache.value !== null && Date.now() - feeBpsCache.ts < CONTRACT_CACHE_TTL) {
+    return feeBpsCache.value as number;
+  }
+  const v = await commerce.feeBps();
+  feeBpsCache = { value: v, ts: Date.now() };
+  return v;
+}
+
+/** Cached getter for contract version (identity.version() example) */
+export async function getVersion(force = false): Promise<number> {
+  if (!force && versionCache.value !== null && Date.now() - versionCache.ts < CONTRACT_CACHE_TTL) {
+    return versionCache.value as number;
+  }
+  const v = await commerce.feeBps();
+  versionCache = { value: v, ts: Date.now() };
+  return v;
 }
 
 export { identity, commerce };

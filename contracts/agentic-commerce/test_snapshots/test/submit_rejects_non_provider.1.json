@@ -28,6 +28,7 @@
         }
       ]
     ],
+    [],
     [
       [
         "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPP4V",
@@ -127,7 +128,7 @@
     []
   ],
   "ledger": {
-    "protocol_version": 25,
+    "protocol_version": 27,
     "sequence_number": 0,
     "timestamp": 0,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
@@ -255,6 +256,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "created_at"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "deliverable"
                     },
                     "val": {
@@ -275,6 +284,14 @@
                     },
                     "val": {
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "funded_at"
+                    },
+                    "val": {
+                      "u64": "0"
                     }
                   },
                   {
@@ -311,6 +328,14 @@
                     },
                     "val": {
                       "address": "CDS3FDGQ4JA2V3F26Y4BMWWJEC5TT26RJBN7KIQKUMVO2MAOCMDTSZ7A"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "updated_at"
+                    },
+                    "val": {
+                      "u64": "0"
                     }
                   }
                 ]

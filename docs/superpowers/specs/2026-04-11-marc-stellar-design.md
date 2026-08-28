@@ -9,7 +9,7 @@
 
 **MARC on Stellar — the commerce layer for agent payments.**
 
-x402 and MPP handle *how* agents pay. MARC handles *what they are paying for*. On top of Stellar's payment rails, MARC adds:
+x402 and MPP handle _how_ agents pay. MARC handles _what they are paying for_. On top of Stellar's payment rails, MARC adds:
 
 1. **Job escrow with delivery guarantees** (1% platform fee, ERC-8183-inspired)
 2. **Agent identity registry** (ERC-8004-inspired)
@@ -27,20 +27,21 @@ Think of x402/MPP as the rail and MARC as the marketplace contract riding on top
 
 ### Building
 
-| # | Artifact | Tech | Purpose |
-|---|---|---|---|
-| 1 | `agentic_commerce` Soroban contract | Rust | Job escrow + 1% platform fee |
-| 2 | `agent_identity` Soroban contract | Rust | Agent registration (address, metadata URI, optional domain) |
-| 3 | `marc-stellar-sdk` TypeScript package | Node | Wrapper over `x402-stellar` + typed helpers for both contracts |
-| 4 | CLI demo (`buyer-agent.ts`, `seller-agent.ts`, `lifecycle.ts`) | Node | Video-recordable end-to-end: register identity → create job → pay via x402 → deliver → release escrow |
-| 5 | Static landing page (`index.html`) | HTML/CSS/vanilla JS | Pitch, contract addresses, demo GIF, GitHub link. Visual identity 1:1 with `marcprotocol.com` per `docs/design-system.md` |
-| 6 | README + 1-page LIGHTPAPER + 2-min pitch video + DoraHacks submission | Markdown / MP4 | Submission deliverables |
+| #   | Artifact                                                              | Tech                | Purpose                                                                                                                   |
+| --- | --------------------------------------------------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `agentic_commerce` Soroban contract                                   | Rust                | Job escrow + 1% platform fee                                                                                              |
+| 2   | `agent_identity` Soroban contract                                     | Rust                | Agent registration (address, metadata URI, optional domain)                                                               |
+| 3   | `marc-stellar-sdk` TypeScript package                                 | Node                | Wrapper over `x402-stellar` + typed helpers for both contracts                                                            |
+| 4   | CLI demo (`buyer-agent.ts`, `seller-agent.ts`, `lifecycle.ts`)        | Node                | Video-recordable end-to-end: register identity → create job → pay via x402 → deliver → release escrow                     |
+| 5   | Static landing page (`index.html`)                                    | HTML/CSS/vanilla JS | Pitch, contract addresses, demo GIF, GitHub link. Visual identity 1:1 with `marcprotocol.com` per `docs/design-system.md` |
+| 6   | README + 1-page LIGHTPAPER + 2-min pitch video + DoraHacks submission | Markdown / MP4      | Submission deliverables                                                                                                   |
 
 ### Frontend scope (LOCKED: landing page only)
 
 We are building **one** static landing page (`landing/index.html` + `style.css` + `app.js`), not a dashboard app. The dashboard tabs shown on `marcprotocol.com` (Agents / Dashboard / Jobs / Wallet) are **cut** — a real dashboard would cost 6-10h and contribute nothing to the "commerce layer on x402/MPP" narrative judges care about. The CLI demo video is our functional proof; the landing page is our pitch surface.
 
 Landing page structure (top to bottom):
+
 1. **Nav bar** — logo + Home/Protocol/About + GitHub/X icons + "Launch Docs" orange pill (no app to launch — pill links to README)
 2. **Hero** — wireframe geodesic sphere SVG, two-line headline ("The Commerce Layer for / Agent Payments."), subtitle, two pill CTAs (Read Docs, View on GitHub)
 3. **Protocol stack section** — 3 cards: Agentic Commerce (Soroban escrow), Agent Identity (Soroban registry), x402 + MPP Integration (Stellar rails)
@@ -149,6 +150,7 @@ Time budget: **3-4 hours on Day 2**, after the CLI demo is working. If running b
 ### `agentic_commerce` (Soroban, Rust)
 
 **Storage:**
+
 - `jobs: Map<u64, Job>` — keyed by auto-incrementing job_id
 - `next_job_id: u64`
 - `treasury: Address` — platform fee recipient
@@ -156,6 +158,7 @@ Time budget: **3-4 hours on Day 2**, after the CLI demo is working. If running b
 - `platform_fee_bps: u32` — 100 (= 1%)
 
 **Job struct:**
+
 ```rust
 pub struct Job {
     pub buyer: Address,
@@ -170,6 +173,7 @@ pub struct Job {
 ```
 
 **Entry points:**
+
 - `create_job(buyer, seller, token, budget, description_uri) -> u64`
 - `mark_delivered(seller, job_id, deliverable_uri)`
 - `approve(buyer, job_id)` — splits payment 99/1
@@ -185,11 +189,13 @@ pub struct Job {
 ### `agent_identity` (Soroban, Rust)
 
 **Storage:**
+
 - `agents: Map<Address, Agent>`
 - `domains: Map<String, Address>` — reverse lookup
 - `admin: Address`
 
 **Agent struct:**
+
 ```rust
 pub struct Agent {
     pub owner: Address,
@@ -200,6 +206,7 @@ pub struct Agent {
 ```
 
 **Entry points:**
+
 - `register(owner, domain, metadata_uri)` — owner.require_auth()
 - `update_metadata(owner, metadata_uri)`
 - `get_agent(owner) -> Option<Agent>`
@@ -225,6 +232,7 @@ marc-stellar-sdk/
 ```
 
 Depends on:
+
 - `@stellar/stellar-sdk`
 - `x402-stellar`
 - `express` (peer, for paywall)
@@ -232,6 +240,7 @@ Depends on:
 ## Testing strategy
 
 Per contract: ~8–10 Soroban unit tests covering:
+
 - Happy path (create → deliver → approve)
 - Auth failures (wrong caller)
 - Invalid state transitions
@@ -307,13 +316,13 @@ marc-stellar/
 
 ## Risk register
 
-| Risk | Likelihood | Mitigation |
-|---|---|---|
-| Soroban Rust syntax unfamiliar, eating time | High | Use OpenZeppelin Stellar templates + `stellar-dev` skill as reference. Start with identity contract (simpler) to build muscle memory. |
-| `x402-stellar` API surprises | Medium | Read its README + example in SKILL.md links before coding SDK. Prototype integration in an isolated script first. |
-| Testnet USDC funding issues | Low | Stellar Lab has testnet USDC faucet (covered in SKILL.md). Fund at start of Day 1. |
-| Demo flakes during recording | Medium | Record end-to-end on Day 2 morning. If it flakes, we still have 4+ hours to fix before submission. |
-| Scope creep ("just one more contract") | High | This spec is locked. Any new contract requires explicit agreement and cutting something else. |
+| Risk                                        | Likelihood | Mitigation                                                                                                                            |
+| ------------------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Soroban Rust syntax unfamiliar, eating time | High       | Use OpenZeppelin Stellar templates + `stellar-dev` skill as reference. Start with identity contract (simpler) to build muscle memory. |
+| `x402-stellar` API surprises                | Medium     | Read its README + example in SKILL.md links before coding SDK. Prototype integration in an isolated script first.                     |
+| Testnet USDC funding issues                 | Low        | Stellar Lab has testnet USDC faucet (covered in SKILL.md). Fund at start of Day 1.                                                    |
+| Demo flakes during recording                | Medium     | Record end-to-end on Day 2 morning. If it flakes, we still have 4+ hours to fix before submission.                                    |
+| Scope creep ("just one more contract")      | High       | This spec is locked. Any new contract requires explicit agreement and cutting something else.                                         |
 
 ## Success criteria (for submission)
 
@@ -327,6 +336,7 @@ marc-stellar/
 ## Timeline (48h countdown)
 
 **Day 1**
+
 - H 0–2: Project scaffolding, Cargo workspace, SDK skeleton, testnet account funding
 - H 2–6: `agent_identity` contract + unit tests (warm-up contract)
 - H 6–12: `agentic_commerce` contract + unit tests
@@ -335,6 +345,7 @@ marc-stellar/
 - H 18–24: Buffer / catch-up / sleep
 
 **Day 2**
+
 - H 24–30: CLI demo scripts (buyer, seller, lifecycle)
 - H 30–34: Landing page + README + LIGHTPAPER
 - H 34–38: End-to-end dry run on testnet, fix bugs

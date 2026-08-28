@@ -23,6 +23,7 @@ Both run on **Soroban** (Stellar smart contracts, Rust/WASM). Core primitive is 
 ## Core Protocols
 
 ### x402 (Coinbase)
+
 - **Stellar x402 overview**: https://developers.stellar.org/docs/build/agentic-payments/x402
 - **x402 Quickstart Guide**: https://developers.stellar.org/docs/build/agentic-payments/x402/quickstart-guide
 - **Built-on-Stellar facilitator**: https://developers.stellar.org/docs/build/agentic-payments/x402/built-on-stellar
@@ -33,6 +34,7 @@ Both run on **Soroban** (Stellar smart contracts, Rust/WASM). Core primitive is 
 - **Test services playground**: https://xlm402.com
 
 ### MPP (Stripe)
+
 - **Stellar MPP overview**: https://developers.stellar.org/docs/build/agentic-payments/mpp
 - **Charge guide** (per-request, pull/push credentials): https://developers.stellar.org/docs/build/agentic-payments/mpp/charge-guide
 - **Session guide** (unidirectional payment channels): https://developers.stellar.org/docs/build/agentic-payments/mpp/channel-guide
@@ -46,14 +48,14 @@ Both run on **Soroban** (Stellar smart contracts, Rust/WASM). Core primitive is 
 
 ## Official SDKs and Repos
 
-| Package | URL | Purpose |
-|---|---|---|
-| `stellar/x402-stellar` | https://github.com/stellar/x402-stellar | Official monorepo — facilitator, simple-paywall demo, channel account setup |
-| `x402-stellar` (npm) | https://www.npmjs.com/package/x402-stellar | x402 integration library |
-| `coinbase/x402` | https://github.com/coinbase/x402 | Official x402 protocol repo |
-| `stellar/stellar-mpp-sdk` | https://github.com/stellar/stellar-mpp-sdk | Official MPP SDK + examples |
-| `@stellar/mpp` (npm) | https://www.npmjs.com/package/@stellar/mpp | MPP client library |
-| `mppx` (npm) | https://www.npmjs.com/package/mppx | Core MPP framework |
+| Package                   | URL                                        | Purpose                                                                     |
+| ------------------------- | ------------------------------------------ | --------------------------------------------------------------------------- |
+| `stellar/x402-stellar`    | https://github.com/stellar/x402-stellar    | Official monorepo — facilitator, simple-paywall demo, channel account setup |
+| `x402-stellar` (npm)      | https://www.npmjs.com/package/x402-stellar | x402 integration library                                                    |
+| `coinbase/x402`           | https://github.com/coinbase/x402           | Official x402 protocol repo                                                 |
+| `stellar/stellar-mpp-sdk` | https://github.com/stellar/stellar-mpp-sdk | Official MPP SDK + examples                                                 |
+| `@stellar/mpp` (npm)      | https://www.npmjs.com/package/@stellar/mpp | MPP client library                                                          |
+| `mppx` (npm)              | https://www.npmjs.com/package/mppx         | Core MPP framework                                                          |
 
 ## Facilitators
 
@@ -71,6 +73,7 @@ Note: **Freighter mobile does NOT support x402.**
 ## Starter Templates / Reference Apps
 
 ### x402
+
 - **x402 Starter Template (browser wallet)**: https://github.com/ElliotFriend/x402/tree/stellar-browser-wallet-example/examples/typescript/fullstack/browser-wallet-example
 - **1-shot Stellar x402 app** (video paywall): https://github.com/oceans404/1-shot-stellar/tree/main/x402-app
 - **Economic Load Balancer** (multi-chain router): https://github.com/marcelosalloum/x402/tree/x402-hackathon
@@ -80,6 +83,7 @@ Note: **Freighter mobile does NOT support x402.**
 - **Sponsored agent account** (give an agent a USDC wallet in <1 min, no XLM needed): https://github.com/oceans404/stellar-sponsored-agent-account — skill: https://stellar-sponsored-agent-account.onrender.com/SKILL.md
 
 ### DeFi / Composition References
+
 - **AI Freighter Integration**: https://github.com/carstenjacobsen/ai-freighter-integration
 - **AI Soroswap Integration** (multi-DEX): https://github.com/carstenjacobsen/ai-soroswap-integration
 - **AI DeFindex Integration** (yield vaults): https://github.com/carstenjacobsen/ai-defindex-integration
@@ -91,16 +95,16 @@ Note: **Freighter mobile does NOT support x402.**
 
 ## Stellar Dev Tooling
 
-| Tool | URL | Notes |
-|---|---|---|
-| Docs | https://developers.stellar.org/ | Core docs |
-| llms.txt | https://developers.stellar.org/llms.txt | Machine-readable digest for LLMs |
-| SDKs | https://developers.stellar.org/docs/tools/sdks | All language SDKs |
-| Stellar CLI | https://developers.stellar.org/docs/tools/cli | Build/deploy Soroban contracts |
-| Lab | https://developers.stellar.org/docs/tools/lab | Browser-based wallet gen + testing |
-| Quickstart (local network) | https://developers.stellar.org/docs/tools/quickstart | Docker local network |
-| Wallets Kit | https://stellarwalletskit.dev/ | Unified wallet connection |
-| Scaffold Stellar | https://scaffoldstellar.org | Full app lifecycle CLI |
+| Tool                       | URL                                                  | Notes                              |
+| -------------------------- | ---------------------------------------------------- | ---------------------------------- |
+| Docs                       | https://developers.stellar.org/                      | Core docs                          |
+| llms.txt                   | https://developers.stellar.org/llms.txt              | Machine-readable digest for LLMs   |
+| SDKs                       | https://developers.stellar.org/docs/tools/sdks       | All language SDKs                  |
+| Stellar CLI                | https://developers.stellar.org/docs/tools/cli        | Build/deploy Soroban contracts     |
+| Lab                        | https://developers.stellar.org/docs/tools/lab        | Browser-based wallet gen + testing |
+| Quickstart (local network) | https://developers.stellar.org/docs/tools/quickstart | Docker local network               |
+| Wallets Kit                | https://stellarwalletskit.dev/                       | Unified wallet connection          |
+| Scaffold Stellar           | https://scaffoldstellar.org                          | Full app lifecycle CLI             |
 
 ## Soroban Building Blocks (essential reading)
 

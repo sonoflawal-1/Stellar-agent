@@ -1,86 +1,178 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Bear Dashboard — Stellar Testnet</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@600;700&family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css">
-  <script src="https://cdn.jsdelivr.net/gh/jamesbachini/Stellar-Wallets-Kit-Boilerplate@main/vanilla/stellar-kit-bundle/dist/wallet-kit-bundle.umd.js"></script>
-</head>
-<body>
-  <!-- Sidebar -->
-  <aside class="sidebar" id="sidebar">
-    <div class="sidebar-header">
-      <a href="#/" class="logo">
-        <span class="logo-mark">B</span>
-        <span class="logo-text">Bear</span>
-      </a>
-    </div>
-    <nav class="sidebar-nav">
-      <a href="#/" class="nav-item active" data-route="/">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
-        Dashboard
-      </a>
-      <a href="#/wallet" class="nav-item" data-route="/wallet">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12V7H5a2 2 0 0 1 0-4h14v4"/><path d="M3 5v14a2 2 0 0 0 2 2h16v-5"/><path d="M18 12a2 2 0 0 0 0 4h4v-4Z"/></svg>
-        Wallets
-      </a>
-      <a href="#/jobs" class="nav-item" data-route="/jobs">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>
-        Jobs
-      </a>
-      <a href="#/agents" class="nav-item" data-route="/agents">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-        Agents
-      </a>
-    </nav>
-    <div class="wallet-section" id="wallet-section">
-      <div class="wallet-mode-label" id="wallet-mode-label">Demo Mode</div>
-      <div id="swk-button-wrapper"></div>
-      <div class="wallet-connected" id="wallet-connected" style="display:none">
-        <div class="wallet-address-display" id="wallet-addr-display">
-          <span id="wallet-addr-text"></span>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bear Dashboard — Stellar Testnet</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@600;700&family=Inter:wght@400;500;600;700;800;900&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="style.css" />
+    <script src="https://cdn.jsdelivr.net/gh/jamesbachini/Stellar-Wallets-Kit-Boilerplate@main/vanilla/stellar-kit-bundle/dist/wallet-kit-bundle.umd.js"></script>
+  </head>
+  <body>
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <a href="#/" class="logo">
+          <span class="logo-mark">B</span>
+          <span class="logo-text">Bear</span>
+        </a>
+      </div>
+      <nav class="sidebar-nav">
+        <a href="#/" class="nav-item active" data-route="/">
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <rect x="3" y="3" width="7" height="7" />
+            <rect x="14" y="3" width="7" height="7" />
+            <rect x="3" y="14" width="7" height="7" />
+            <rect x="14" y="14" width="7" height="7" />
+          </svg>
+          Dashboard
+        </a>
+        <a href="#/wallet" class="nav-item" data-route="/wallet">
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M21 12V7H5a2 2 0 0 1 0-4h14v4" />
+            <path d="M3 5v14a2 2 0 0 0 2 2h16v-5" />
+            <path d="M18 12a2 2 0 0 0 0 4h4v-4Z" />
+          </svg>
+          Wallets
+        </a>
+        <a href="#/jobs" class="nav-item" data-route="/jobs">
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <rect x="2" y="7" width="20" height="14" rx="2" ry="2" />
+            <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16" />
+          </svg>
+          Jobs
+        </a>
+        <a href="#/agents" class="nav-item" data-route="/agents">
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+            <circle cx="9" cy="7" r="4" />
+            <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+            <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+          </svg>
+          Agents
+        </a>
+        <a href="#/history" class="nav-item" data-route="/history">
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+            <path d="M3 3v5h5" />
+            <path d="M12 7v5l4 2" />
+          </svg>
+          History
+        </a>
+      </nav>
+      <div class="wallet-section" id="wallet-section">
+        <div class="wallet-mode-label" id="wallet-mode-label">Demo Mode</div>
+        <div id="swk-button-wrapper"></div>
+        <div class="wallet-connected" id="wallet-connected" style="display: none">
+          <div class="wallet-address-display" id="wallet-addr-display">
+            <span id="wallet-addr-text"></span>
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+            >
+              <rect x="9" y="9" width="13" height="13" rx="2" />
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+            </svg>
+          </div>
+          <button class="disconnect-btn" onclick="window.__disconnectWallet()">Disconnect</button>
         </div>
-        <button class="disconnect-btn" onclick="window.__disconnectWallet()">Disconnect</button>
+      </div>
+      <div class="sidebar-footer">
+        <div class="testnet-badge" id="network-badge">
+          <span class="badge-dot"></span>
+          Unknown Network
+        </div>
+      </div>
+    </aside>
+
+    <!-- Mobile header -->
+    <header class="mobile-header" id="mobile-header">
+      <button class="menu-btn" id="menu-btn" aria-label="Menu">
+        <svg
+          width="24"
+          height="24"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+        >
+          <path d="M3 12h18M3 6h18M3 18h18" />
+        </svg>
+      </button>
+      <span class="logo-text">Bear</span>
+    </header>
+
+    <!-- Main content -->
+    <main class="main" id="main">
+      <div class="page-transition" id="page"></div>
+    </main>
+
+    <!-- Toast container -->
+    <div class="toast-container" id="toasts"></div>
+
+    <!-- Transaction overlay -->
+    <div class="tx-overlay" id="tx-overlay">
+      <div class="tx-modal">
+        <div class="tx-spinner"></div>
+        <p class="tx-text">Submitting to Stellar...</p>
+        <p class="tx-sub">This takes 5-8 seconds on testnet</p>
       </div>
     </div>
-    <div class="sidebar-footer">
-      <div class="testnet-badge">
-        <span class="badge-dot"></span>
-        Stellar Testnet
-      </div>
-    </div>
-  </aside>
 
-  <!-- Mobile header -->
-  <header class="mobile-header" id="mobile-header">
-    <button class="menu-btn" id="menu-btn" aria-label="Menu">
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
-    </button>
-    <span class="logo-text">Bear</span>
-  </header>
-
-  <!-- Main content -->
-  <main class="main" id="main">
-    <div class="page-transition" id="page"></div>
-  </main>
-
-  <!-- Toast container -->
-  <div class="toast-container" id="toasts"></div>
-
-  <!-- Transaction overlay -->
-  <div class="tx-overlay" id="tx-overlay">
-    <div class="tx-modal">
-      <div class="tx-spinner"></div>
-      <p class="tx-text">Submitting to Stellar...</p>
-      <p class="tx-sub">This takes 5-8 seconds on testnet</p>
-    </div>
-  </div>
-
-  <script src="app.js"></script>
-</body>
+    <script src="app.js"></script>
+  </body>
 </html>

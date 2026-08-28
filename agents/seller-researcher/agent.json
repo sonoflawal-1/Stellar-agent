@@ -2,6 +2,7 @@
   "id": "seller-researcher",
   "name": "Researcher Agent",
   "description": "Researches any topic and returns a structured summary with key findings.",
+  "tags": ["research", "analysis", "summarization", "market-research", "competitive-analysis"],
   "tasks": [
     "research",
     "summarise topic",

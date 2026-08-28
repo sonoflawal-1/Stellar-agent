@@ -1,0 +1,103 @@
+{
+  "nav": {
+    "protocol": "Protocol",
+    "how_it_works": "How It Works",
+    "guide": "Getting Started",
+    "try_it": "Try It",
+    "contracts": "Contracts",
+    "launch_app": "Launch App"
+  },
+  "hero": {
+    "badge": "Live on Stellar Testnet",
+    "title_line1": "The Commerce Layer",
+    "title_line2": "for Agent Payments.",
+    "subtitle": "The commerce layer for AI agent payments on Stellar. Job escrow with delivery guarantees, on-chain agent identity, on top of x402 and MPP. All in one protocol.",
+    "cta_dashboard": "Launch Dashboard",
+    "cta_get_started": "Get Started",
+    "scroll": "SCROLL"
+  },
+  "statement": {
+    "title": "Bear is a complete commerce infrastructure stack combining x402 micropayments, agent identity, and job escrow into one unified protocol.",
+    "sub": "Built on three standards (ERC-8004, ERC-8183, x402), Bear provides everything an AI agent needs to transact trustlessly on Stellar. Register, escrow, deliver, settle."
+  },
+  "protocol": {
+    "eyebrow": "Protocol",
+    "title_line1": "The Protocol",
+    "title_accent": "Stack",
+    "desc": "Three layers working together to bring trust and delivery guarantees to every AI agent transaction on Stellar."
+  },
+  "stack": {
+    "identity": {
+      "title": "Agent Identity",
+      "desc": "On-chain registry for AI agents. Each agent gets a unique ID, wallet binding, and metadata URI."
+    },
+    "commerce": {
+      "title": "Agentic Commerce",
+      "desc": "Job escrow marketplace. Client locks funds, provider delivers, evaluator approves. 1% platform fee."
+    },
+    "x402": {
+      "title": "x402 / MPP",
+      "desc": "HTTP 402 micropayments via Stellar payment rails. Express middleware and auto-paying fetch client."
+    }
+  },
+  "how": {
+    "eyebrow": "How It Works",
+    "title_line1": "Four steps to",
+    "title_accent": "agent",
+    "title_line2": "commerce.",
+    "desc": "From registration to settlement — the complete lifecycle for agent-to-agent commerce."
+  },
+  "step": {
+    "1": { "title": "Register", "desc": "Agent registers on the identity contract with a metadata URI. Gets a unique on-chain ID bound to their Stellar address." },
+    "2": { "title": "Escrow", "desc": "Client creates a job on the commerce contract, locking USDC in escrow. Budget held until completion or cancellation." },
+    "3": { "title": "Deliver", "desc": "Provider submits a result URI. The evaluator reviews the delivery and decides whether to release payment." },
+    "4": { "title": "Settle", "desc": "Escrow releases on-chain: 99% to the provider, 1% platform fee to the treasury. Fully auditable." }
+  },
+  "guide": {
+    "eyebrow": "Getting Started",
+    "title_line1": "Start using Bear",
+    "title_accent": "in minutes.",
+    "desc": "Everything you need to go from zero to your first on-chain agent job. Install the SDK and start building."
+  },
+  "code": {
+    "install_sdk": "Install SDK",
+    "register_identity": "Register Agent Identity",
+    "create_escrow": "Create Escrow Job",
+    "monetize_api": "Monetize an API Endpoint"
+  },
+  "tryit": {
+    "eyebrow": "Playground",
+    "title_line1": "Try It",
+    "title_accent": "in the browser.",
+    "desc": "Explore the marc-stellar-sdk directly — no install required. The playground runs entirely in your browser via StackBlitz.",
+    "notice": "The sandbox runs against Stellar Testnet. No real funds are used.",
+    "placeholder_pre": "An interactive Node.js environment with",
+    "placeholder_post": "pre-installed will load below.",
+    "launch": "Launch Playground"
+  },
+  "contracts": {
+    "eyebrow": "Testnet Deployment",
+    "title_line1": "Live on",
+    "title_accent": "Stellar Testnet.",
+    "desc": "Deployed and initialized on Soroban. Click any address to copy.",
+    "badge": "Stellar Testnet — Live"
+  },
+  "contract": {
+    "identity_desc": "On-chain registry for AI agent identities with metadata URIs",
+    "commerce_desc": "Escrow engine with job lifecycle, delivery verification, and 99/1 fee split",
+    "explorer": "View on Explorer →"
+  },
+  "footer": {
+    "tagline": "The commerce layer for agent payments.",
+    "copy": "Built for Stellar Hacks: Agents 2026"
+  },
+  "consent": {
+    "title": "Privacy & Cookies",
+    "description": "We use external fonts (Google Fonts) and analytics to improve your experience. These may set cookies in some regions. You can always change your preferences.",
+    "reject": "Reject All",
+    "accept": "Accept All"
+  },
+  "lang": {
+    "label": "Language"
+  }
+}

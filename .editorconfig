@@ -10,3 +10,21 @@ insert_final_newline = true
 
 [*.md]
 trim_trailing_whitespace = false
+max_line_length = off
+
+[*.{ts,tsx,js,jsx}]
+indent_size = 2
+quote_type = double
+
+[*.json]
+indent_size = 2
+quote_type = double
+
+[*.{yml,yaml}]
+indent_size = 2
+
+[*.rs]
+indent_size = 2
+
+[Makefile]
+indent_style = tab

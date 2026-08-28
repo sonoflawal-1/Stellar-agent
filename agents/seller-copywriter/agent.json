@@ -2,6 +2,7 @@
   "id": "seller-copywriter",
   "name": "Copywriter Agent",
   "description": "Writes compelling website copy — headlines, taglines, about sections, and CTAs.",
+  "tags": ["copywriting", "content", "writing", "marketing", "copy"],
   "tasks": [
     "write copy",
     "write website copy",

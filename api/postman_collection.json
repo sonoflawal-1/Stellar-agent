@@ -1,0 +1,501 @@
+{
+  "info": {
+    "name": "Bear Protocol API",
+    "description": "REST API collection for Bear Protocol agent services. Includes registry, seller agents, and commerce endpoints.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Agent Registry (4500)",
+      "description": "Service discovery and agent lifecycle management",
+      "item": [
+        {
+          "name": "List All Agents",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{registry_url}}/agents",
+              "host": ["{{registry_url}}"],
+              "path": ["agents"]
+            },
+            "description": "Get list of all active agents currently heartbeating"
+          },
+          "response": []
+        },
+        {
+          "name": "List Agents (with inactive)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{registry_url}}/agents?include_inactive=true",
+              "host": ["{{registry_url}}"],
+              "path": ["agents"],
+              "query": [
+                {
+                  "key": "include_inactive",
+                  "value": "true"
+                }
+              ]
+            },
+            "description": "Get list of all agents including deregistered ones"
+          },
+          "response": []
+        },
+        {
+          "name": "Filter Agents by Tag",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{registry_url}}/agents?tags=webdev",
+              "host": ["{{registry_url}}"],
+              "path": ["agents"],
+              "query": [
+                {
+                  "key": "tags",
+                  "value": "webdev"
+                }
+              ]
+            },
+            "description": "Filter agents by capability tags (case-insensitive)"
+          },
+          "response": []
+        },
+        {
+          "name": "Filter Agents by Multiple Tags",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{registry_url}}/agents?tags=webdev,html",
+              "host": ["{{registry_url}}"],
+              "path": ["agents"],
+              "query": [
+                {
+                  "key": "tags",
+                  "value": "webdev,html"
+                }
+              ]
+            },
+            "description": "Filter agents by multiple tags (AND logic)"
+          },
+          "response": []
+        },
+        {
+          "name": "Get Agent Details",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{registry_url}}/agents/seller-webbuilder",
+              "host": ["{{registry_url}}"],
+              "path": ["agents", "seller-webbuilder"]
+            },
+            "description": "Get manifest for a specific agent"
+          },
+          "response": []
+        },
+        {
+          "name": "Deregister Agent",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{registry_url}}/agents/seller-webbuilder",
+              "host": ["{{registry_url}}"],
+              "path": ["agents", "seller-webbuilder"]
+            },
+            "description": "Manually deregister an agent"
+          },
+          "response": []
+        },
+        {
+          "name": "Agent Heartbeat",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"agentId\": \"seller-webbuilder\"\n}"
+            },
+            "url": {
+              "raw": "{{registry_url}}/heartbeat",
+              "host": ["{{registry_url}}"],
+              "path": ["heartbeat"]
+            },
+            "description": "Register or update an agent's heartbeat"
+          },
+          "response": []
+        },
+        {
+          "name": "Registry Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{registry_url}}/health",
+              "host": ["{{registry_url}}"],
+              "path": ["health"]
+            },
+            "description": "Get registry status and agent count"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Web Builder Agent (4501)",
+      "description": "Builds responsive HTML/CSS websites",
+      "item": [
+        {
+          "name": "Get Agent Manifest",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{webbuilder_url}}/",
+              "host": ["{{webbuilder_url}}"],
+              "path": [""]
+            },
+            "description": "Retrieve agent.json manifest"
+          },
+          "response": []
+        },
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{webbuilder_url}}/health",
+              "host": ["{{webbuilder_url}}"],
+              "path": ["health"]
+            },
+            "description": "Check agent liveness and uptime"
+          },
+          "response": []
+        },
+        {
+          "name": "Submit Job - Basic",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jobId\": \"1001\",\n  \"task\": \"Build a landing page for a SaaS product about AI agents\"\n}"
+            },
+            "url": {
+              "raw": "{{webbuilder_url}}/job",
+              "host": ["{{webbuilder_url}}"],
+              "path": ["job"]
+            },
+            "description": "Submit a basic website build job"
+          },
+          "response": []
+        },
+        {
+          "name": "Submit Job - With Spec",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jobId\": \"1002\",\n  \"task\": \"Build a landing page for a SaaS product about AI agents\",\n  \"buildSpec\": {\n    \"framework\": \"modern CSS Grid\",\n    \"pages\": [\"Home\", \"Features\", \"Pricing\"],\n    \"theme\": \"dark blue with white accents\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{webbuilder_url}}/job",
+              "host": ["{{webbuilder_url}}"],
+              "path": ["job"]
+            },
+            "description": "Submit a website build job with detailed specifications"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Copywriter Agent (4502)",
+      "description": "Writes compelling marketing and product copy",
+      "item": [
+        {
+          "name": "Get Agent Manifest",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{copywriter_url}}/",
+              "host": ["{{copywriter_url}}"],
+              "path": [""]
+            },
+            "description": "Retrieve agent.json manifest"
+          },
+          "response": []
+        },
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{copywriter_url}}/health",
+              "host": ["{{copywriter_url}}"],
+              "path": ["health"]
+            },
+            "description": "Check agent liveness and uptime"
+          },
+          "response": []
+        },
+        {
+          "name": "Submit Job - Basic",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jobId\": \"2001\",\n  \"task\": \"Write copy for a blockchain identity service\"\n}"
+            },
+            "url": {
+              "raw": "{{copywriter_url}}/job",
+              "host": ["{{copywriter_url}}"],
+              "path": ["job"]
+            },
+            "description": "Submit a basic copywriting job"
+          },
+          "response": []
+        },
+        {
+          "name": "Submit Job - With Guidelines",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jobId\": \"2002\",\n  \"task\": \"Write copy for a blockchain identity service\",\n  \"tone\": \"professional but approachable\",\n  \"audience\": \"technical founders and crypto enthusiasts\",\n  \"keywords\": [\"self-sovereign\", \"decentralized\", \"privacy\"]\n}"
+            },
+            "url": {
+              "raw": "{{copywriter_url}}/job",
+              "host": ["{{copywriter_url}}"],
+              "path": ["job"]
+            },
+            "description": "Submit a copywriting job with tone, audience, and keyword guidelines"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Namer Agent (4503)",
+      "description": "Generates creative name suggestions",
+      "item": [
+        {
+          "name": "Get Agent Manifest",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{namer_url}}/",
+              "host": ["{{namer_url}}"],
+              "path": [""]
+            },
+            "description": "Retrieve agent.json manifest"
+          },
+          "response": []
+        },
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{namer_url}}/health",
+              "host": ["{{namer_url}}"],
+              "path": ["health"]
+            },
+            "description": "Check agent liveness and uptime"
+          },
+          "response": []
+        },
+        {
+          "name": "Submit Job",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jobId\": \"3001\",\n  \"task\": \"Generate names for an AI agent commerce platform\"\n}"
+            },
+            "url": {
+              "raw": "{{namer_url}}/job",
+              "host": ["{{namer_url}}"],
+              "path": ["job"]
+            },
+            "description": "Submit a naming task"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Researcher Agent (4504)",
+      "description": "Conducts research and compiles findings with sources",
+      "item": [
+        {
+          "name": "Get Agent Manifest",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{researcher_url}}/",
+              "host": ["{{researcher_url}}"],
+              "path": [""]
+            },
+            "description": "Retrieve agent.json manifest"
+          },
+          "response": []
+        },
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{researcher_url}}/health",
+              "host": ["{{researcher_url}}"],
+              "path": ["health"]
+            },
+            "description": "Check agent liveness and uptime"
+          },
+          "response": []
+        },
+        {
+          "name": "Submit Job - Brief",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jobId\": \"4001\",\n  \"task\": \"Research the history and impact of blockchain technology\",\n  \"depth\": \"brief\"\n}"
+            },
+            "url": {
+              "raw": "{{researcher_url}}/job",
+              "host": ["{{researcher_url}}"],
+              "path": ["job"]
+            },
+            "description": "Submit a brief research task (2-3 sources, 1-2 paragraphs)"
+          },
+          "response": []
+        },
+        {
+          "name": "Submit Job - Standard",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jobId\": \"4002\",\n  \"task\": \"Research the history and impact of blockchain technology\",\n  \"depth\": \"standard\"\n}"
+            },
+            "url": {
+              "raw": "{{researcher_url}}/job",
+              "host": ["{{researcher_url}}"],
+              "path": ["job"]
+            },
+            "description": "Submit a standard research task (3-8 sources, multi-section summary)"
+          },
+          "response": []
+        },
+        {
+          "name": "Submit Job - Deep",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"jobId\": \"4003\",\n  \"task\": \"Research the history and impact of blockchain technology\",\n  \"depth\": \"deep\"\n}"
+            },
+            "url": {
+              "raw": "{{researcher_url}}/job",
+              "host": ["{{researcher_url}}"],
+              "path": ["job"]
+            },
+            "description": "Submit a deep research task (8-15 sources, exhaustive analysis)"
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "registry_url",
+      "value": "http://localhost:4500",
+      "type": "string"
+    },
+    {
+      "key": "webbuilder_url",
+      "value": "http://localhost:4501",
+      "type": "string"
+    },
+    {
+      "key": "copywriter_url",
+      "value": "http://localhost:4502",
+      "type": "string"
+    },
+    {
+      "key": "namer_url",
+      "value": "http://localhost:4503",
+      "type": "string"
+    },
+    {
+      "key": "researcher_url",
+      "value": "http://localhost:4504",
+      "type": "string"
+    }
+  ]
+}

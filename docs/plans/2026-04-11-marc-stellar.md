@@ -39,6 +39,7 @@
 ### Task 0.1: Initialize Rust workspace + gitignore additions
 
 **Files:**
+
 - Create: `Cargo.toml` (workspace root)
 - Create: `rust-toolchain.toml`
 - Modify: `.gitignore`
@@ -118,6 +119,7 @@ git commit -m "chore: initialize Cargo workspace for Soroban contracts"
 ### Task 0.2: Scaffold SDK package
 
 **Files:**
+
 - Create: `sdk/package.json`
 - Create: `sdk/tsconfig.json`
 - Create: `sdk/src/index.ts` (empty re-export stub)
@@ -204,6 +206,7 @@ git commit -m "chore: scaffold marc-stellar-sdk package"
 ### Task 0.3: Scaffold demo + landing + docs + scripts directories
 
 **Files:**
+
 - Create: `demo/package.json`
 - Create: `demo/tsconfig.json`
 - Create: `demo/.env.example`
@@ -319,6 +322,7 @@ git commit -m "chore: scaffold demo, landing, and scripts directories"
 ### Task 1.1: Create contract crate + smoke test
 
 **Files:**
+
 - Create: `contracts/agent-identity/Cargo.toml`
 - Create: `contracts/agent-identity/src/lib.rs`
 - Create: `contracts/agent-identity/src/test.rs`
@@ -393,6 +397,7 @@ git commit -m "feat(agent-identity): scaffold contract with smoke test"
 ### Task 1.2: Storage types + `register` happy path
 
 **Files:**
+
 - Modify: `contracts/agent-identity/src/lib.rs`
 - Modify: `contracts/agent-identity/src/test.rs`
 
@@ -518,6 +523,7 @@ git commit -m "feat(agent-identity): implement register + get_agent + agent_of"
 ### Task 1.3: `update_uri` entry point
 
 **Files:**
+
 - Modify: `contracts/agent-identity/src/lib.rs`
 - Modify: `contracts/agent-identity/src/test.rs`
 
@@ -600,6 +606,7 @@ git commit -m "feat(agent-identity): add update_uri entry point + owner-only gua
 ### Task 1.4: `deregister` entry point
 
 **Files:**
+
 - Modify: `contracts/agent-identity/src/lib.rs`
 - Modify: `contracts/agent-identity/src/test.rs`
 
@@ -678,6 +685,7 @@ Expected: produces `agent_identity.optimized.wasm` alongside.
 ### Task 2.1: Scaffold crate + smoke test
 
 **Files:**
+
 - Create: `contracts/agentic-commerce/Cargo.toml` (same shape as identity)
 - Create: `contracts/agentic-commerce/src/lib.rs`
 - Create: `contracts/agentic-commerce/src/test.rs`
@@ -793,6 +801,7 @@ git commit -m "feat(agentic-commerce): scaffold contract with init + smoke test"
 ### Task 2.2: `create_job` with token escrow pull
 
 **Files:**
+
 - Modify: `contracts/agentic-commerce/src/lib.rs`
 - Modify: `contracts/agentic-commerce/src/test.rs`
 
@@ -914,6 +923,7 @@ git commit -m "feat(agentic-commerce): create_job escrows budget from client"
 ### Task 2.3: `submit` entry point (provider-only)
 
 **Files:**
+
 - Modify: `contracts/agentic-commerce/src/lib.rs`
 - Modify: `contracts/agentic-commerce/src/test.rs`
 
@@ -1003,6 +1013,7 @@ git commit -am "feat(agentic-commerce): add submit entry point"
 ### Task 2.4: `complete` with 99/1 fee split
 
 **Files:**
+
 - Modify: `contracts/agentic-commerce/src/lib.rs`
 - Modify: `contracts/agentic-commerce/src/test.rs`
 
@@ -1086,6 +1097,7 @@ git commit -am "feat(agentic-commerce): add complete with 1% platform fee split"
 ### Task 2.5: `cancel` refund path
 
 **Files:**
+
 - Modify: `contracts/agentic-commerce/src/lib.rs`
 - Modify: `contracts/agentic-commerce/src/test.rs`
 
@@ -1157,6 +1169,7 @@ git commit -am "feat(agentic-commerce): add cancel refund path"
 ### Task 2.6: Admin functions + fee cap guard
 
 **Files:**
+
 - Modify: `contracts/agentic-commerce/src/lib.rs`
 - Modify: `contracts/agentic-commerce/src/test.rs`
 
@@ -1220,10 +1233,12 @@ git commit -am "feat(agentic-commerce): add admin treasury + fee setters with 5%
 ### Task 2.7: Build commerce contract WASM
 
 Run:
+
 ```bash
 cargo build -p agentic-commerce --target wasm32v1-none --release
 stellar contract optimize --wasm target/wasm32v1-none/release/agentic_commerce.wasm
 ```
+
 Expected: both WASM files produced under 50 KB.
 
 No commit (target/ is ignored).
@@ -1237,9 +1252,11 @@ No commit (target/ is ignored).
 **Step 1: Create identity**
 
 Run:
+
 ```bash
 stellar keys generate deployer --network testnet --fund
 ```
+
 Expected: prints a public key `G...`. Fund from friendbot happens automatically via `--fund`.
 
 **Step 2: Verify**
@@ -1410,10 +1427,7 @@ export class IdentityClient {
   }
 
   async getAgent(id: bigint): Promise<Agent | null> {
-    const op = this.contract.call(
-      "get_agent",
-      nativeToScVal(id, { type: "u64" }),
-    );
+    const op = this.contract.call("get_agent", nativeToScVal(id, { type: "u64" }));
     return await this.simulate(op, (v) => {
       const native = scValToNative(v);
       if (!native) return null;
@@ -1426,10 +1440,7 @@ export class IdentityClient {
   }
 
   async agentOf(owner: string): Promise<bigint | null> {
-    const op = this.contract.call(
-      "agent_of",
-      new Address(owner).toScVal(),
-    );
+    const op = this.contract.call("agent_of", new Address(owner).toScVal());
     return await this.simulate(op, (v) => {
       const native = scValToNative(v);
       return native == null ? null : BigInt(native);
@@ -1597,6 +1608,7 @@ Commit: `git commit -am "feat(sdk): export public surface"`
 **File:** `demo/seller-agent.ts`
 
 Node script that:
+
 1. Loads `.env`
 2. Reads `../deployments/testnet.json`
 3. Registers the seller identity on `agent_identity` (if not already)
@@ -1658,6 +1670,7 @@ Commit: `git commit -am "feat(demo): add seller-agent script"`
 **File:** `demo/buyer-agent.ts`
 
 Script that:
+
 1. Registers the buyer identity
 2. Creates a job with a 10 USDC budget
 3. Hits the seller's `/api/work` endpoint N times via `marcFetch` (so x402 micropayments fire)
@@ -1681,11 +1694,13 @@ Commit: `git commit -am "feat(demo): add lifecycle orchestrator"`
 ### Task 5.4: Dry run on testnet
 
 Run:
+
 ```bash
 cd demo && npm install && npm run lifecycle
 ```
 
 Expected output (approximate):
+
 ```
 Seller: G...
 Registered as agent 1
@@ -1714,6 +1729,7 @@ Commit any fixes: `git commit -am "fix(demo): <what you fixed>"`
 **File:** `landing/index.html`
 
 Structure per `docs/design-system.md`:
+
 1. Nav bar (72px, sticky)
 2. Hero section (full viewport, orange wireframe geodesic sphere SVG inline, two-line headline, two pill CTAs)
 3. Protocol stack section (3 cards: Agentic Commerce, Agent Identity, x402 + MPP Integration)
@@ -1740,6 +1756,7 @@ Implement every token from `docs/design-system.md` as a CSS custom property at `
 **File:** `landing/app.js`
 
 Minimal vanilla JS:
+
 - Intersection observer for section fade-in
 - Copy-to-clipboard on contract address click
 - Nav underline follows active section on scroll
@@ -1794,6 +1811,7 @@ Commit: `git commit -am "docs: add PROTOCOL reference"`
 ### Task 7.5: DoraHacks submission
 
 Fill the form:
+
 - Project name: MARC on Stellar
 - Tagline: "The commerce layer for agent payments."
 - Repo: https://github.com/<user>/marc-stellar

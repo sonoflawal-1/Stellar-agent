@@ -3,14 +3,22 @@ target/
 **/*.rs.bk
 Cargo.lock
 
-# Node
+# Node — root-level entry covers all packages, no per-package .gitignore needed
 node_modules/
 dist/
 *.tsbuildinfo
+*.js.map
+
+# Package manager
+.pnp
+.pnp.js
+.yarn/cache
+.yarn/unplugged
 
 # Env
 .env
 .env.local
+.env.*.local
 
 # Deployments (keep directory, ignore generated json)
 deployments/*.json
@@ -18,6 +26,41 @@ deployments/*.json
 
 # OS / editor
 .DS_Store
+Thumbs.db
 .vscode/
 .idea/
 *.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+
+# Build outputs
+build/
+out/
+.next/
+
+# Mutation testing results
+mutation-results-*/
+
+# Test snapshots & coverage
+**/__snapshots__/
+**/*.snap
+coverage/
+.nyc_output/
+*.lcov
+
+# Soroban / Stellar test artifacts
+/test_snapshots/
+soroban/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Backup files
+*.bak
+*.backup
+*.old

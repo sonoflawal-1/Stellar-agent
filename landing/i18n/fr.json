@@ -1,0 +1,103 @@
+{
+  "nav": {
+    "protocol": "Protocole",
+    "how_it_works": "Fonctionnement",
+    "guide": "Démarrage",
+    "try_it": "Essayer",
+    "contracts": "Contrats",
+    "launch_app": "Ouvrir l'App"
+  },
+  "hero": {
+    "badge": "En ligne sur Stellar Testnet",
+    "title_line1": "La Couche de Commerce",
+    "title_line2": "pour les Paiements entre Agents.",
+    "subtitle": "La couche de commerce pour les paiements d'agents IA sur Stellar. Séquestre avec garanties de livraison, identité d'agent on-chain, au-dessus de x402 et MPP. Le tout dans un seul protocole.",
+    "cta_dashboard": "Ouvrir le Tableau de Bord",
+    "cta_get_started": "Commencer",
+    "scroll": "DÉFILER"
+  },
+  "statement": {
+    "title": "Bear est une infrastructure de commerce complète combinant les micropaiements x402, l'identité d'agent et le séquestre de missions en un seul protocole unifié.",
+    "sub": "Construit sur trois standards (ERC-8004, ERC-8183, x402), Bear fournit tout ce dont un agent IA a besoin pour transiger en toute confiance sur Stellar. Enregistrer, séquestrer, livrer, régler."
+  },
+  "protocol": {
+    "eyebrow": "Protocole",
+    "title_line1": "La Pile du",
+    "title_accent": "Protocole",
+    "desc": "Trois couches qui travaillent ensemble pour apporter confiance et garanties de livraison à chaque transaction d'agent IA sur Stellar."
+  },
+  "stack": {
+    "identity": {
+      "title": "Identité d'Agent",
+      "desc": "Registre on-chain pour les agents IA. Chaque agent obtient un ID unique, une liaison de portefeuille et un URI de métadonnées."
+    },
+    "commerce": {
+      "title": "Commerce d'Agents",
+      "desc": "Marché de séquestre de missions. Le client bloque les fonds, le prestataire livre, l'évaluateur approuve. 1% de frais de plateforme."
+    },
+    "x402": {
+      "title": "x402 / MPP",
+      "desc": "Micropaiements HTTP 402 via les rails de paiement Stellar. Middleware Express et client fetch à paiement automatique."
+    }
+  },
+  "how": {
+    "eyebrow": "Fonctionnement",
+    "title_line1": "Quatre étapes vers le",
+    "title_accent": "commerce",
+    "title_line2": "entre agents.",
+    "desc": "De l'enregistrement au règlement — le cycle de vie complet du commerce entre agents."
+  },
+  "step": {
+    "1": { "title": "Enregistrer", "desc": "L'agent s'enregistre sur le contrat d'identité avec un URI de métadonnées. Il obtient un ID on-chain unique lié à son adresse Stellar." },
+    "2": { "title": "Séquestrer", "desc": "Le client crée une mission sur le contrat de commerce, bloquant des USDC en séquestre. Le budget est retenu jusqu'à l'achèvement ou l'annulation." },
+    "3": { "title": "Livrer", "desc": "Le prestataire soumet un URI de résultat. L'évaluateur examine la livraison et décide de libérer ou non le paiement." },
+    "4": { "title": "Régler", "desc": "Le séquestre se libère on-chain : 99% pour le prestataire, 1% de frais pour la trésorerie. Entièrement auditable." }
+  },
+  "guide": {
+    "eyebrow": "Démarrage",
+    "title_line1": "Commencez avec Bear",
+    "title_accent": "en quelques minutes.",
+    "desc": "Tout ce dont vous avez besoin pour passer de zéro à votre première mission d'agent on-chain. Installez le SDK et commencez à développer."
+  },
+  "code": {
+    "install_sdk": "Installer le SDK",
+    "register_identity": "Enregistrer l'Identité d'Agent",
+    "create_escrow": "Créer une Mission en Séquestre",
+    "monetize_api": "Monétiser un Endpoint d'API"
+  },
+  "tryit": {
+    "eyebrow": "Bac à Sable",
+    "title_line1": "Essayez-le",
+    "title_accent": "dans le navigateur.",
+    "desc": "Explorez marc-stellar-sdk directement — aucune installation requise. Le bac à sable s'exécute entièrement dans votre navigateur via StackBlitz.",
+    "notice": "Le bac à sable fonctionne sur Stellar Testnet. Aucun fonds réel n'est utilisé.",
+    "placeholder_pre": "Un environnement Node.js interactif avec",
+    "placeholder_post": "préinstallé se chargera ci-dessous.",
+    "launch": "Lancer le Bac à Sable"
+  },
+  "contracts": {
+    "eyebrow": "Déploiement Testnet",
+    "title_line1": "En ligne sur",
+    "title_accent": "Stellar Testnet.",
+    "desc": "Déployé et initialisé sur Soroban. Cliquez sur une adresse pour la copier.",
+    "badge": "Stellar Testnet — En ligne"
+  },
+  "contract": {
+    "identity_desc": "Registre on-chain pour les identités d'agents IA avec URIs de métadonnées",
+    "commerce_desc": "Moteur de séquestre avec cycle de vie des missions, vérification de livraison et répartition des frais 99/1",
+    "explorer": "Voir sur l'Explorateur →"
+  },
+  "footer": {
+    "tagline": "La couche de commerce pour les paiements entre agents.",
+    "copy": "Créé pour Stellar Hacks : Agents 2026"
+  },
+  "consent": {
+    "title": "Confidentialité et Cookies",
+    "description": "Nous utilisons des polices externes (Google Fonts) et des analyses pour améliorer votre expérience. Celles-ci peuvent déposer des cookies dans certaines régions. Vous pouvez toujours modifier vos préférences.",
+    "reject": "Tout Refuser",
+    "accept": "Tout Accepter"
+  },
+  "lang": {
+    "label": "Langue"
+  }
+}

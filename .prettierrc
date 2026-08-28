@@ -1,10 +1,32 @@
 {
   "semi": true,
   "singleQuote": false,
+  "quoteProps": "as-needed",
   "trailingComma": "all",
   "printWidth": 100,
   "tabWidth": 2,
+  "useTabs": false,
   "arrowParens": "always",
   "bracketSpacing": true,
-  "endOfLine": "lf"
+  "bracketSameLine": false,
+  "endOfLine": "lf",
+  "proseWrap": "preserve",
+  "embeddedLanguageFormatting": "auto",
+  "overrides": [
+    {
+      "files": "*.json",
+      "options": {
+        "parser": "json",
+        "trailingComma": "none"
+      }
+    },
+    {
+      "files": ["*.yml", "*.yaml"],
+      "options": {
+        "parser": "yaml",
+        "tabWidth": 2,
+        "proseWrap": "preserve"
+      }
+    }
+  ]
 }

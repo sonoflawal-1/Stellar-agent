@@ -1,78 +1,130 @@
 import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";
-import express from "express";
+import { fileURLToPath } from "node:url";
+import rateLimit from "express-rate-limit";
 import Groq from "groq-sdk";
-import { Keypair } from "@stellar/stellar-sdk";
-import { IdentityClient, CommerceClient, TESTNET, type MarcConfig } from "marc-stellar-sdk";
+import { CommerceClient } from "marc-stellar-sdk";
+import { retryWithBackoff, createSellerAgent } from "../shared.js";
 
-const cfg: MarcConfig = {
-  rpcUrl: process.env.STELLAR_RPC_URL ?? TESTNET.rpcUrl,
-  networkPassphrase: process.env.STELLAR_NETWORK_PASSPHRASE ?? TESTNET.networkPassphrase,
-  identityContract: process.env.AGENT_IDENTITY_CONTRACT || TESTNET.identityContract,
-  commerceContract: process.env.AGENTIC_COMMERCE_CONTRACT || TESTNET.commerceContract,
-  usdcToken: process.env.USDC_TOKEN_CONTRACT || TESTNET.usdcToken,
-  onTx: (hash) => console.log(`[tx] ${hash} → https://stellar.expert/explorer/testnet/tx/${hash}`),
-};
+const AGENT_DIR = path.dirname(fileURLToPath(import.meta.url));
 
-const seller = Keypair.fromSecret(process.env.SELLER_SECRET!);
-const port = Number(process.env.SELLER_PORT ?? 4504);
+const PORT = Number(process.env.SELLER_PORT ?? 4504);
 const AGENT_ID = "seller-researcher";
-const OUTPUT_FILE = "output/research.md";
+const OUTPUT_DIR = path.join(AGENT_DIR, "output");
+const OUTPUT_FILE = path.join(OUTPUT_DIR, "research.json");
+
+const { app, seller, cfg } = await createSellerAgent({
+  id: AGENT_ID,
+  port: PORT,
+  agentDir: AGENT_DIR,
+});
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+const GROQ_MODEL = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
 
-async function generate(prompt: string): Promise<string> {
+interface ResearchOutput {
+  summary: string;
+  sources: { title: string; url: string }[];
+}
+
+type ResearchDepth = "brief" | "standard" | "deep";
+
+const DEPTH_CONFIG: Record<ResearchDepth, { sourceRange: string; detail: string }> = {
+  brief: { sourceRange: "2-3", detail: "Write a concise 1-2 paragraph summary." },
+  standard: {
+    sourceRange: "3-8",
+    detail: "Write a comprehensive multi-section summary in markdown.",
+  },
+  deep: {
+    sourceRange: "8-15",
+    detail:
+      "Write an exhaustive, deeply detailed analysis with sections, subsections, key findings, and critical evaluation of sources.",
+  },
+};
+
+async function generate(task: string, depth: ResearchDepth = "standard"): Promise<ResearchOutput> {
+  const { sourceRange, detail } = DEPTH_CONFIG[depth];
   const res = await groq.chat.completions.create({
-    model: "llama-3.3-70b-versatile",
-    messages: [{ role: "user", content: prompt }],
+    model: GROQ_MODEL,
+    messages: [
+      {
+        role: "user",
+        content: `You are a research analyst. Research the following topic and return ONLY valid JSON (no markdown, no code fences) with this exact schema:
+{
+  "summary": "research summary in markdown format",
+  "sources": [
+    { "title": "Source title", "url": "https://..." }
+  ]
+}
+
+Research depth: ${depth}
+Include ${sourceRange} real, verifiable sources. Each source must have a real URL. The summary must cite sources by their index [1], [2], etc.
+${detail}`,
+      },
+    ],
   });
-  return res.choices[0].message.content ?? "";
+  const text = res.choices[0].message.content ?? "";
+  return JSON.parse(text.replace(/```(?:json)?\s*/gi, "").trim()) as ResearchOutput;
 }
 
-const identity = new IdentityClient(cfg);
-let agentId = await identity.agentOf(seller.publicKey());
-if (!agentId) {
-  agentId = await identity.register(seller, `ipfs://${AGENT_ID}.json`);
-  console.log(`[${AGENT_ID}] Registered as agent #${agentId}`);
-} else {
-  console.log(`[${AGENT_ID}] Already agent #${agentId}`);
-}
+const limiter = rateLimit({
+  windowMs: 60_000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "too many requests — rate limited (5/min/IP)" },
+});
 
-const app = express();
-app.use(express.json());
+app.post("/job", limiter, async (req, res) => {
+  const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const { jobId, task, depth } = req.body;
 
-app.get("/", (_req, res) => res.json(JSON.parse(fs.readFileSync("agent.json", "utf8"))));
+  console.log(
+    `[${AGENT_ID}] [req:${requestId}] Incoming POST /job — headers: ${JSON.stringify({
+      "content-type": req.headers["content-type"],
+      "user-agent": req.headers["user-agent"],
+      "x-forwarded-for": req.headers["x-forwarded-for"] ?? req.socket.remoteAddress,
+    })} — body: ${JSON.stringify(req.body)}`,
+  );
 
-app.post("/job", async (req, res) => {
-  const { jobId, task } = req.body;
-  console.log(`[${AGENT_ID}] Job #${jobId}: ${task}`);
-  res.json({ status: "accepted", jobId });
+  if (!jobId || isNaN(Number(jobId))) {
+    console.warn(`[${AGENT_ID}] [req:${requestId}] Rejected: invalid jobId`);
+    res.status(400).json({ error: "invalid jobId" });
+    return;
+  }
+  if (!task) {
+    console.warn(`[${AGENT_ID}] [req:${requestId}] Rejected: missing task`);
+    res.status(400).json({ error: "missing task" });
+    return;
+  }
+  const resolvedDepth: ResearchDepth = ["brief", "standard", "deep"].includes(depth)
+    ? depth
+    : "standard";
+  console.log(`[${AGENT_ID}] Job #${jobId} (depth=${resolvedDepth}): ${task}`);
+  const response = { status: "accepted", jobId, depth: resolvedDepth };
+  console.log(`[${AGENT_ID}] [req:${requestId}] Response: ${JSON.stringify(response)}`);
+  res.json(response);
 
   try {
     console.log(`[${AGENT_ID}] Calling Groq...`);
-    const report = await generate(
-      `You are a research analyst. Write a thorough research report for:\n\n${task}\n\nStructure in markdown: # Executive Summary, ## Key Findings, ## Analysis, ## Recommendations.`
+    const research = await generate(task, resolvedDepth);
+    const sourceCount = research.sources.length;
+    fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+    fs.writeFileSync(OUTPUT_FILE, JSON.stringify(research, null, 2));
+    console.log(
+      `[${AGENT_ID}] Research done: ${research.summary.length} chars, ${sourceCount} sources`,
     );
-    fs.mkdirSync("output", { recursive: true });
-    fs.writeFileSync(OUTPUT_FILE, report);
-    console.log(`[${AGENT_ID}] Report written (${report.length} chars)`);
 
     const commerce = new CommerceClient(cfg);
-    for (let attempt = 1; attempt <= 5; attempt++) {
-      try {
-        await commerce.submit(seller, BigInt(jobId), `file://${path.resolve(OUTPUT_FILE)}`);
-        console.log(`[${AGENT_ID}] ✓ Job #${jobId} submitted`);
-        break;
-      } catch (e) {
-        if (attempt === 5) throw e;
-        console.log(`[${AGENT_ID}] submit attempt ${attempt} failed, retrying...`);
-        await new Promise((r) => setTimeout(r, 4000));
-      }
-    }
+    await retryWithBackoff(
+      () => commerce.submit(seller, BigInt(jobId), `file://${path.resolve(OUTPUT_FILE)}`),
+      { maxAttempts: 5, baseDelayMs: 1000, label: AGENT_ID },
+    );
+    console.log(`[${AGENT_ID}] ✓ Job #${jobId} submitted`);
   } catch (err) {
     console.error(`[${AGENT_ID}] Error:`, (err as Error).message);
   }
 });
 
-app.listen(port, () => console.log(`[${AGENT_ID}] Listening on :${port}`));
+app.listen(PORT, () => console.log(`[${AGENT_ID}] Listening on :${PORT}`));

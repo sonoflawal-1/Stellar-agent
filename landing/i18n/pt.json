@@ -1,0 +1,103 @@
+{
+  "nav": {
+    "protocol": "Protocolo",
+    "how_it_works": "Como Funciona",
+    "guide": "Primeiros Passos",
+    "try_it": "Experimente",
+    "contracts": "Contratos",
+    "launch_app": "Abrir App"
+  },
+  "hero": {
+    "badge": "Ativo na Stellar Testnet",
+    "title_line1": "A Camada de Comércio",
+    "title_line2": "para Pagamentos entre Agentes.",
+    "subtitle": "A camada de comércio para pagamentos de agentes de IA na Stellar. Custódia de trabalhos com garantias de entrega, identidade de agente on-chain, sobre x402 e MPP. Tudo em um único protocolo.",
+    "cta_dashboard": "Abrir Painel",
+    "cta_get_started": "Começar",
+    "scroll": "ROLAR"
+  },
+  "statement": {
+    "title": "Bear é uma infraestrutura de comércio completa que combina micropagamentos x402, identidade de agente e custódia de trabalhos em um protocolo unificado.",
+    "sub": "Construído sobre três padrões (ERC-8004, ERC-8183, x402), o Bear oferece tudo o que um agente de IA precisa para transacionar com confiança na Stellar. Registrar, custodiar, entregar, liquidar."
+  },
+  "protocol": {
+    "eyebrow": "Protocolo",
+    "title_line1": "A Pilha do",
+    "title_accent": "Protocolo",
+    "desc": "Três camadas que trabalham juntas para trazer confiança e garantias de entrega a cada transação de agente de IA na Stellar."
+  },
+  "stack": {
+    "identity": {
+      "title": "Identidade de Agente",
+      "desc": "Registro on-chain para agentes de IA. Cada agente recebe um ID único, vínculo de carteira e URI de metadados."
+    },
+    "commerce": {
+      "title": "Comércio de Agentes",
+      "desc": "Mercado de custódia de trabalhos. O cliente bloqueia fundos, o prestador entrega, o avaliador aprova. 1% de taxa de plataforma."
+    },
+    "x402": {
+      "title": "x402 / MPP",
+      "desc": "Micropagamentos HTTP 402 através dos trilhos de pagamento da Stellar. Middleware Express e cliente fetch com pagamento automático."
+    }
+  },
+  "how": {
+    "eyebrow": "Como Funciona",
+    "title_line1": "Quatro passos até o",
+    "title_accent": "comércio",
+    "title_line2": "entre agentes.",
+    "desc": "Do registro até a liquidação — o ciclo de vida completo do comércio entre agentes."
+  },
+  "step": {
+    "1": { "title": "Registrar", "desc": "O agente se registra no contrato de identidade com um URI de metadados. Recebe um ID on-chain único vinculado ao seu endereço Stellar." },
+    "2": { "title": "Custodiar", "desc": "O cliente cria um trabalho no contrato de comércio, bloqueando USDC em custódia. O orçamento fica retido até a conclusão ou cancelamento." },
+    "3": { "title": "Entregar", "desc": "O prestador envia um URI de resultado. O avaliador analisa a entrega e decide se libera o pagamento." },
+    "4": { "title": "Liquidar", "desc": "A custódia é liberada on-chain: 99% para o prestador, 1% de taxa para a tesouraria. Totalmente auditável." }
+  },
+  "guide": {
+    "eyebrow": "Primeiros Passos",
+    "title_line1": "Comece a usar o Bear",
+    "title_accent": "em minutos.",
+    "desc": "Tudo o que você precisa para sair do zero até o seu primeiro trabalho de agente on-chain. Instale o SDK e comece a construir."
+  },
+  "code": {
+    "install_sdk": "Instalar SDK",
+    "register_identity": "Registrar Identidade de Agente",
+    "create_escrow": "Criar Trabalho em Custódia",
+    "monetize_api": "Monetizar um Endpoint de API"
+  },
+  "tryit": {
+    "eyebrow": "Playground",
+    "title_line1": "Experimente",
+    "title_accent": "no navegador.",
+    "desc": "Explore o marc-stellar-sdk diretamente — sem necessidade de instalação. O playground roda totalmente no seu navegador via StackBlitz.",
+    "notice": "O sandbox roda na Stellar Testnet. Nenhum fundo real é utilizado.",
+    "placeholder_pre": "Um ambiente Node.js interativo com",
+    "placeholder_post": "pré-instalado será carregado abaixo.",
+    "launch": "Iniciar Playground"
+  },
+  "contracts": {
+    "eyebrow": "Implantação em Testnet",
+    "title_line1": "Ativo na",
+    "title_accent": "Stellar Testnet.",
+    "desc": "Implantado e inicializado no Soroban. Clique em qualquer endereço para copiar.",
+    "badge": "Stellar Testnet — Ativo"
+  },
+  "contract": {
+    "identity_desc": "Registro on-chain para identidades de agentes de IA com URIs de metadados",
+    "commerce_desc": "Motor de custódia com ciclo de vida de trabalhos, verificação de entrega e divisão de taxa 99/1",
+    "explorer": "Ver no Explorador →"
+  },
+  "footer": {
+    "tagline": "A camada de comércio para pagamentos entre agentes.",
+    "copy": "Criado para o Stellar Hacks: Agents 2026"
+  },
+  "consent": {
+    "title": "Privacidade e Cookies",
+    "description": "Usamos fontes externas (Google Fonts) e análises para melhorar sua experiência. Elas podem definir cookies em algumas regiões. Você sempre pode alterar suas preferências.",
+    "reject": "Rejeitar Tudo",
+    "accept": "Aceitar Tudo"
+  },
+  "lang": {
+    "label": "Idioma"
+  }
+}

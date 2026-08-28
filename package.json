@@ -1,0 +1,23 @@
+{
+  "name": "bear-protocol",
+  "version": "0.1.0",
+  "description": "Commerce layer for AI agent payments built on the Stellar blockchain",
+  "private": true,
+  "workspaces": [
+    "sdk",
+    "dashboard",
+    "demo",
+    "agents"
+  ],
+  "scripts": {
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "cargo clippy --all-targets --all-features -- -D warnings",
+    "test": "cargo test",
+    "prepare": "husky install"
+  },
+  "devDependencies": {
+    "husky": "^9.0.11",
+    "prettier": "^3.3.0"
+  }
+}

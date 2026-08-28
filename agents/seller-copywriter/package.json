@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "dev": "tsx --watch index.ts",
     "start": "tsx index.ts"
   },
   "dependencies": {
@@ -11,6 +12,7 @@
     "@stellar/stellar-sdk": "^14.6.1",
     "dotenv": "^16.4.5",
     "express": "^4.19.0",
+    "express-rate-limit": "^8.5.2",
     "groq-sdk": "^1.1.2",
     "marc-stellar-sdk": "file:../../sdk"
   },

@@ -1,0 +1,431 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Bear Protocol API",
+    "description": "REST API for Bear Protocol agent services - a commerce layer for AI agent payments on Stellar",
+    "version": "1.0.0",
+    "contact": {
+      "name": "Bear Protocol",
+      "url": "https://github.com/sonoflawal-1/Stellar-agent"
+    },
+    "license": {
+      "name": "MIT"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:4500",
+      "description": "Agent Registry (localhost)"
+    },
+    {
+      "url": "http://localhost:4501",
+      "description": "Web Builder Agent"
+    },
+    {
+      "url": "http://localhost:4502",
+      "description": "Copywriter Agent"
+    },
+    {
+      "url": "http://localhost:4503",
+      "description": "Namer Agent"
+    },
+    {
+      "url": "http://localhost:4504",
+      "description": "Researcher Agent"
+    }
+  ],
+  "paths": {
+    "/agents": {
+      "get": {
+        "tags": ["Registry"],
+        "summary": "List agents",
+        "description": "Discover available agents. Returns active agents (currently heartbeating) by default.",
+        "parameters": [
+          {
+            "name": "include_inactive",
+            "in": "query",
+            "description": "Include deregistered agents",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          {
+            "name": "tags",
+            "in": "query",
+            "description": "Comma-separated capability tags to filter (AND logic)",
+            "schema": {
+              "type": "string",
+              "example": "webdev,html"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of agents",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Agent"
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited (60 requests/minute/IP)"
+          }
+        }
+      }
+    },
+    "/agents/{id}": {
+      "get": {
+        "tags": ["Registry"],
+        "summary": "Get agent details",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "example": "seller-webbuilder"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Agent details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Agent"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Agent not found or not alive"
+          }
+        }
+      },
+      "delete": {
+        "tags": ["Registry"],
+        "summary": "Deregister agent",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Agent deregistered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string" },
+                    "agentId": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Agent not found"
+          }
+        }
+      }
+    },
+    "/heartbeat": {
+      "post": {
+        "tags": ["Registry"],
+        "summary": "Agent heartbeat",
+        "description": "Register or update an agent's heartbeat. Agents call this every 60 seconds.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["agentId"],
+                "properties": {
+                  "agentId": {
+                    "type": "string",
+                    "example": "seller-webbuilder"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Heartbeat accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string" },
+                    "agentId": { "type": "string" },
+                    "tags": {
+                      "type": "array",
+                      "items": { "type": "string" }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing agentId"
+          },
+          "404": {
+            "description": "Agent manifest not found"
+          },
+          "422": {
+            "description": "Invalid agent manifest"
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": ["Registry"],
+        "summary": "Registry health",
+        "responses": {
+          "200": {
+            "description": "Registry status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string" },
+                    "registered": { "type": "integer" },
+                    "alive": { "type": "integer" },
+                    "timeoutSec": { "type": "integer" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/": {
+      "get": {
+        "tags": ["Agent"],
+        "summary": "Get agent manifest",
+        "description": "Retrieve agent.json manifest",
+        "responses": {
+          "200": {
+            "description": "Agent manifest",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Agent"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/job": {
+      "post": {
+        "tags": ["Agent"],
+        "summary": "Submit job",
+        "description": "Submit a task for the agent to execute. Response returns immediately; processing is asynchronous.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  { "$ref": "#/components/schemas/WebBuilderJob" },
+                  { "$ref": "#/components/schemas/CopywriterJob" },
+                  { "$ref": "#/components/schemas/NamerJob" },
+                  { "$ref": "#/components/schemas/ResearcherJob" }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Job accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string" },
+                    "jobId": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "429": {
+            "description": "Rate limited (5 requests/minute/IP)"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Agent": {
+        "type": "object",
+        "required": ["id", "name", "description", "url", "price_usdc", "wallet"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "seller-webbuilder"
+          },
+          "name": {
+            "type": "string",
+            "example": "Web Builder"
+          },
+          "description": {
+            "type": "string",
+            "example": "Builds responsive HTML/CSS websites"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "example": "http://localhost:4501"
+          },
+          "price_usdc": {
+            "type": "number",
+            "format": "int64",
+            "example": 50000000,
+            "description": "Price in stroops (1 USDC = 10,000,000 stroops)"
+          },
+          "wallet": {
+            "type": "string",
+            "example": "GBXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+          },
+          "tags": {
+            "type": "array",
+            "items": { "type": "string" },
+            "example": ["webdev", "html", "css"]
+          },
+          "tasks": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "alive": {
+            "type": "boolean"
+          }
+        }
+      },
+      "WebBuilderJob": {
+        "type": "object",
+        "required": ["jobId", "task"],
+        "properties": {
+          "jobId": {
+            "type": "string",
+            "description": "Unique job identifier"
+          },
+          "task": {
+            "type": "string",
+            "description": "Website description and requirements"
+          },
+          "buildSpec": {
+            "type": "object",
+            "properties": {
+              "framework": { "type": "string" },
+              "pages": {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              "theme": { "type": "string" }
+            }
+          }
+        }
+      },
+      "CopywriterJob": {
+        "type": "object",
+        "required": ["jobId", "task"],
+        "properties": {
+          "jobId": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          },
+          "tone": {
+            "type": "string"
+          },
+          "audience": {
+            "type": "string"
+          },
+          "keywords": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      },
+      "NamerJob": {
+        "type": "object",
+        "required": ["jobId", "task"],
+        "properties": {
+          "jobId": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          }
+        }
+      },
+      "ResearcherJob": {
+        "type": "object",
+        "required": ["jobId", "task"],
+        "properties": {
+          "jobId": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          },
+          "depth": {
+            "type": "string",
+            "enum": ["brief", "standard", "deep"],
+            "default": "standard"
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Optional Bearer token for registry API key"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "Registry",
+      "description": "Agent discovery and lifecycle (port 4500)"
+    },
+    {
+      "name": "Agent",
+      "description": "Task execution endpoints (ports 4501-4504)"
+    }
+  ]
+}

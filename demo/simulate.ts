@@ -12,10 +12,12 @@
  */
 import "dotenv/config";
 import express from "express";
-import { Keypair } from "@stellar/stellar-sdk";
+import cors from "cors";
+import { Keypair, scValToNative, xdr } from "@stellar/stellar-sdk";
 import {
   IdentityClient,
   CommerceClient,
+  JobStatus,
   marcPaywall,
   marcFetch,
   TESTNET,
@@ -35,6 +37,29 @@ const BASE_PORT = 4410;
 const NUM_SELLERS = 4;
 const NUM_BUYERS = 5;
 const BUDGET = BigInt(10_000_000); // 1 USDC
+
+/** Decode a raw ScVal hex/base64 string to a native JS value for readable logging. */
+function decodeScVal(raw: unknown): unknown {
+  if (typeof raw !== "string") return raw;
+  for (const enc of ["hex", "base64"] as const) {
+    try {
+      return scValToNative(xdr.ScVal.fromXDR(raw, enc));
+    } catch {
+      /* try next encoding */
+    }
+  }
+  return raw;
+}
+
+/** Format an error, decoding any embedded XDR/ScVal hex in the message. */
+function fmtError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  // Replace long hex runs that look like XDR payloads with their decoded form.
+  return err.message.replace(/\b([0-9a-f]{32,})\b/gi, (hex) => {
+    const decoded = decodeScVal(hex);
+    return decoded === hex ? hex : `[ScVal: ${JSON.stringify(decoded)}]`;
+  });
+}
 
 function tag(role: string, i: number) {
   return `[${role}-${i}]`;
@@ -59,11 +84,13 @@ async function fundUsdc(publicKey: string): Promise<void> {
 async function setupKeypairs(count: number, role: string): Promise<Keypair[]> {
   const kps = Array.from({ length: count }, () => Keypair.random());
   console.log(`\nFunding ${count} ${role} accounts...`);
-  await Promise.all(kps.map(async (kp, i) => {
-    await fundAccount(kp.publicKey());
-    if (role === "buyer") await fundUsdc(kp.publicKey());
-    console.log(`  ${tag(role, i + 1)} funded: ${kp.publicKey()}`);
-  }));
+  await Promise.all(
+    kps.map(async (kp, i) => {
+      await fundAccount(kp.publicKey());
+      if (role === "buyer") await fundUsdc(kp.publicKey());
+      console.log(`  ${tag(role, i + 1)} funded: ${kp.publicKey()}`);
+    }),
+  );
   return kps;
 }
 
@@ -77,15 +104,20 @@ async function startSeller(kp: Keypair, index: number): Promise<{ agent: Agent; 
 
   const port = BASE_PORT + index;
   const app = express();
+  app.use(cors());
 
-  app.use("/api/work", marcPaywall({
-    payTo: kp.publicKey(),
-    price: "$0.01",
-    network: "stellar:testnet",
-    description: `Work from seller-${index}`,
-    facilitatorUrl: process.env.X402_FACILITATOR_URL,
-    facilitatorApiKey: process.env.X402_FACILITATOR_API_KEY,
-  }));
+  app.use(
+    "/api/work",
+    marcPaywall({
+      payTo: kp.publicKey(),
+      price: "$0.01",
+      network: "stellar:testnet",
+      token: cfg.usdcToken,
+      description: `Work from seller-${index}`,
+      facilitatorUrl: process.env.X402_FACILITATOR_URL,
+      facilitatorApiKey: process.env.X402_FACILITATOR_API_KEY,
+    }),
+  );
 
   app.get("/api/work", (_req, res) => {
     res.json({ result: `Report from seller-${index} at ${Date.now()}`, seller: kp.publicKey() });
@@ -125,7 +157,7 @@ async function runBuyer(
     kp.publicKey(), // buyer = evaluator in demo
     cfg.usdcToken,
     BUDGET,
-    `Job from buyer-${index} to seller-${(index - 1) % sellers.length + 1}`,
+    `Job from buyer-${index} to seller-${((index - 1) % sellers.length) + 1}`,
   );
   console.log(`${t} job #${jobId} created — 1 USDC locked in escrow`);
 
@@ -142,11 +174,161 @@ async function runBuyer(
   // Buyer (evaluator) completes job → 99/1 split
   await commerce.complete(kp, jobId);
   const job = await commerce.getJob(jobId);
-  console.log(`${t} job #${jobId} completed — status: ${job?.status} — 99% to seller, 1% fee`);
+  console.log(
+    `${t} job #${jobId} completed — status: ${job?.status ?? "unknown"} — 99% to seller, 1% fee`,
+  );
+}
+
+// --- Stress test: N parallel jobs, each with its own seller+buyer keypair ---
+async function runStressTest(n: number): Promise<void> {
+  console.log(`\n=== MARC STRESS TEST: ${n} parallel jobs ===\n`);
+
+  // Independent keypair pair per slot avoids nonce conflicts across concurrent txs.
+  const slots = Array.from({ length: n }, (_, i) => ({
+    seller: Keypair.random(),
+    buyer: Keypair.random(),
+    index: i + 1,
+  }));
+
+  console.log(`Funding ${n * 2} accounts via Friendbot...`);
+  await Promise.all(
+    slots.flatMap(({ seller, buyer }) => [
+      fundAccount(seller.publicKey()),
+      fundAccount(buyer.publicKey()),
+    ]),
+  );
+  console.log("  All accounts funded.\n");
+
+  const identity = new IdentityClient(cfg);
+  const commerce = new CommerceClient(cfg);
+
+  // Register both agents and create job — all N slots in parallel.
+  console.log(`Creating ${n} jobs in parallel...`);
+  const jobSlots = await Promise.all(
+    slots.map(async ({ seller, buyer, index }) => {
+      await Promise.all([
+        identity.register(seller, `ipfs://stress-seller-${index}.json`),
+        identity.register(buyer, `ipfs://stress-buyer-${index}.json`),
+      ]);
+      const jobId = await commerce.createJob(
+        buyer,
+        seller.publicKey(),
+        buyer.publicKey(),
+        cfg.usdcToken,
+        BUDGET,
+        `Stress job ${index}/${n}`,
+      );
+      console.log(`  [${index}/${n}] job #${jobId} created`);
+      return { seller, buyer, jobId, index };
+    }),
+  );
+
+  // Each seller submits their own deliverable — all in parallel.
+  console.log(`\nSubmitting ${n} deliverables in parallel...`);
+  await Promise.all(
+    jobSlots.map(async ({ seller, jobId, index }) => {
+      await commerce.submit(seller, jobId, `ipfs://stress-result-${jobId}.json`);
+      console.log(`  [${index}/${n}] job #${jobId} submitted`);
+    }),
+  );
+
+  // Each buyer completes their job — all in parallel.
+  console.log(`\nCompleting ${n} jobs in parallel...`);
+  await Promise.all(
+    jobSlots.map(async ({ buyer, jobId, index }) => {
+      await commerce.complete(buyer, jobId);
+      console.log(`  [${index}/${n}] job #${jobId} completed`);
+    }),
+  );
+
+  // Verify every job reached Completed status.
+  console.log(`\nVerifying ${n} outcomes...`);
+  const results = await Promise.all(
+    jobSlots.map(async ({ jobId, index }) => {
+      const job = await commerce.getJob(jobId);
+      const pass = job?.status === JobStatus.Completed;
+      console.log(
+        `  [${index}/${n}] job #${jobId}: ${pass ? "PASS" : "FAIL"} (status=${job?.status ?? "null"})`,
+      );
+      return pass;
+    }),
+  );
+
+  const passed = results.filter(Boolean).length;
+  console.log(`\n=== STRESS RESULT: ${passed}/${n} passed ===`);
+  if (passed < n) {
+    console.error(`${n - passed} job(s) failed verification.`);
+    process.exit(1);
+  }
+}
+
+// --- Cancel / Refund flow demo ---
+async function runCancelFlowDemo(): Promise<void> {
+  console.log("\n=== MARC MARKETPLACE CANCEL & REFUND DEMO ===\n");
+  const sellerKp = Keypair.random();
+  const buyerKp = Keypair.random();
+
+  console.log("Funding seller and buyer accounts via Friendbot...");
+  await Promise.all([
+    fundAccount(sellerKp.publicKey()),
+    fundAccount(buyerKp.publicKey()),
+    fundUsdc(buyerKp.publicKey()),
+  ]);
+
+  const identity = new IdentityClient(cfg);
+  const commerce = new CommerceClient(cfg);
+
+  console.log("Registering seller and buyer on-chain...");
+  const [sellerId, buyerId] = await Promise.all([
+    identity.register(sellerKp, "ipfs://cancel-seller-metadata.json"),
+    identity.register(buyerKp, "ipfs://cancel-buyer-metadata.json"),
+  ]);
+  console.log(`  Seller registered as agent #${sellerId}`);
+  console.log(`  Buyer registered as agent #${buyerId}`);
+
+  console.log("\nCreating escrow job (1 USDC locked)...");
+  const jobId = await commerce.createJob(
+    buyerKp,
+    sellerKp.publicKey(),
+    buyerKp.publicKey(),
+    cfg.usdcToken,
+    BUDGET,
+    "Cancel-flow demonstration job",
+  );
+  console.log(`  Job #${jobId} created — funds held in escrow contract.`);
+
+  console.log("\nCancelling job before deliverable submission...");
+  await commerce.cancel(buyerKp, jobId);
+
+  const job = await commerce.getJob(jobId);
+  console.log(`  Job #${jobId} status: ${job?.status ?? "unknown"} (expected: Cancelled)`);
+  if (job?.status === JobStatus.Cancelled) {
+    console.log("\n✅  CANCEL & REFUND DEMO SUCCESSFUL — locked funds returned to buyer balance.");
+  } else {
+    console.error("\n❌  CANCEL DEMO FAILED — unexpected status:", job?.status);
+    process.exit(1);
+  }
 }
 
 // --- Main ---
 async function main() {
+  const cancelIdx = process.argv.indexOf("--cancel");
+  if (cancelIdx !== -1) {
+    await runCancelFlowDemo();
+    process.exit(0);
+  }
+
+  const stressIdx = process.argv.indexOf("--stress");
+  if (stressIdx !== -1) {
+    const n = parseInt(process.argv[stressIdx + 1] ?? "", 10);
+    if (!Number.isFinite(n) || n < 1) {
+      console.error("Usage: npm run simulate -- --stress <N>  (N must be >= 1)");
+      process.exit(1);
+    }
+    await runStressTest(n);
+    process.exit(0);
+  }
+
   console.log("=== MARC MARKETPLACE SIMULATION ===");
   console.log(`${NUM_SELLERS} sellers, ${NUM_BUYERS} buyers\n`);
 
@@ -170,6 +352,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(err);
+  console.error("FATAL:", fmtError(err));
   process.exit(1);
 });

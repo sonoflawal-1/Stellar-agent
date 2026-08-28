@@ -12,7 +12,7 @@ rust-version = "1.81"
 license = "MIT"
 
 [workspace.dependencies]
-soroban-sdk = "25.3.1"
+soroban-sdk = "27.0.2"
 
 [profile.release]
 opt-level = "z"

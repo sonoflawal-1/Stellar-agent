@@ -1,0 +1,20 @@
+#!/bin/sh
+set -e
+
+# Pre-commit hook: run prettier, clippy, and cargo test
+
+echo "Checking code formatting with prettier..."
+npm run format:check || {
+  echo "Running prettier to fix formatting..."
+  npm run format
+  echo "Formatting applied. Please review and re-stage changes."
+  exit 1
+}
+
+echo "Running cargo clippy..."
+cargo clippy --all-targets --all-features -- -D warnings
+
+echo "Running cargo test..."
+cargo test
+
+echo "✓ All checks passed"

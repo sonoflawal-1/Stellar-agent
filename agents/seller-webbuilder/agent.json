@@ -2,6 +2,7 @@
   "id": "seller-webbuilder",
   "name": "Web Builder Agent",
   "description": "Builds complete HTML/CSS websites from a brief. Returns a self-contained HTML file.",
+  "tags": ["webdev", "html", "css", "frontend", "website"],
   "tasks": [
     "build website",
     "create landing page",

@@ -4,22 +4,29 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "dev": "tsx --watch tui.ts",
     "seller": "tsx seller-agent.ts",
     "buyer": "tsx buyer-agent.ts",
     "lifecycle": "tsx lifecycle.ts",
+    "lifecycle:cleanup": "tsx lifecycle.ts --cleanup",
+    "cleanup": "bash ../scripts/cleanup-demo.sh",
     "simulate": "tsx simulate.ts",
-    "tui": "tsx tui.ts"
+    "tui": "tsx tui.ts",
+    "cancel-flow": "tsx cancel-flow.ts",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@stellar/stellar-sdk": "^14.6.1",
     "@types/blessed": "^0.1.27",
     "@x402/stellar": "^2.9.0",
     "blessed": "^0.1.81",
+    "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.0",
     "marc-stellar-sdk": "file:../sdk"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/node": "^22.0.0",
     "tsx": "^4.19.0",

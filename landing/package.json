@@ -1,0 +1,24 @@
+{
+  "name": "bear-landing",
+  "version": "0.1.0",
+  "description": "Landing page for Bear — the commerce layer for AI agent payments on Stellar",
+  "type": "module",
+  "scripts": {
+    "dev": "node server.js",
+    "build": "echo 'Landing page is static HTML. No build step needed.'",
+    "test": "echo 'No tests defined'"
+  },
+  "keywords": [
+    "stellar",
+    "soroban",
+    "agent",
+    "commerce",
+    "escrow",
+    "micropayments"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "http-server": "^14.1.1"
+  }
+}

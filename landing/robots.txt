@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://marc-stellar.vercel.app/sitemap.xml

@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "builds": [
+    { "src": "index.html", "use": "@vercel/static" },
+    { "src": "404.html", "use": "@vercel/static" },
+    { "src": "api/contract-addresses.js", "use": "@vercel/node" }
+  ],
+  "routes": [
+    { "src": "/api/contract-addresses", "dest": "/api/contract-addresses.js" },
+    { "src": "/(.*)", "dest": "/$1" }
+  ],
+  "errorPages": {
+    "404": "/404.html"
+  }
+}

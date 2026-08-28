@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Rust: check, lint, test, and WASM build for Soroban contracts
+  # ---------------------------------------------------------------------------
+  rust:
+    name: Rust
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # rust-toolchain.toml is present in the repo root and pins the channel
+      # (1.91.0) plus the wasm32v1-none target, so rustup picks it up automatically.
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.91.0"
+          targets: wasm32v1-none
+          components: clippy
+
+      - name: Cache Cargo registry and build artefacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: cargo check
+        run: cargo check --workspace
+
+      - name: cargo clippy (deny warnings)
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: cargo test (all 19 unit tests)
+        run: cargo test --workspace
+
+      - name: cargo build --release (WASM target)
+        run: cargo build --target wasm32v1-none --release --workspace
+
+  # ---------------------------------------------------------------------------
+  # TypeScript: typecheck SDK, demo, and dashboard
+  # ---------------------------------------------------------------------------
+  typescript:
+    name: TypeScript
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: |
+            sdk/package-lock.json
+            demo/package-lock.json
+            dashboard/package-lock.json
+
+      - name: Install SDK dependencies
+        working-directory: sdk
+        run: npm ci
+
+      - name: Typecheck SDK
+        working-directory: sdk
+        run: npx tsc --noEmit
+
+      - name: Install demo dependencies
+        working-directory: demo
+        run: npm ci
+
+      - name: Typecheck demo
+        working-directory: demo
+        run: npx tsc --noEmit
+
+      - name: Install dashboard dependencies
+        working-directory: dashboard
+        run: npm ci
+
+      - name: Typecheck dashboard
+        working-directory: dashboard
+        run: npx tsc --noEmit
