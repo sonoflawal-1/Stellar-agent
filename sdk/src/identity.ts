@@ -11,6 +11,11 @@ import {
   Account,
 } from "@stellar/stellar-sdk";
 import type { Agent, MarcConfig } from "./types.js";
+import {
+  signerPublicKey,
+  toSigner,
+  type Signer,
+} from "./signer.js";
 
 /**
  * Typed wrapper around the `agent_identity` Soroban contract.
@@ -32,10 +37,10 @@ export class IdentityClient {
   }
 
   /** Register a new agent and return its on-chain ID. */
-  async register(owner: Keypair, uri: string): Promise<bigint> {
+  async register(owner: Signer, uri: string): Promise<bigint> {
     const op = this.contract.call(
       "register",
-      new Address(owner.publicKey()).toScVal(),
+      new Address(signerPublicKey(owner)).toScVal(),
       nativeToScVal(uri, { type: "string" }),
     );
     return await this.invoke(owner, op, (v) => BigInt(scValToNative(v) as string));
@@ -71,10 +76,10 @@ export class IdentityClient {
   }
 
   /** Update an agent's metadata URI (owner-only). */
-  async updateUri(owner: Keypair, id: bigint, uri: string): Promise<void> {
+  async updateUri(owner: Signer, id: bigint, uri: string): Promise<void> {
     const op = this.contract.call(
       "update_uri",
-      new Address(owner.publicKey()).toScVal(),
+      new Address(signerPublicKey(owner)).toScVal(),
       nativeToScVal(id, { type: "u64" }),
       nativeToScVal(uri, { type: "string" }),
     );
@@ -93,10 +98,10 @@ export class IdentityClient {
   }
 
   /** Permanently remove an agent (owner-only). */
-  async deregister(owner: Keypair, id: bigint): Promise<void> {
+  async deregister(owner: Signer, id: bigint): Promise<void> {
     const op = this.contract.call(
       "deregister",
-      new Address(owner.publicKey()).toScVal(),
+      new Address(signerPublicKey(owner)).toScVal(),
       nativeToScVal(id, { type: "u64" }),
     );
     await this.invoke(owner, op, () => undefined);
@@ -105,11 +110,12 @@ export class IdentityClient {
   // --- internals ---
 
   private async invoke<T>(
-    signer: Keypair,
+    signer: Signer,
     op: xdr.Operation,
     decode: (scVal: xdr.ScVal) => T,
   ): Promise<T> {
-    const account = await this.server.getAccount(signer.publicKey());
+    const s = toSigner(signer);
+    const account = await this.server.getAccount(s.publicKey);
     const tx = new TransactionBuilder(account, {
       fee: BASE_FEE,
       networkPassphrase: this.cfg.networkPassphrase,
@@ -118,8 +124,15 @@ export class IdentityClient {
       .setTimeout(30)
       .build();
     const prepared = await this.server.prepareTransaction(tx);
-    prepared.sign(signer);
-    const sent = await this.server.sendTransaction(prepared);
+    const signedXdr = await s.signTransaction(
+      prepared.toXDR(),
+      { networkPassphrase: this.cfg.networkPassphrase },
+    );
+    const signed = TransactionBuilder.fromXDR(
+      signedXdr,
+      this.cfg.networkPassphrase,
+    );
+    const sent = await this.server.sendTransaction(signed);
     if (sent.status === "ERROR") throw new Error(`submit failed: ${sent.errorResult}`);
     let getResp = await this.server.getTransaction(sent.hash);
     while (getResp.status === "NOT_FOUND") {
