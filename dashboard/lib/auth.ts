@@ -2,18 +2,10 @@ import { Request, Response, NextFunction } from "express";
 import crypto from "crypto";
 import { Keypair, TransactionBuilder, Networks, StrKey } from "@stellar/stellar-sdk";
 
-/**
- * In-memory nonce storage for challenge-response auth.
- * In production, use Redis or a database with expiration.
- */
 const nonceStore = new Map<string, { nonce: string; timestamp: number }>();
 const NONCE_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes
 const MAX_CLOCK_SKEW_SECONDS = 300; // Allow 5 minutes clock skew for signature timestamps
 
-/**
- * Generate a random nonce for wallet authentication.
- * Client signs this nonce to prove ownership of their wallet.
- */
 export function generateNonce(publicKey: string): string {
   const nonce = crypto.randomBytes(32).toString("hex");
   nonceStore.set(publicKey, { nonce, timestamp: Date.now() });
@@ -27,8 +19,7 @@ export function generateNonce(publicKey: string): string {
 }
 
 /**
- * Verify a signature proving wallet ownership.
- * The client should sign the nonce with their Freighter wallet.
+The client should sign the nonce with their Freighter wallet.
  *
  * @param publicKey - The signer's public key
  * @param nonce - The challenge nonce (from generateNonce)

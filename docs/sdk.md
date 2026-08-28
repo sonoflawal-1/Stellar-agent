@@ -256,7 +256,7 @@ const freighterSigner: WalletSigner = {
 
 const commerce = new CommerceClient({ ...TESTNET });
 const jobId = await commerce.createJob(
-  freighterSigner,   // signer: Keypair | WalletSigner
+  freighterSigner, // signer: Keypair | WalletSigner
   providerAddress,
   evaluatorAddress,
   TESTNET.usdcToken,
@@ -267,12 +267,12 @@ const jobId = await commerce.createJob(
 
 Helpers exported from both entries:
 
-| Export | Description |
-|---|---|
-| `WalletSigner` | Interface: `{ publicKey, signTransaction(xdr, { networkPassphrase }) }` |
-| `KeypairSigner` | Adapter wrapping a `Keypair` as a `WalletSigner` |
-| `toSigner(signer)` | Normalize a `Signer` (Keypair or WalletSigner) to `WalletSigner` — duck-typed, so it works even when the Keypair comes from a different `@stellar/stellar-sdk` install |
-| `signerPublicKey(signer)` | Get the public key from either signer form |
+| Export                    | Description                                                                                                                                                            |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `WalletSigner`            | Interface: `{ publicKey, signTransaction(xdr, { networkPassphrase }) }`                                                                                                |
+| `KeypairSigner`           | Adapter wrapping a `Keypair` as a `WalletSigner`                                                                                                                       |
+| `toSigner(signer)`        | Normalize a `Signer` (Keypair or WalletSigner) to `WalletSigner` — duck-typed, so it works even when the Keypair comes from a different `@stellar/stellar-sdk` install |
+| `signerPublicKey(signer)` | Get the public key from either signer form                                                                                                                             |
 
 **Building the browser bundle** (one command):
 

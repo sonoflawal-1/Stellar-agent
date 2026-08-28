@@ -23,10 +23,7 @@ export interface WalletSigner {
    * Wallet extensions implement this by delegating to their
    * `signTransaction(xdr, { networkPassphrase })` API.
    */
-  signTransaction(
-    xdr: string,
-    opts: { networkPassphrase: string },
-  ): Promise<string>;
+  signTransaction(xdr: string, opts: { networkPassphrase: string }): Promise<string>;
 }
 
 /** Anything the client methods accept as a signer. */
@@ -43,10 +40,7 @@ export class KeypairSigner implements WalletSigner {
     return this.kp.publicKey();
   }
 
-  async signTransaction(
-    xdr: string,
-    opts: { networkPassphrase: string },
-  ): Promise<string> {
+  async signTransaction(xdr: string, opts: { networkPassphrase: string }): Promise<string> {
     const tx = TransactionBuilder.fromXDR(xdr, opts.networkPassphrase);
     tx.sign(this.kp);
     return tx.toXDR();
