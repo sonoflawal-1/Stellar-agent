@@ -11,6 +11,11 @@ import {
   Account,
 } from "@stellar/stellar-sdk";
 import type { Job, JobStatus, MarcConfig } from "./types.js";
+import {
+  signerPublicKey,
+  toSigner,
+  type Signer,
+} from "./signer.js";
 
 /**
  * Typed wrapper around the `agentic_commerce` Soroban contract.
@@ -35,7 +40,7 @@ export class CommerceClient {
    * Returns the new job ID.
    */
   async createJob(
-    client: Keypair,
+    client: Signer,
     provider: string,
     evaluator: string,
     token: string,
@@ -44,7 +49,7 @@ export class CommerceClient {
   ): Promise<bigint> {
     const op = this.contract.call(
       "create_job",
-      new Address(client.publicKey()).toScVal(),
+      new Address(signerPublicKey(client)).toScVal(),
       new Address(provider).toScVal(),
       new Address(evaluator).toScVal(),
       new Address(token).toScVal(),
@@ -56,13 +61,13 @@ export class CommerceClient {
 
   /** Provider submits a deliverable for a funded job. */
   async submit(
-    provider: Keypair,
+    provider: Signer,
     jobId: bigint,
     deliverable: string,
   ): Promise<void> {
     const op = this.contract.call(
       "submit",
-      new Address(provider.publicKey()).toScVal(),
+      new Address(signerPublicKey(provider)).toScVal(),
       nativeToScVal(jobId, { type: "u64" }),
       nativeToScVal(deliverable, { type: "string" }),
     );
@@ -70,20 +75,20 @@ export class CommerceClient {
   }
 
   /** Evaluator marks a submitted job as completed (triggers 99/1 payout). */
-  async complete(evaluator: Keypair, jobId: bigint): Promise<void> {
+  async complete(evaluator: Signer, jobId: bigint): Promise<void> {
     const op = this.contract.call(
       "complete",
-      new Address(evaluator.publicKey()).toScVal(),
+      new Address(signerPublicKey(evaluator)).toScVal(),
       nativeToScVal(jobId, { type: "u64" }),
     );
     await this.invoke(evaluator, op, () => undefined);
   }
 
   /** Client cancels a funded job (full refund). */
-  async cancel(client: Keypair, jobId: bigint): Promise<void> {
+  async cancel(client: Signer, jobId: bigint): Promise<void> {
     const op = this.contract.call(
       "cancel",
-      new Address(client.publicKey()).toScVal(),
+      new Address(signerPublicKey(client)).toScVal(),
       nativeToScVal(jobId, { type: "u64" }),
     );
     await this.invoke(client, op, () => undefined);
@@ -119,20 +124,20 @@ export class CommerceClient {
   }
 
   /** Admin: update the treasury address. */
-  async setTreasury(admin: Keypair, newTreasury: string): Promise<void> {
+  async setTreasury(admin: Signer, newTreasury: string): Promise<void> {
     const op = this.contract.call(
       "set_treasury",
-      new Address(admin.publicKey()).toScVal(),
+      new Address(signerPublicKey(admin)).toScVal(),
       new Address(newTreasury).toScVal(),
     );
     await this.invoke(admin, op, () => undefined);
   }
 
   /** Admin: update the fee (capped at 500 bps / 5%). */
-  async setFeeBps(admin: Keypair, newBps: number): Promise<void> {
+  async setFeeBps(admin: Signer, newBps: number): Promise<void> {
     const op = this.contract.call(
       "set_fee_bps",
-      new Address(admin.publicKey()).toScVal(),
+      new Address(signerPublicKey(admin)).toScVal(),
       nativeToScVal(newBps, { type: "u32" }),
     );
     await this.invoke(admin, op, () => undefined);
@@ -141,11 +146,12 @@ export class CommerceClient {
   // --- internals (same pattern as IdentityClient) ---
 
   private async invoke<T>(
-    signer: Keypair,
+    signer: Signer,
     op: xdr.Operation,
     decode: (scVal: xdr.ScVal) => T,
   ): Promise<T> {
-    const account = await this.server.getAccount(signer.publicKey());
+    const s = toSigner(signer);
+    const account = await this.server.getAccount(s.publicKey);
     const tx = new TransactionBuilder(account, {
       fee: BASE_FEE,
       networkPassphrase: this.cfg.networkPassphrase,
@@ -154,8 +160,15 @@ export class CommerceClient {
       .setTimeout(30)
       .build();
     const prepared = await this.server.prepareTransaction(tx);
-    prepared.sign(signer);
-    const sent = await this.server.sendTransaction(prepared);
+    const signedXdr = await s.signTransaction(
+      prepared.toXDR(),
+      { networkPassphrase: this.cfg.networkPassphrase },
+    );
+    const signed = TransactionBuilder.fromXDR(
+      signedXdr,
+      this.cfg.networkPassphrase,
+    );
+    const sent = await this.server.sendTransaction(signed);
     if (sent.status === "ERROR") throw new Error(`submit failed: ${sent.errorResult}`);
     let getResp = await this.server.getTransaction(sent.hash);
     while (getResp.status === "NOT_FOUND") {

@@ -197,6 +197,75 @@ const data = await res.json();
 
 ---
 
+## Browser build (client-side wallet signing)
+
+The main entry (`marc-stellar-sdk`) is Node-oriented: it re-exports `marcPaywall`
+(Express middleware) and `marcFetch`, which pull in Node-only `@x402/*` packages.
+For browser apps (the dashboard frontend, Vite/webpack builds, plain
+`<script type="module">`) use the **`marc-stellar-sdk/browser`** subpath instead.
+It contains only the isomorphic surface — contract clients, types, testnet
+preset, and wallet-signing helpers — and bundles cleanly with zero Node imports.
+
+```typescript
+import {
+  CommerceClient,
+  IdentityClient,
+  TESTNET,
+  type WalletSigner,
+} from "marc-stellar-sdk/browser";
+```
+
+### Signing with a wallet extension
+
+All state-changing client methods accept either a `Keypair` (Node/demo flows) or
+a `WalletSigner` (browser flows) — the `Signer` union. A `WalletSigner` is a
+one-method interface that delegates to your wallet's `signTransaction`:
+
+```typescript
+const publicKey = wallet.publicKey(); // e.g. from Stellar Wallets Kit / Freighter
+
+const freighterSigner: WalletSigner = {
+  publicKey,
+  async signTransaction(xdr, { networkPassphrase }) {
+    const { signedTxXdr } = await window.freighterApi.signTransaction(xdr, {
+      networkPassphrase,
+    });
+    return signedTxXdr;
+  },
+};
+
+const commerce = new CommerceClient({ ...TESTNET });
+const jobId = await commerce.createJob(
+  freighterSigner,   // signer: Keypair | WalletSigner
+  providerAddress,
+  evaluatorAddress,
+  TESTNET.usdcToken,
+  10_000_000n,
+  "Build a landing page",
+);
+```
+
+Helpers exported from both entries:
+
+| Export | Description |
+|---|---|
+| `WalletSigner` | Interface: `{ publicKey, signTransaction(xdr, { networkPassphrase }) }` |
+| `KeypairSigner` | Adapter wrapping a `Keypair` as a `WalletSigner` |
+| `toSigner(signer)` | Normalize a `Signer` (Keypair or WalletSigner) to `WalletSigner` — duck-typed, so it works even when the Keypair comes from a different `@stellar/stellar-sdk` install |
+| `signerPublicKey(signer)` | Get the public key from either signer form |
+
+**Building the browser bundle** (one command):
+
+```bash
+cd sdk && npm run build:browser   # esbuild → dist/browser.js + dist/browser.d.ts
+```
+
+`dist/browser.js` is a self-contained ESM bundle (~1 MB, minified, sourcemapped)
+with no `@x402`/Express/Node imports. The `marc-stellar-sdk/browser` subpath is
+wired up via the `exports` map in `sdk/package.json`.
+
+---
+
 ## Agent Marketplace Demo
 
 ### Start all agents
