@@ -695,6 +695,27 @@ impl AgenticCommerceContract {
         next - 1
     }
 
+    /// Read-only: returns the number of jobs currently in the given `status`.
+    ///
+    /// Scans all persisted jobs (O(n) in the number of jobs ever created) and
+    /// counts matches. Off-chain indexers and dashboards can call this to get
+    /// lightweight per-status statistics without fetching and deserializing
+    /// every full Job struct. (#471)
+    pub fn get_jobs_count_by_status(env: Env, status: JobStatus) -> u32 {
+        let next_id: u64 = env.storage().instance().get(&DataKey::NextId).unwrap_or(1u64);
+        let mut count: u32 = 0;
+        let mut id: u64 = 1;
+        while id < next_id {
+            if let Some(job) = env.storage().persistent().get::<DataKey, Job>(&DataKey::Job(id)) {
+                if job.status == status {
+                    count += 1;
+                }
+            }
+            id += 1;
+        }
+        count
+    }
+
     /// Buyer claims a full refund if provider never submitted and the timeout has passed.
     pub fn claim_refund(env: Env, caller: Address, id: u64) {
         Self::require_not_paused(&env); // #29
