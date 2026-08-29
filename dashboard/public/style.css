@@ -35,6 +35,28 @@
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+/* ── Light theme overrides ── */
+[data-theme="light"] {
+  --bg: #f8f9fa;
+  --bg-elevated: #ffffff;
+  --bg-surface: #f1f3f5;
+  --bg-hover: #e9ecef;
+  --border: rgba(0, 0, 0, 0.08);
+  --border-hover: rgba(0, 0, 0, 0.16);
+  --border-accent: rgba(249, 115, 22, 0.3);
+  --text: #1a1d23;
+  --text-muted: #495057;
+  --text-dim: #868e96;
+  --accent: #ea580c;
+  --accent-hover: #c2410c;
+  --accent-soft: rgba(249, 115, 22, 0.08);
+  --accent-glow: rgba(249, 115, 22, 0.12);
+  --status-funded: #2563eb;
+  --status-submitted: #d97706;
+  --status-completed: #059669;
+  --status-cancelled: #dc2626;
+}
+
 /* ── Reset ── */
 *,
 *::before,
@@ -1303,12 +1325,13 @@ button {
 /* ── Toast ── */
 .toast-container {
   position: fixed;
-  bottom: 24px;
+  top: 24px;
   right: 24px;
   display: flex;
   flex-direction: column;
   gap: 8px;
   z-index: 300;
+  pointer-events: none;
 }
 .toast {
   padding: 12px 20px;
@@ -1320,6 +1343,23 @@ button {
   animation: toast-in 0.3s ease-out;
   max-width: 340px;
   backdrop-filter: blur(8px);
+  pointer-events: all;
+  cursor: pointer;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.toast-close {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--text-dim);
+  font-size: 15px;
+  line-height: 1;
+  opacity: 0.6;
+  transition: opacity 0.15s;
+}
+.toast:hover .toast-close {
+  opacity: 1;
 }
 .toast.success {
   border-left: 3px solid var(--status-completed);
@@ -1328,14 +1368,33 @@ button {
   border-left: 3px solid var(--status-cancelled);
   color: var(--status-cancelled);
 }
+.toast.info {
+  border-left: 3px solid var(--status-funded);
+  color: var(--status-funded);
+}
 @keyframes toast-in {
   from {
     opacity: 0;
-    transform: translateY(12px);
+    transform: translateY(-12px);
   }
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+@keyframes toast-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+    max-height: 80px;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-8px);
+    max-height: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    margin: 0;
   }
 }
 
@@ -1517,4 +1576,83 @@ button {
   .export-btns {
     justify-content: flex-end;
   }
+}
+
+/* ── Theme Toggle ── */
+.theme-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.2s var(--ease);
+  flex-shrink: 0;
+}
+.theme-toggle:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-hover);
+  color: var(--text);
+}
+.theme-toggle .icon-sun,
+.theme-toggle .icon-moon {
+  display: none;
+}
+[data-theme="light"] .theme-toggle .icon-moon {
+  display: block;
+}
+[data-theme="dark"] .theme-toggle .icon-sun,
+:root:not([data-theme]) .theme-toggle .icon-sun {
+  display: block;
+}
+.sidebar-footer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* ── Copy address button ── */
+.copy-addr-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+  vertical-align: middle;
+  margin-left: 4px;
+}
+.copy-addr-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-hover);
+  color: var(--accent);
+}
+.addr-with-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* ── Relative timestamp ── */
+.job-timestamp {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  margin-top: 2px;
+}
+.detail-value[title] {
+  cursor: help;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
 }
