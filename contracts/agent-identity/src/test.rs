@@ -655,3 +655,51 @@ fn get_agent_missing_does_not_bump_ttl() {
     // id 99 was never registered.
     assert_eq!(client.get_agent(&99u64), None);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #470 — update_owner edge-case tests
+// ---------------------------------------------------------------------------
+
+/// Transferring to the address that is already the current owner must not
+/// silently succeed: the contract must reject the no-op transfer to avoid
+/// wasting a round-trip fee and to surface caller mistakes early.
+/// The contract panics with "new owner already registered" because the current
+/// owner is mapped in OwnerToId, which means any attempt to transfer to them
+/// is treated as a conflict.
+#[test]
+#[should_panic(expected = "new owner already registered")]
+fn test_update_owner_to_already_registered_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AgentIdentityContract, ());
+    let client = AgentIdentityContractClient::new(&env, &contract_id);
+
+    let alice = Address::generate(&env);
+    let id = client.register(&alice, &String::from_str(&env, "ipfs://alice.json"));
+
+    // Attempt to transfer ownership back to alice (who is already the owner).
+    // The contract checks OwnerToId for the new_owner address and will find
+    // alice already mapped → panics with "new owner already registered".
+    client.update_owner(&alice, &id, &alice);
+}
+
+/// A caller who is not the current agent owner must not be able to transfer
+/// ownership. The contract requires auth from `caller` and then validates
+/// that `caller == agent.owner`.
+#[test]
+#[should_panic(expected = "not agent owner")]
+fn test_update_owner_unauthorized_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AgentIdentityContract, ());
+    let client = AgentIdentityContractClient::new(&env, &contract_id);
+
+    let alice = Address::generate(&env);
+    let mallory = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    // alice registers an agent; mallory attempts to steal it by calling
+    // update_owner with herself as the caller.
+    let id = client.register(&alice, &String::from_str(&env, "ipfs://alice.json"));
+    client.update_owner(&mallory, &id, &bob);
+}
