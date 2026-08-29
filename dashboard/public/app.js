@@ -13,6 +13,7 @@
     history: null,
     loading: { stats: false, wallets: false, agents: false, jobs: false },
     jobFilter: "Active",
+    jobSearch: "",
     agentPage: 1,
     agentPageSize: 24,
     agentTotal: 0,
@@ -711,6 +712,19 @@
       });
     }
 
+    // Apply search filter (#460)
+    var searchTerm = (state.jobSearch || "").toLowerCase().trim();
+    if (searchTerm) {
+      filtered = filtered.filter(function (j) {
+        return (
+          String(j.id).includes(searchTerm) ||
+          (j.description || "").toLowerCase().includes(searchTerm) ||
+          (j.client || "").toLowerCase().includes(searchTerm) ||
+          (j.provider || "").toLowerCase().includes(searchTerm)
+        );
+      });
+    }
+
     let tabs = '<div class="filter-tabs">';
     for (const f of filters) {
       tabs +=
@@ -724,6 +738,23 @@
     }
     tabs += "</div>";
 
+    // Search + export toolbar (#460, #464)
+    var toolbar =
+      '<div class="jobs-toolbar">' +
+      '<div class="jobs-search-wrap">' +
+      '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
+      '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>' +
+      '<input class="jobs-search-input" id="jobs-search-input" type="search" ' +
+      'placeholder="Search by description, client, or provider…" ' +
+      'value="' + escapeHtml(state.jobSearch) + '" ' +
+      'oninput="window.__searchJobs(this.value)">' +
+      '</div>' +
+      '<div class="export-btns">' +
+      '<button class="btn btn-secondary btn-sm" onclick="window.__exportJobs(\'json\')">⬇ JSON</button>' +
+      '<button class="btn btn-secondary btn-sm" onclick="window.__exportJobs(\'csv\')">⬇ CSV</button>' +
+      '</div>' +
+      '</div>';
+
     let content = "";
     if (filtered.length === 0) {
       let label = "";
@@ -734,13 +765,17 @@
       } else {
         label = state.jobFilter.toLowerCase() + " ";
       }
-      content =
-        '<div class="empty-state">' +
-        '<div class="empty-icon"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg></div>' +
-        '<div class="empty-title">No ' +
-        label +
-        "jobs</div>" +
-        '<div class="empty-desc">Create your first job to see it here.</div></div>';
+      var noMatchMsg = searchTerm
+        ? '<div class="empty-state"><div class="empty-icon"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg></div>' +
+          '<div class="empty-title">No results for &ldquo;' + escapeHtml(searchTerm) + '&rdquo;</div>' +
+          '<div class="empty-desc">Try a different search term or clear the filter.</div></div>'
+        : '<div class="empty-state">' +
+          '<div class="empty-icon"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg></div>' +
+          '<div class="empty-title">No ' +
+          label +
+          "jobs</div>" +
+          '<div class="empty-desc">Create your first job to see it here.</div></div>';
+      content = noMatchMsg;
     } else {
       content = '<div class="job-list">';
       for (const j of filtered) {
@@ -830,6 +865,7 @@
       '<div class="section-header"><div><div class="section-title">Jobs</div><div class="page-subtitle" style="margin-top:2px">Escrow-based job marketplace on Soroban</div></div>' +
         '<button class="btn btn-primary" onclick="window.__showCreateJob()">+ Create Job</button></div>' +
         tabs +
+        toolbar +
         content,
     );
   }
@@ -1112,11 +1148,88 @@
 
   window.__filterJobs = function (filter) {
     state.jobFilter = filter;
+    state.jobSearch = ""; // reset search when switching filter tabs
     loadJobs(filter === "All" ? undefined : filter)
       .then(renderJobList)
       .catch(function (e) {
         toast(e.message, "error");
       });
+  };
+
+  // #460 — live search filter
+  window.__searchJobs = function (value) {
+    state.jobSearch = value;
+    renderJobList();
+    // Re-focus the input after re-render (setPage wipes DOM)
+    var input = document.getElementById("jobs-search-input");
+    if (input) {
+      input.focus();
+      // Place cursor at end
+      var len = input.value.length;
+      input.setSelectionRange(len, len);
+    }
+  };
+
+  // #464 — export jobs to JSON or CSV
+  window.__exportJobs = function (format) {
+    var jobs = state.jobs || [];
+    if (jobs.length === 0) {
+      toast("No jobs to export", "error");
+      return;
+    }
+    var dateStr = new Date().toISOString().slice(0, 10);
+    var filename = "marc-jobs-" + dateStr + "." + format;
+    var blob;
+    if (format === "json") {
+      var rows = jobs.map(function (j) {
+        return {
+          id: j.id,
+          client: j.client || "",
+          provider: j.provider || "",
+          evaluator: j.evaluator || "",
+          token: j.token || "",
+          budget: formatMusd(j.budget),
+          description: j.description || "",
+          status: j.status || "",
+          deliverable: j.deliverable || "",
+        };
+      });
+      blob = new Blob([JSON.stringify(rows, null, 2)], { type: "application/json" });
+    } else {
+      var header = "id,client,provider,evaluator,token,budget,description,status,deliverable";
+      var csvRows = jobs.map(function (j) {
+        function csvCell(v) {
+          var s = String(v == null ? "" : v);
+          if (s.includes(",") || s.includes('"') || s.includes("\n")) {
+            s = '"' + s.replace(/"/g, '""') + '"';
+          }
+          return s;
+        }
+        return [
+          j.id,
+          j.client || "",
+          j.provider || "",
+          j.evaluator || "",
+          j.token || "",
+          formatMusd(j.budget),
+          j.description || "",
+          j.status || "",
+          j.deliverable || "",
+        ]
+          .map(csvCell)
+          .join(",");
+      });
+      blob = new Blob([[header].concat(csvRows).join("\n")], { type: "text/csv" });
+    }
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    toast("Downloaded " + filename);
   };
 
   window.__changeAgentPage = async function (page) {
@@ -1357,19 +1470,53 @@
 
     render();
 
-    // Close mobile sidebar
-    document.getElementById("sidebar").classList.remove("open");
+    // Close mobile sidebar on navigation
+    if (typeof closeDrawer === "function") closeDrawer();
   }
 
   window.addEventListener("hashchange", navigate);
 
-  // Mobile menu
+  // Mobile menu — drawer with backdrop and ARIA state
   var menuBtn = document.getElementById("menu-btn");
+  var sidebar = document.getElementById("sidebar");
+  var backdrop = document.getElementById("sidebar-backdrop");
+
+  function openDrawer() {
+    sidebar.classList.add("open");
+    menuBtn.classList.add("active");
+    menuBtn.setAttribute("aria-expanded", "true");
+    backdrop.classList.add("visible");
+    document.body.style.overflow = "hidden"; // prevent background scroll
+  }
+
+  function closeDrawer() {
+    sidebar.classList.remove("open");
+    menuBtn.classList.remove("active");
+    menuBtn.setAttribute("aria-expanded", "false");
+    backdrop.classList.remove("visible");
+    document.body.style.overflow = "";
+  }
+
   if (menuBtn) {
     menuBtn.addEventListener("click", function () {
-      document.getElementById("sidebar").classList.toggle("open");
+      if (sidebar.classList.contains("open")) {
+        closeDrawer();
+      } else {
+        openDrawer();
+      }
     });
   }
+
+  if (backdrop) {
+    backdrop.addEventListener("click", closeDrawer);
+  }
+
+  // Close drawer when a nav link is tapped on mobile
+  document.querySelectorAll(".nav-item").forEach(function (el) {
+    el.addEventListener("click", function () {
+      if (window.innerWidth < 768) closeDrawer();
+    });
+  });
 
   // ── Auto-refresh polling ──
   // Re-fetch data every 4s and re-render current view for live updates

@@ -141,8 +141,9 @@
 
     <!-- Mobile header -->
     <header class="mobile-header" id="mobile-header">
-      <button class="menu-btn" id="menu-btn" aria-label="Menu">
-        <svg
+      <button class="menu-btn" id="menu-btn" aria-label="Toggle navigation menu" aria-expanded="false" aria-controls="sidebar">
+        <!-- Hamburger icon -->
+        <svg class="icon-menu"
           width="24"
           height="24"
           viewBox="0 0 24 24"
@@ -152,9 +153,23 @@
         >
           <path d="M3 12h18M3 6h18M3 18h18" />
         </svg>
+        <!-- Close (X) icon -->
+        <svg class="icon-close"
+          width="24"
+          height="24"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+        >
+          <path d="M18 6 6 18M6 6l12 12" />
+        </svg>
       </button>
       <span class="logo-text">Bear</span>
     </header>
+
+    <!-- Sidebar overlay backdrop (mobile) -->
+    <div class="sidebar-backdrop" id="sidebar-backdrop" aria-hidden="true"></div>
 
     <!-- Main content -->
     <main class="main" id="main">
