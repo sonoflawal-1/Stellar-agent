@@ -27,6 +27,7 @@
     history: null,
     loading: { stats: false, wallets: false, agents: false, jobs: false },
     jobFilter: "Active",
+    jobSearch: "",
     agentPage: 1,
     agentPageSize: 24,
     agentTotal: 0,
@@ -360,54 +361,74 @@
     return (Number(whole) + frac).toFixed(2);
   }
 
-  // ── Relative timestamp formatter ── #463
-  function formatRelativeTime(timestampSecs) {
-    if (!timestampSecs) return "Unknown";
-    var nowSecs = Math.floor(Date.now() / 1000);
-    var diff = nowSecs - Number(timestampSecs);
-    if (diff < 0) diff = 0;
-    if (diff < 60) return "Just now";
-    if (diff < 3600) {
-      var mins = Math.floor(diff / 60);
-      return mins + " minute" + (mins === 1 ? "" : "s") + " ago";
-    }
-    if (diff < 86400) {
-      var hrs = Math.floor(diff / 3600);
-      return hrs + " hour" + (hrs === 1 ? "" : "s") + " ago";
-    }
-    var days = Math.floor(diff / 86400);
-    return days + " day" + (days === 1 ? "" : "s") + " ago";
-  }
-
-  // ── Copy button HTML helper ── #462
-  function copyBtn(address) {
-    if (!address) return "";
-    var safe = escapeHtml(address);
-    return (
-      '<button class="copy-addr-btn" ' +
-      'onclick="event.stopPropagation();window.__copy(\'' + safe + '\')" ' +
-      'title="Copy full address: ' + safe + '" ' +
-      'aria-label="Copy address">' +
-      '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
-      '<rect x="9" y="9" width="13" height="13" rx="2"/>' +
-      '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>' +
-      "</svg></button>"
-    );
-  }
+  // ── Status tooltip descriptions (#466) ──
+  const STATUS_TOOLTIPS = {
+    Open:      "Job created but not yet funded — awaiting escrow deposit.",
+    Funded:    "Escrow deposit received; waiting for the provider to submit a deliverable.",
+    Submitted: "Provider has submitted a deliverable URI; waiting for evaluator approval.",
+    Completed: "Evaluator approved the deliverable and funds have been released to the provider.",
+    Rejected:  "Evaluator rejected the deliverable (reserved for future dispute resolution).",
+    Cancelled: "Job was cancelled by the client or timed out; budget has been refunded.",
+    Disputed:  "Client opened a dispute on the submitted deliverable; evaluator must resolve.",
+  };
 
   function statusBadge(status) {
     const safe = escapeHtml(status);
+    const tip = escapeHtml(STATUS_TOOLTIPS[status] || status);
     return (
-      '<span class="status-badge status-' + safe + '"><span class="dot"></span>' + safe + "</span>"
+      '<span class="status-badge status-' + safe + '" title="' + tip + '"><span class="dot"></span>' + safe + "</span>"
     );
   }
 
-  // ── Toast ── #465
-  function toast(msg, type, duration) {
-    type = type || "success";
-    var container = document.getElementById("toasts");
-    if (!container) return;
-    var el = document.createElement("div");
+  // ── Identicon generator (#468) ──
+  // Generates a deterministic 5×5 symmetric SVG identicon from a Stellar public key.
+  function agentIdenticon(pubkey) {
+    if (!pubkey || pubkey.length < 10) {
+      return '<div class="agent-avatar">?</div>';
+    }
+    // Derive a numeric seed from the key characters
+    var seed = 0;
+    for (var i = 0; i < pubkey.length; i++) {
+      seed = (seed * 31 + pubkey.charCodeAt(i)) >>> 0;
+    }
+    // Simple seeded PRNG (xorshift32)
+    function rand() {
+      seed ^= seed << 13;
+      seed ^= seed >> 17;
+      seed ^= seed << 5;
+      seed = seed >>> 0;
+      return seed;
+    }
+    // Pick a hue from the key
+    var hue = rand() % 360;
+    var color = "hsl(" + hue + ",60%,65%)";
+    var bg = "hsl(" + hue + ",30%,15%)";
+    // Build 5×5 symmetric grid (only fill left 3 columns, mirror to right)
+    var cells = [];
+    for (var r = 0; r < 5; r++) {
+      for (var c = 0; c < 3; c++) {
+        cells.push(rand() % 2 === 1);
+      }
+    }
+    var size = 40;
+    var cell = size / 5;
+    var rects = "";
+    for (var row = 0; row < 5; row++) {
+      for (var col = 0; col < 5; col++) {
+        var srcCol = col < 3 ? col : 4 - col;
+        if (cells[row * 3 + srcCol]) {
+          rects += '<rect x="' + (col * cell) + '" y="' + (row * cell) + '" width="' + cell + '" height="' + cell + '" fill="' + color + '"/>';
+        }
+      }
+    }
+    var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + size + '" height="' + size + '" viewBox="0 0 ' + size + ' ' + size + '" style="border-radius:8px;display:block">'
+      + '<rect width="' + size + '" height="' + size + '" fill="' + bg + '"/>'
+      + rects
+      + '</svg>';
+    return '<div class="agent-avatar agent-avatar-svg" title="' + escapeHtml(pubkey) + '">' + svg + '</div>';
+  }
+  function toast(msg, type = "success", duration = null) {
+    const el = document.createElement("div");
     el.className = "toast " + type;
     el.setAttribute("role", "alert");
     el.setAttribute("aria-live", type === "error" ? "assertive" : "polite");
@@ -792,6 +813,19 @@
       });
     }
 
+    // Apply search filter (#460)
+    var searchTerm = (state.jobSearch || "").toLowerCase().trim();
+    if (searchTerm) {
+      filtered = filtered.filter(function (j) {
+        return (
+          String(j.id).includes(searchTerm) ||
+          (j.description || "").toLowerCase().includes(searchTerm) ||
+          (j.client || "").toLowerCase().includes(searchTerm) ||
+          (j.provider || "").toLowerCase().includes(searchTerm)
+        );
+      });
+    }
+
     let tabs = '<div class="filter-tabs">';
     for (const f of filters) {
       tabs +=
@@ -805,6 +839,23 @@
     }
     tabs += "</div>";
 
+    // Search + export toolbar (#460, #464)
+    var toolbar =
+      '<div class="jobs-toolbar">' +
+      '<div class="jobs-search-wrap">' +
+      '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
+      '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>' +
+      '<input class="jobs-search-input" id="jobs-search-input" type="search" ' +
+      'placeholder="Search by description, client, or provider…" ' +
+      'value="' + escapeHtml(state.jobSearch) + '" ' +
+      'oninput="window.__searchJobs(this.value)">' +
+      '</div>' +
+      '<div class="export-btns">' +
+      '<button class="btn btn-secondary btn-sm" onclick="window.__exportJobs(\'json\')">⬇ JSON</button>' +
+      '<button class="btn btn-secondary btn-sm" onclick="window.__exportJobs(\'csv\')">⬇ CSV</button>' +
+      '</div>' +
+      '</div>';
+
     let content = "";
     if (filtered.length === 0) {
       let label = "";
@@ -815,13 +866,17 @@
       } else {
         label = state.jobFilter.toLowerCase() + " ";
       }
-      content =
-        '<div class="empty-state">' +
-        '<div class="empty-icon"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg></div>' +
-        '<div class="empty-title">No ' +
-        label +
-        "jobs</div>" +
-        '<div class="empty-desc">Create your first job to see it here.</div></div>';
+      var noMatchMsg = searchTerm
+        ? '<div class="empty-state"><div class="empty-icon"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg></div>' +
+          '<div class="empty-title">No results for &ldquo;' + escapeHtml(searchTerm) + '&rdquo;</div>' +
+          '<div class="empty-desc">Try a different search term or clear the filter.</div></div>'
+        : '<div class="empty-state">' +
+          '<div class="empty-icon"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg></div>' +
+          '<div class="empty-title">No ' +
+          label +
+          "jobs</div>" +
+          '<div class="empty-desc">Create your first job to see it here.</div></div>';
+      content = noMatchMsg;
     } else {
       content = '<div class="job-list">';
       for (const j of filtered) {
@@ -917,6 +972,7 @@
       '<div class="section-header"><div><div class="section-title">Jobs</div><div class="page-subtitle" style="margin-top:2px">Escrow-based job marketplace on Soroban</div></div>' +
         '<button class="btn btn-primary" onclick="window.__showCreateJob()">+ Create Job</button></div>' +
         tabs +
+        toolbar +
         content,
     );
   }
@@ -942,13 +998,10 @@
     } else {
       cards = '<div class="agent-grid">';
       for (const a of agents) {
-        var initial = a.owner ? a.owner.charAt(0) : "?";
         cards +=
           '<div class="agent-card">' +
           '<div class="agent-card-top">' +
-          '<div class="agent-avatar">' +
-          escapeHtml(initial) +
-          "</div>" +
+          agentIdenticon(a.owner) +
           '<div class="agent-id">Agent <span>#' +
           escapeHtml(String(a.id)) +
           "</span></div>" +
@@ -1200,11 +1253,88 @@
 
   window.__filterJobs = function (filter) {
     state.jobFilter = filter;
+    state.jobSearch = ""; // reset search when switching filter tabs
     loadJobs(filter === "All" ? undefined : filter)
       .then(renderJobList)
       .catch(function (e) {
         toast(e.message, "error");
       });
+  };
+
+  // #460 — live search filter
+  window.__searchJobs = function (value) {
+    state.jobSearch = value;
+    renderJobList();
+    // Re-focus the input after re-render (setPage wipes DOM)
+    var input = document.getElementById("jobs-search-input");
+    if (input) {
+      input.focus();
+      // Place cursor at end
+      var len = input.value.length;
+      input.setSelectionRange(len, len);
+    }
+  };
+
+  // #464 — export jobs to JSON or CSV
+  window.__exportJobs = function (format) {
+    var jobs = state.jobs || [];
+    if (jobs.length === 0) {
+      toast("No jobs to export", "error");
+      return;
+    }
+    var dateStr = new Date().toISOString().slice(0, 10);
+    var filename = "marc-jobs-" + dateStr + "." + format;
+    var blob;
+    if (format === "json") {
+      var rows = jobs.map(function (j) {
+        return {
+          id: j.id,
+          client: j.client || "",
+          provider: j.provider || "",
+          evaluator: j.evaluator || "",
+          token: j.token || "",
+          budget: formatMusd(j.budget),
+          description: j.description || "",
+          status: j.status || "",
+          deliverable: j.deliverable || "",
+        };
+      });
+      blob = new Blob([JSON.stringify(rows, null, 2)], { type: "application/json" });
+    } else {
+      var header = "id,client,provider,evaluator,token,budget,description,status,deliverable";
+      var csvRows = jobs.map(function (j) {
+        function csvCell(v) {
+          var s = String(v == null ? "" : v);
+          if (s.includes(",") || s.includes('"') || s.includes("\n")) {
+            s = '"' + s.replace(/"/g, '""') + '"';
+          }
+          return s;
+        }
+        return [
+          j.id,
+          j.client || "",
+          j.provider || "",
+          j.evaluator || "",
+          j.token || "",
+          formatMusd(j.budget),
+          j.description || "",
+          j.status || "",
+          j.deliverable || "",
+        ]
+          .map(csvCell)
+          .join(",");
+      });
+      blob = new Blob([[header].concat(csvRows).join("\n")], { type: "text/csv" });
+    }
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    toast("Downloaded " + filename);
   };
 
   window.__changeAgentPage = async function (page) {
@@ -1445,24 +1575,59 @@
 
     render();
 
-    // Close mobile sidebar
-    document.getElementById("sidebar").classList.remove("open");
+    // Close mobile sidebar on navigation
+    if (typeof closeDrawer === "function") closeDrawer();
   }
 
   window.addEventListener("hashchange", navigate);
 
-  // Mobile menu
+  // Mobile menu — drawer with backdrop and ARIA state
   var menuBtn = document.getElementById("menu-btn");
+  var sidebar = document.getElementById("sidebar");
+  var backdrop = document.getElementById("sidebar-backdrop");
+
+  function openDrawer() {
+    sidebar.classList.add("open");
+    menuBtn.classList.add("active");
+    menuBtn.setAttribute("aria-expanded", "true");
+    backdrop.classList.add("visible");
+    document.body.style.overflow = "hidden"; // prevent background scroll
+  }
+
+  function closeDrawer() {
+    sidebar.classList.remove("open");
+    menuBtn.classList.remove("active");
+    menuBtn.setAttribute("aria-expanded", "false");
+    backdrop.classList.remove("visible");
+    document.body.style.overflow = "";
+  }
+
   if (menuBtn) {
     menuBtn.addEventListener("click", function () {
-      document.getElementById("sidebar").classList.toggle("open");
+      if (sidebar.classList.contains("open")) {
+        closeDrawer();
+      } else {
+        openDrawer();
+      }
     });
   }
+
+  if (backdrop) {
+    backdrop.addEventListener("click", closeDrawer);
+  }
+
+  // Close drawer when a nav link is tapped on mobile
+  document.querySelectorAll(".nav-item").forEach(function (el) {
+    el.addEventListener("click", function () {
+      if (window.innerWidth < 768) closeDrawer();
+    });
+  });
 
   // ── Auto-refresh polling ──
   // Re-fetch data every 4s and re-render current view for live updates
   var pollTimer = null;
   var polling = false;
+  var pollIntervalMs = 10000; // default 10 s
 
   async function poll() {
     if (polling) return;
@@ -1513,7 +1678,8 @@
 
   function startPolling() {
     stopPolling();
-    pollTimer = setInterval(poll, 4000);
+    if (pollIntervalMs === 0) return; // Off
+    pollTimer = setInterval(poll, pollIntervalMs);
   }
   function stopPolling() {
     if (pollTimer) {
@@ -1521,6 +1687,28 @@
       pollTimer = null;
     }
   }
+
+  // Expose interval change handler for the dropdown
+  window.__setRefreshInterval = function (ms) {
+    pollIntervalMs = Number(ms);
+    startPolling();
+    if (pollIntervalMs === 0) {
+      toast("Auto-refresh disabled", "success");
+    } else {
+      toast("Auto-refresh set to " + pollIntervalMs / 1000 + "s", "success");
+    }
+    // Persist selection in localStorage so it survives page reloads
+    try { localStorage.setItem("bearRefreshInterval", String(pollIntervalMs)); } catch (e) {}
+    // Sync the dropdown in case it was changed programmatically
+    var sel = document.getElementById("refresh-interval-select");
+    if (sel) sel.value = String(pollIntervalMs);
+  };
+
+  // Restore saved preference
+  try {
+    var savedInterval = localStorage.getItem("bearRefreshInterval");
+    if (savedInterval !== null) pollIntervalMs = Number(savedInterval);
+  } catch (e) {}
 
   // Start polling on load, restart on visibility change
   startPolling();
@@ -1560,4 +1748,10 @@
 
   // Initial render
   navigate();
+
+  // Sync the refresh-interval dropdown to the restored/default interval
+  (function syncRefreshSelect() {
+    var sel = document.getElementById("refresh-interval-select");
+    if (sel) sel.value = String(pollIntervalMs);
+  })();
 })();

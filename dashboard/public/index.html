@@ -132,30 +132,31 @@
         </div>
       </div>
       <div class="sidebar-footer">
-        <div class="sidebar-footer-row">
-          <div class="testnet-badge" id="network-badge">
-            <span class="badge-dot"></span>
-            Unknown Network
-          </div>
-          <button class="theme-toggle" id="theme-toggle-btn" aria-label="Toggle theme" title="Toggle light/dark theme">
-            <!-- Sun icon (shown in dark mode) -->
-            <svg class="icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="5"/>
-              <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
-            </svg>
-            <!-- Moon icon (shown in light mode) -->
-            <svg class="icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
-            </svg>
-          </button>
+        <div class="refresh-row">
+          <label class="refresh-label" for="refresh-interval-select">Auto-refresh</label>
+          <select
+            id="refresh-interval-select"
+            class="refresh-select"
+            onchange="window.__setRefreshInterval(this.value)"
+          >
+            <option value="0">Off</option>
+            <option value="5000">5s</option>
+            <option value="10000" selected>10s</option>
+            <option value="30000">30s</option>
+          </select>
+        </div>
+        <div class="testnet-badge" id="network-badge">
+          <span class="badge-dot"></span>
+          Unknown Network
         </div>
       </div>
     </aside>
 
     <!-- Mobile header -->
     <header class="mobile-header" id="mobile-header">
-      <button class="menu-btn" id="menu-btn" aria-label="Menu">
-        <svg
+      <button class="menu-btn" id="menu-btn" aria-label="Toggle navigation menu" aria-expanded="false" aria-controls="sidebar">
+        <!-- Hamburger icon -->
+        <svg class="icon-menu"
           width="24"
           height="24"
           viewBox="0 0 24 24"
@@ -165,9 +166,23 @@
         >
           <path d="M3 12h18M3 6h18M3 18h18" />
         </svg>
+        <!-- Close (X) icon -->
+        <svg class="icon-close"
+          width="24"
+          height="24"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+        >
+          <path d="M18 6 6 18M6 6l12 12" />
+        </svg>
       </button>
       <span class="logo-text">Bear</span>
     </header>
+
+    <!-- Sidebar overlay backdrop (mobile) -->
+    <div class="sidebar-backdrop" id="sidebar-backdrop" aria-hidden="true"></div>
 
     <!-- Main content -->
     <main class="main" id="main">

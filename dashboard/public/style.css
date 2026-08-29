@@ -262,6 +262,45 @@ button {
   padding: 16px 20px;
   border-top: 1px solid var(--border);
 }
+/* Auto-refresh interval row (#467) */
+.refresh-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.refresh-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.refresh-select {
+  appearance: none;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-family: var(--font);
+  padding: 4px 24px 4px 8px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23868E96' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 6px center;
+}
+.refresh-select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.refresh-select option {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
 .testnet-badge {
   display: flex;
   align-items: center;
@@ -309,6 +348,80 @@ button {
 }
 .menu-btn {
   color: var(--text-muted);
+  transition: color 0.2s var(--ease);
+}
+.menu-btn:hover {
+  color: var(--text);
+}
+
+/* Hamburger → X animation */
+.menu-btn .icon-menu { display: block; }
+.menu-btn .icon-close { display: none; }
+.menu-btn.active .icon-menu { display: none; }
+.menu-btn.active .icon-close { display: block; }
+
+/* Sidebar overlay backdrop for mobile */
+.sidebar-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 45;
+  backdrop-filter: blur(2px);
+  animation: fade-in 0.2s ease-out;
+}
+.sidebar-backdrop.visible {
+  display: block;
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* ── Search / Export bar ── */
+.jobs-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.jobs-search-wrap {
+  flex: 1;
+  min-width: 180px;
+  position: relative;
+}
+.jobs-search-wrap svg {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-dim);
+  pointer-events: none;
+}
+.jobs-search-input {
+  width: 100%;
+  padding: 9px 14px 9px 38px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 13px;
+  font-family: var(--font);
+  transition: border-color 0.15s;
+}
+.jobs-search-input::placeholder {
+  color: var(--text-dim);
+}
+.jobs-search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.export-btns {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 /* ── Page Transition ── */
@@ -1061,6 +1174,13 @@ button {
   color: var(--accent);
   flex-shrink: 0;
 }
+/* Identicon variant: no text-based background, just wraps the SVG (#468) */
+.agent-avatar-svg {
+  background: none;
+  border: none;
+  padding: 0;
+  overflow: hidden;
+}
 .agent-id {
   font-size: 15px;
   font-weight: 700;
@@ -1419,9 +1539,11 @@ button {
 @media (max-width: 768px) {
   .sidebar {
     transform: translateX(-100%);
+    z-index: 50;
   }
   .sidebar.open {
     transform: translateX(0);
+    box-shadow: 4px 0 32px rgba(0, 0, 0, 0.5);
   }
   .mobile-header {
     display: flex;
@@ -1446,6 +1568,13 @@ button {
   }
   .wallet-grid {
     grid-template-columns: 1fr;
+  }
+  .jobs-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .export-btns {
+    justify-content: flex-end;
   }
 }
 
