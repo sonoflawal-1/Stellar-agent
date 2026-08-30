@@ -5,31 +5,43 @@ import type { RequestHandler } from "express";
 import type { MarcPaywallCoreOptions } from "./marcPaywallCore.js";
 
 /**
- * Options for the MARC paywall Express middleware.
- * (Inherits from core options, adds nothing Express-specific.)
+ * Configuration options for the MARC x402 Express paywall middleware.
+ *
+ * Inherits all fields from {@link MarcPaywallCoreOptions} without modification.
+ * Provided as a named alias so Express-specific code can import a clearly named type.
  */
 export type MarcPaywallOptions = MarcPaywallCoreOptions;
 
 /**
- * Create an Express middleware that protects routes with x402 payment requirements.
+ * Create an Express middleware that protects routes with x402 v2 payment requirements.
  *
- * Returns a middleware that intercepts incoming requests and enforces payment
- * via the x402 v2 protocol. When a request lacks valid payment proof:
- * 1. Returns HTTP 402 with payment requirements in headers
- * 2. Client builds and signs a Stellar payment transaction
- * 3. Client retries with payment proof headers
- * 4. Middleware verifies payment via facilitator and allows access
+ * Intercepts incoming requests and enforces payment via the x402 protocol.
+ * When a request lacks valid payment proof:
+ * 1. Returns HTTP 402 with payment requirements in response headers.
+ * 2. The client (e.g. {@link marcFetch}) builds and signs a Stellar payment transaction.
+ * 3. The client retries the request with payment proof headers attached.
+ * 4. Middleware verifies the payment via the configured facilitator and allows the request through.
  *
- * Verified payments are settled with the configured facilitator service.
+ * Also handles CORS preflight (`OPTIONS`) requests automatically so browser-based
+ * agents can make cross-origin requests without CORS errors blocking the 402 flow.
  *
- * @param opts - Configuration including payee address, price, network, and token
- * @returns An Express middleware function for route protection
+ * For other frameworks, see {@link marcPaywallFastify} or {@link marcPaywallNodeHttp}.
  *
- * Returns a middleware that protects the given route pattern.
- * When a request arrives without payment, it returns 402 with payment requirements.
- * When payment is provided, it verifies and settles via the facilitator.
+ * @param opts - Configuration including payee address, price, network, and token.
+ * @returns An Express `RequestHandler` middleware function.
  *
- * For other frameworks, see marcPaywallFastify() or marcPaywallNodeHttp().
+ * @example
+ * ```typescript
+ * import express from "express";
+ * import { marcPaywall } from "marc-stellar-sdk";
+ *
+ * const app = express();
+ * app.use("/api/summarize", marcPaywall({
+ *   payTo: "GABC...",
+ *   price: "$0.01",
+ *   facilitatorApiKey: process.env.FACILITATOR_KEY,
+ * }));
+ * ```
  */
 export function marcPaywall(opts: MarcPaywallOptions): RequestHandler {
   const {
