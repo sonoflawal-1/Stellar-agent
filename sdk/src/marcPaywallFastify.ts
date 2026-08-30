@@ -5,12 +5,19 @@
  * Similar structure to Express but uses Fastify's request/reply patterns.
  */
 
+import { createRequire } from "node:module";
 import type { MarcPaywallCoreOptions } from "./marcPaywallCore.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type FastifyRequest = any;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type FastifyReply = any;
+
+// This package compiles to ESM ("type": "module" in package.json), where the
+// CommonJS `require` global does not exist. The dynamic requires below
+// (needed to avoid pulling @x402/express into non-Fastify consumers) need a
+// working `require` — build one from this module's own URL.
+const require = createRequire(import.meta.url);
 
 /**
  * Options for the MARC paywall Fastify hook.
@@ -105,10 +112,29 @@ export function marcPaywallFastify(
     const nodeRes = reply.raw;
 
     await new Promise<void>((resolve, reject) => {
-      expressMiddleware(nodeReq, nodeRes, (err?: unknown) => {
+      // The wrapped Express middleware only calls its `next` callback when
+      // access is granted (no payment required, or payment verified) — for
+      // the 402/error paths it writes straight to the response and returns
+      // without ever calling `next`. Without also settling on `res.end()`,
+      // this promise (and the Fastify preHandler hook awaiting it) would
+      // hang forever whenever a request is rejected for missing/invalid
+      // payment, which is the paywall's primary job.
+      let settled = false;
+      const settle = (err?: unknown) => {
+        if (settled) return;
+        settled = true;
         if (err) reject(err);
         else resolve();
-      });
+      };
+
+      const originalEnd = nodeRes.end.bind(nodeRes);
+      nodeRes.end = (...args: unknown[]) => {
+        const result = originalEnd(...args);
+        settle();
+        return result;
+      };
+
+      expressMiddleware(nodeReq, nodeRes, (err?: unknown) => settle(err));
     });
   };
 }
