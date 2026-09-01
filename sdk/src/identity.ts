@@ -132,21 +132,27 @@ export class IdentityClient extends BaseClient {
   }
 
   /**
-   * Update the metadata URI for an existing agent (owner-only).
+   * Convenience helper: look up an agent by its owner's wallet address.
    *
-   * Only the current owner's keypair can authorize this transaction.
+   * Combines `agentOf` and `getAgent` into a single call. Returns `null` if
+   * the owner has not registered an agent.
    *
-   * @param owner - The current owner's Keypair (must match the on-chain owner address).
-   * @param id - The agent ID to update.
-   * @param uri - The new metadata URI to set.
-   * @returns A promise that resolves when the update is confirmed on-chain.
-   * @throws {Error} If the signer is not the agent's owner, or on network failure.
+   * @param ownerAddress - The owner's Stellar address in StrKey format.
+   * @returns The `Agent` record, or `null` if no agent is registered for this owner.
    *
    * @example
-   * ```typescript
-   * await identity.updateUri(ownerKeypair, 42n, "https://new-uri.example.com/metadata.json");
-   * ```
+   * const agent = await identity.getAgentByOwner('GBUQWP3BOUZX34ULNQG23RQ6F4YUSXHTBVDJ42LPBK4EK4YLYL2QQ5K');
+   * if (agent) {
+   *   console.log('Agent ID:', agent.id);
+   * }
    */
+  async getAgentByOwner(ownerAddress: string): Promise<Agent | null> {
+    const id = await this.agentOf(ownerAddress);
+    if (id == null) return null;
+    return this.getAgent(id);
+  }
+
+  /** Update an agent's metadata URI (owner-only). */
   async updateUri(owner: Signer, id: bigint, uri: string): Promise<void> {
     const op = this.contract.call(
       "update_uri",

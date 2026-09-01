@@ -191,6 +191,32 @@ sequenceDiagram
     Server-->>Client: 200 OK + response body
 ```
 
+### HTTP 402 Challenge / Resolution Handshake
+
+A detailed view of the full HTTP-level exchange between the client and server during an x402 micropayment, including the challenge/response cycle and on-chain settlement:
+
+```mermaid
+sequenceDiagram
+    participant Client as Client<br/>(marcFetch)
+    participant Server as Server<br/>(marcPaywall)
+    participant Facilitator as Facilitator<br/>(@x402/stellar)
+    participant Stellar as Stellar Network
+
+    Client->>Server: HTTP POST /api/resource<br/>(no payment header)
+    Server-->>Client: 402 Payment Required<br/>WWW-Authenticate: x402<br/>{ price, token, payTo, network }
+
+    Note over Client: Parse payment requirements<br/>price · token · payTo · network
+
+    Client->>Client: Build Stellar payment transaction<br/>Sign transaction → XDR envelope
+
+    Client->>Server: HTTP POST /api/resource<br/>X-PAYMENT: <signed XDR>
+    Server->>Facilitator: verify(signedXDR, paymentRequirements)
+    Facilitator->>Stellar: Submit payment transaction
+    Stellar-->>Facilitator: Transaction confirmed (ledger close)
+    Facilitator-->>Server: Settlement confirmation (txHash)
+    Server-->>Client: 200 OK<br/>{ response body }
+```
+
 ---
 
 ## Dependency Graph

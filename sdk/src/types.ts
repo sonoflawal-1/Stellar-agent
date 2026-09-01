@@ -354,3 +354,41 @@ export interface JobCancelledEvent {
 /** Discriminated union of all agentic-commerce contract events. */
 export type JobEvent =
   JobCreatedEvent | JobSubmittedEvent | JobCompletedEvent | JobRefundedEvent | JobCancelledEvent;
+
+/**
+ * Returns true if the given JobStatus represents a terminal (final) state.
+ *
+ * Terminal states are those from which no further transitions are possible:
+ * `Completed`, `Cancelled`, and `Rejected`.
+ *
+ * @example
+ * if (isJobTerminal(job.status)) {
+ *   console.log('Job is done — no further action needed');
+ * }
+ */
+export function isJobTerminal(status: JobStatus): boolean {
+  return (
+    status === JobStatus.Completed ||
+    status === JobStatus.Cancelled ||
+    status === JobStatus.Rejected
+  );
+}
+
+/**
+ * Returns true if the given JobStatus represents an active (non-terminal) state.
+ *
+ * Active states are those where the job is still in progress:
+ * `Open`, `Funded`, and `Submitted`.
+ *
+ * @example
+ * if (isJobActive(job.status)) {
+ *   console.log('Job is still in progress');
+ * }
+ */
+export function isJobActive(status: JobStatus): boolean {
+  return (
+    status === JobStatus.Open ||
+    status === JobStatus.Funded ||
+    status === JobStatus.Submitted
+  );
+}
