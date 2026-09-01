@@ -27,10 +27,10 @@ export type MarcPaywallFastifyOptions = MarcPaywallCoreOptions;
  *   import Fastify from "fastify";
  *
  *   const app = Fastify();
- *   const paywall = marcPaywallFastify({
+ *   const paywall = await marcPaywallFastify({
  *     payTo: "G...",
  *     price: "$0.01",
- *     facilitatorApiKey: process.env.FACILITATOR_KEY,
+ *     facilitatorApiKey: process.env.KEY,
  *   });
  *
  *   app.addHook("preHandler", paywall);
@@ -45,14 +45,15 @@ export type MarcPaywallFastifyOptions = MarcPaywallCoreOptions;
  * For full Fastify integration, you may want to implement a Fastify-specific
  * plugin that wraps the paymentMiddleware from @x402/express.
  */
-export function marcPaywallFastify(
+export async function marcPaywallFastify(
   opts: MarcPaywallFastifyOptions,
-): (request: FastifyRequest, reply: FastifyReply) => Promise<void> {
-  // Import x402 here to avoid requiring @x402/express in Node.js environments
-  // that only use marcPaywall without Fastify
-  const { paymentMiddleware, x402ResourceServer } = require("@x402/express");
-  const { HTTPFacilitatorClient } = require("@x402/core/server");
-  const { ExactStellarScheme } = require("@x402/stellar/exact/server");
+): Promise<(request: FastifyRequest, reply: FastifyReply) => Promise<void>> {
+  // Lazy-load x402 modules to avoid requiring @x402/express in Node.js
+  // environments that only use marcPaywall without Fastify.  Using dynamic
+  // import() instead of require() for ESM compatibility.
+  const { paymentMiddleware, x402ResourceServer } = await import("@x402/express");
+  const { HTTPFacilitatorClient } = await import("@x402/core/server");
+  const { ExactStellarScheme } = await import("@x402/stellar/exact/server");
 
   const {
     payTo,
