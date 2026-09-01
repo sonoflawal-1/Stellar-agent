@@ -1,16 +1,35 @@
 import { Keypair, rpc, TransactionBuilder, BASE_FEE, xdr, Account } from "@stellar/stellar-sdk";
 import type { MarcConfig } from "./types.js";
+import type { Signer } from "./signer.js";
+import { toSigner } from "./signer.js";
 
 /**
- * Base class for Soroban contract clients.
+ * Abstract base class for Soroban contract clients.
  *
  * Provides shared transaction submission and simulation logic used by
- * IdentityClient and CommerceClient. Handles ScVal encoding/decoding,
- * transaction building, RPC submission, and retry logic.
+ * {@link IdentityClient} and {@link CommerceClient}. Handles ScVal
+ * encoding/decoding, transaction building, RPC submission, polling for
+ * finality, and retry logic with exponential backoff.
+ *
+ * Subclasses must call `super(cfg)` in their constructors and then
+ * instantiate their specific `Contract` instances.
+ *
+ * @example
+ * ```typescript
+ * // You don't instantiate BaseClient directly — use IdentityClient or CommerceClient:
+ * import { IdentityClient, CommerceClient, TESTNET } from "marc-stellar-sdk";
+ * const identity = new IdentityClient(TESTNET);
+ * const commerce = new CommerceClient(TESTNET);
+ * ```
  */
 export abstract class BaseClient {
+  /** Soroban JSON-RPC server used for simulation and transaction submission. */
   protected server: rpc.Server;
 
+  /**
+   * @param cfg - SDK configuration including the RPC URL, network passphrase,
+   *              and deployed contract addresses.
+   */
   constructor(protected cfg: MarcConfig) {
     this.server = new rpc.Server(cfg.rpcUrl, {
       allowHttp: cfg.rpcUrl.startsWith("http://"),
@@ -19,21 +38,32 @@ export abstract class BaseClient {
   }
 
   /**
-   * Submit a transaction signed by a single keypair.
+   * Build, sign, submit, and poll a contract-invocation transaction.
    *
-   * @param signer - The keypair to sign the transaction
-   * @param op - The contract operation to execute
-   * @param decode - Function to decode the return value from ScVal
-   * @param txLabel - Label for the onTx callback (e.g., "identity", "commerce")
-   * @returns The decoded return value
+   * Fetches the account sequence number, builds the transaction, calls
+   * `prepareTransaction` to simulate and attach the Soroban footprint,
+   * signs with the provided signer, submits via `sendTransaction`, and
+   * polls until the transaction is finalized (SUCCESS or FAILED).
+   *
+   * Accepts both a `Keypair` (Node/demo flows) and a `WalletSigner`
+   * (browser wallet flows) via the `Signer` union type.
+   *
+   * @param signer - The signer that signs and pays fees for the transaction.
+   * @param op - The pre-built Soroban contract operation to include.
+   * @param decode - Decoder applied to the transaction's return ScVal.
+   * @param txLabel - Short label passed to the `onTx` callback (e.g. `"identity"`, `"commerce"`).
+   * @returns The decoded return value of type `T`.
+   * @throws {Error} If the transaction is rejected (`ERROR` status), if the on-chain
+   *                 execution fails, or on any RPC/network failure.
    */
   protected async invoke<T>(
-    signer: Keypair,
+    signer: Signer,
     op: xdr.Operation,
     decode: (scVal: xdr.ScVal) => T,
     txLabel: string,
   ): Promise<T> {
-    const account = await this.server.getAccount(signer.publicKey());
+    const walletSigner = toSigner(signer);
+    const account = await this.server.getAccount(walletSigner.publicKey);
     const tx = new TransactionBuilder(account, {
       fee: BASE_FEE,
       networkPassphrase: this.cfg.networkPassphrase,
@@ -42,8 +72,11 @@ export abstract class BaseClient {
       .setTimeout(30)
       .build();
     const prepared = await this.server.prepareTransaction(tx);
-    prepared.sign(signer);
-    const sent = await this.server.sendTransaction(prepared);
+    const signedXdr = await walletSigner.signTransaction(prepared.toXDR(), {
+      networkPassphrase: this.cfg.networkPassphrase,
+    });
+    const signedTx = TransactionBuilder.fromXDR(signedXdr, this.cfg.networkPassphrase);
+    const sent = await this.server.sendTransaction(signedTx);
     if (sent.status === "ERROR") throw new Error(`submit failed: ${sent.errorResult}`);
     let getResp = await this.server.getTransaction(sent.hash);
     while (getResp.status === "NOT_FOUND") {
@@ -60,13 +93,15 @@ export abstract class BaseClient {
   }
 
   /**
-   * Simulate a transaction without submitting it.
+   * Simulate a read-only contract call without submitting a transaction.
    *
-   * Uses retry logic with exponential backoff for transient errors.
+   * Uses an ephemeral random keypair so no real account or funds are needed.
+   * Retries up to 3 times with exponential backoff (2 s, 4 s) on transient errors.
    *
-   * @param op - The contract operation to simulate
-   * @param decode - Function to decode the return value from ScVal
-   * @returns The decoded return value
+   * @param op - The contract operation to simulate (must be a pure read call).
+   * @param decode - Decoder applied to the simulation result's `retval` ScVal.
+   * @returns The decoded return value of type `T`.
+   * @throws {Error} If the simulation returns an error or after 3 failed attempts.
    */
   protected async simulate<T>(op: xdr.Operation, decode: (v: xdr.ScVal) => T): Promise<T> {
     const ephemeral = Keypair.random();
@@ -94,9 +129,18 @@ export abstract class BaseClient {
   }
 
   /**
-   * Simulate a contract call that returns `Option<T>` (Soroban `ScVal::Void` = None).
-   * Throws on RPC/simulation errors so callers can distinguish network failures
-   * from a genuine not-found (which returns `null`).
+   * Simulate a contract call whose return type is `Option<T>` (may be absent).
+   *
+   * Behaves like {@link simulate} but handles Soroban `ScVal::Void` (the encoding
+   * of `Option::None`) by returning `null` instead of decoding. Throws on any
+   * RPC/simulation error so callers can distinguish "not found" from "outage".
+   *
+   * Retries up to 3 times with exponential backoff on transient failures.
+   *
+   * @param op - The contract operation to simulate.
+   * @param decode - Decoder applied to a non-void `retval` ScVal.
+   * @returns The decoded value, or `null` if the contract returned `None` / `ScVal::Void`.
+   * @throws {Error} On RPC/simulation failure after 3 attempts.
    */
   protected async simulateOption<T>(
     op: xdr.Operation,
@@ -131,9 +175,12 @@ export abstract class BaseClient {
   }
 
   /**
-   * Clean up resources (no-op for stateless HTTP clients).
-   * Call this when the client is no longer needed for symmetry with other clients.
-   * The RPC server uses stateless HTTP connections, so no cleanup is required.
+   * Disconnect and clean up any resources held by this client.
+   *
+   * The Soroban RPC server uses stateless HTTP connections, so no active
+   * connections need to be closed. This method is a no-op and exists for
+   * API symmetry — call it when disposing of client instances in code that
+   * manages connection lifecycles.
    */
   disconnect(): void {
     // No-op: RPC Server uses stateless HTTP, no long-lived connections to close

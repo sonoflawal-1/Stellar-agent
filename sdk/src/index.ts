@@ -41,4 +41,15 @@ export {
   addrFromScVal,
 } from "./commerce.js";
 
+/**
+ * The current semantic version of the `marc-stellar-sdk` package.
+ *
+ * Useful for logging, debugging, and compatibility checks at runtime.
+ *
+ * @example
+ * ```typescript
+ * import { MARC_STELLAR_SDK_VERSION } from "marc-stellar-sdk";
+ * console.log("SDK version:", MARC_STELLAR_SDK_VERSION); // "0.1.0"
+ * ```
+ */
 export const MARC_STELLAR_SDK_VERSION = "0.1.0";
