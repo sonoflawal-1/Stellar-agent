@@ -34,9 +34,39 @@ const cfg: MarcConfig = {
 };
 
 const BASE_PORT = 4410;
-const NUM_SELLERS = 4;
-const NUM_BUYERS = 5;
-const BUDGET = BigInt(10_000_000); // 1 USDC
+
+/**
+ * Read an integer CLI flag (e.g. `--sellers 2`) from process.argv.
+ * Falls back to `defaultValue` when the flag is missing, has no value
+ * following it, or the value doesn't parse to a positive integer.
+ */
+function parseIntFlag(flagName: string, defaultValue: number): number {
+  const idx = process.argv.indexOf(flagName);
+  if (idx === -1 || idx === process.argv.length - 1) return defaultValue;
+  const parsed = parseInt(process.argv[idx + 1], 10);
+  if (!Number.isFinite(parsed) || parsed < 1) return defaultValue;
+  return parsed;
+}
+
+/**
+ * Read a bigint CLI flag (e.g. `--budget 5000000`) from process.argv.
+ * Falls back to `defaultValue` when the flag is missing, has no value
+ * following it, or the value doesn't parse to a positive bigint.
+ */
+function parseBudgetFlag(flagName: string, defaultValue: bigint): bigint {
+  const idx = process.argv.indexOf(flagName);
+  if (idx === -1 || idx === process.argv.length - 1) return defaultValue;
+  try {
+    const parsed = BigInt(process.argv[idx + 1]);
+    return parsed > 0n ? parsed : defaultValue;
+  } catch {
+    return defaultValue;
+  }
+}
+
+const NUM_SELLERS = parseIntFlag("--sellers", 4);
+const NUM_BUYERS = parseIntFlag("--buyers", 5);
+const BUDGET = parseBudgetFlag("--budget", BigInt(10_000_000)); // default: 1 USDC
 
 /** Decode a raw ScVal hex/base64 string to a native JS value for readable logging. */
 function decodeScVal(raw: unknown): unknown {
@@ -330,7 +360,9 @@ async function main() {
   }
 
   console.log("=== MARC MARKETPLACE SIMULATION ===");
-  console.log(`${NUM_SELLERS} sellers, ${NUM_BUYERS} buyers\n`);
+  console.log(
+    `Config: ${NUM_SELLERS} sellers, ${NUM_BUYERS} buyers, budget=${BUDGET} stroops per job\n`,
+  );
 
   const [sellerKps, buyerKps] = await Promise.all([
     setupKeypairs(NUM_SELLERS, "seller"),

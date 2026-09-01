@@ -1,4 +1,4 @@
-import { Keypair, TransactionBuilder } from "@stellar/stellar-sdk";
+import { Keypair, StrKey, TransactionBuilder } from "@stellar/stellar-sdk";
 
 /**
  * A transaction signer for the MARC SDK clients.
@@ -66,4 +66,33 @@ export function signerPublicKey(signer: Signer): string {
     return (signer as WalletSigner).publicKey;
   }
   return (signer as Keypair).publicKey();
+}
+
+/**
+ * Checks whether a string is a validly-formatted Ed25519 Stellar secret seed
+ * (i.e. starts with `S` and passes the StrKey checksum), without attempting
+ * to construct a `Keypair` from it.
+ */
+export function isValidSecretKey(secretKey: string): boolean {
+  if (typeof secretKey !== "string" || secretKey.length === 0) return false;
+  return StrKey.isValidEd25519SecretSeed(secretKey);
+}
+
+/**
+ * Builds a `Keypair` from a secret seed string, validating the format first
+ * so callers get a clean, descriptive error instead of an SDK-internal one.
+ *
+ * @throws {Error} "Invalid Stellar secret key format" when `secretKey` isn't
+ * a valid Ed25519 secret seed.
+ */
+export function createKeypairFromSecret(secretKey: string): Keypair {
+  if (!isValidSecretKey(secretKey)) {
+    throw new Error("Invalid Stellar secret key format");
+  }
+  return Keypair.fromSecret(secretKey);
+}
+
+/** Convenience wrapper around `Keypair.random()` for a fresh, funded-later account. */
+export function generateRandomKeypair(): Keypair {
+  return Keypair.random();
 }
