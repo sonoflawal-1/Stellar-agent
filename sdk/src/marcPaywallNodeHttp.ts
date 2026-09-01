@@ -1,63 +1,100 @@
 /**
- * Node.js native http/https adapter for MARC x402 payment protocol.
+ * Node.js native `http`/`https` adapter for MARC x402 payment protocol.
  *
- * Provides payment verification for raw Node.js http.Server or https.Server.
- * Works with any framework built on http.Server (native, Koa, hapi, etc).
+ * Provides payment verification for raw Node.js `http.Server` or `https.Server`.
+ * Compatible with any framework built on top of Node.js `http.Server`
+ * (Koa, hapi, Restify, etc.) by working directly with `IncomingMessage` and
+ * `ServerResponse` objects.
+ *
+ * @module marcPaywallNodeHttp
  */
 
 import type { MarcPaywallCoreOptions } from "./marcPaywallCore.js";
 import type { IncomingMessage, ServerResponse } from "http";
 
 /**
- * Options for the MARC paywall Node http adapter.
- * (Inherits from core options, adds nothing Node-specific.)
+ * Configuration options for the MARC x402 Node.js http paywall handler.
+ *
+ * Inherits all fields from {@link MarcPaywallCoreOptions} without modification.
+ * Provided as a named alias so Node-http-specific code can import a clearly named type.
  */
 export type MarcPaywallNodeHttpOptions = MarcPaywallCoreOptions;
 
 /**
- * Class-based handler for Node.js http payment verification.
+ * Class-based payment verification handler for Node.js native `http`/`https`.
  *
- * Leverages the @x402/express middleware but applies it directly to
- * Node.js native IncomingMessage and ServerResponse objects.
+ * Wraps `@x402/express` `paymentMiddleware` and applies it directly to
+ * `IncomingMessage` and `ServerResponse` objects. Middleware is initialized
+ * lazily on the first call to {@link check} to avoid loading Express in
+ * environments that don't use it.
  *
- * Usage with raw Node.js:
- *   ```typescript
- *   import { MarcPaywallNodeHttpHandler } from "marc-stellar-sdk";
- *   import http from "http";
+ * Prefer the functional {@link marcPaywallNodeHttp} helper for simple use cases.
+ * Use this class directly when you need to reuse the initialized middleware
+ * across multiple request handlers or when subclassing is needed.
  *
- *   const handler = new MarcPaywallNodeHttpHandler({
- *     payTo: "G...",
- *     price: "$0.01",
- *   });
+ * @example
+ * ```typescript
+ * import { MarcPaywallNodeHttpHandler } from "marc-stellar-sdk";
+ * import http from "http";
  *
- *   http.createServer(async (req, res) => {
- *     const authorized = await handler.check(req, res);
- *     if (!authorized) return; // 402 was sent
- *     // ... your handler logic
- *   }).listen(3000);
- *   ```
+ * const handler = new MarcPaywallNodeHttpHandler({
+ *   payTo: "GABC...",
+ *   price: "$0.01",
+ * });
  *
- * Usage with Koa:
- *   ```typescript
- *   const handler = new MarcPaywallNodeHttpHandler({ payTo: "G...", price: "$0.01" });
- *   app.use(async (ctx) => {
- *     const authorized = await handler.check(ctx.req, ctx.res);
- *     if (!authorized) return; // 402 was sent
- *     // ... your handler logic
- *   });
- *   ```
+ * http.createServer(async (req, res) => {
+ *   const authorized = await handler.check(req, res);
+ *   if (!authorized) return; // 402 already sent by check()
+ *   res.writeHead(200, { "Content-Type": "application/json" });
+ *   res.end(JSON.stringify({ data: "protected" }));
+ * }).listen(3000);
+ * ```
+ *
+ * @example With Koa:
+ * ```typescript
+ * const handler = new MarcPaywallNodeHttpHandler({ payTo: "GABC...", price: "$0.01" });
+ * app.use(async (ctx) => {
+ *   const authorized = await handler.check(ctx.req, ctx.res);
+ *   if (!authorized) return; // 402 already sent
+ *   ctx.body = { data: "protected" };
+ * });
+ * ```
  */
 export class MarcPaywallNodeHttpHandler {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private middleware: any = null;
 
+  /**
+   * @param opts - Payment configuration including payee address, price, and network.
+   */
   constructor(private opts: MarcPaywallNodeHttpOptions) {}
 
   /**
-   * Check payment authorization for a request.
+   * Verify payment authorization for an incoming HTTP request.
    *
-   * Returns true if payment is authorized (request should continue),
-   * false if 402 was sent (request is complete).
+   * On first call, lazily initializes the underlying x402 payment middleware.
+   * Subsequent calls reuse the cached middleware instance for efficiency.
+   *
+   * When a request does **not** carry valid payment proof:
+   * - Writes an HTTP 402 response with `X-Payment-Requirements` headers.
+   * - Returns `false` — the caller must **not** send another response.
+   *
+   * When a request carries valid payment proof:
+   * - Does not write any response.
+   * - Returns `true` — the caller should proceed with normal handling.
+   *
+   * @param req - The Node.js `IncomingMessage` (raw request from `http.createServer`).
+   * @param res - The Node.js `ServerResponse` (raw response object).
+   * @returns `true` if payment is authorized and the request should continue,
+   *          `false` if a 402 response was already sent and the caller should stop.
+   * @throws {Error} On middleware initialization failure or unexpected errors.
+   *
+   * @example
+   * ```typescript
+   * const authorized = await handler.check(req, res);
+   * if (!authorized) return; // response already sent
+   * // ... handle the authorized request
+   * ```
    */
   async check(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
     // Lazily initialize middleware on first use (to avoid loading Express if not needed)
@@ -149,19 +186,35 @@ export class MarcPaywallNodeHttpHandler {
 }
 
 /**
- * Creates a Node.js http request handler middleware.
+ * Create a Node.js `http` request handler that enforces x402 v2 payment requirements.
  *
- * Returns a function that can be used directly with http.createServer:
- *   ```typescript
- *   import { marcPaywallNodeHttp } from "marc-stellar-sdk";
- *   import http from "http";
+ * A thin functional wrapper around {@link MarcPaywallNodeHttpHandler}. Creates a
+ * new handler instance and returns a pre-bound `check` function for ergonomic use
+ * directly inside `http.createServer` callbacks.
  *
- *   const handler = marcPaywallNodeHttp({ payTo: "G...", price: "$0.01" });
- *   http.createServer(async (req, res) => {
- *     if (!await handler(req, res)) return; // 402 was sent
- *     // ... your handler logic
- *   }).listen(3000);
- *   ```
+ * When a request arrives without valid payment proof, the returned function:
+ * 1. Writes an HTTP 402 response with `X-Payment-Requirements` headers.
+ * 2. Returns `false` so callers know the response is already sent.
+ *
+ * When payment is verified, it returns `true` without writing any response.
+ *
+ * @param opts - Payment configuration including payee address, price, and network.
+ * @returns An async function `(req, res) => Promise<boolean>` suitable for use
+ *          inside any Node.js `http.createServer` callback or framework adapter.
+ *
+ * @example
+ * ```typescript
+ * import { marcPaywallNodeHttp } from "marc-stellar-sdk";
+ * import http from "http";
+ *
+ * const paywall = marcPaywallNodeHttp({ payTo: "GABC...", price: "$0.01" });
+ *
+ * http.createServer(async (req, res) => {
+ *   if (!await paywall(req, res)) return; // 402 already sent
+ *   res.writeHead(200, { "Content-Type": "application/json" });
+ *   res.end(JSON.stringify({ data: "protected content" }));
+ * }).listen(3000);
+ * ```
  */
 export function marcPaywallNodeHttp(
   opts: MarcPaywallNodeHttpOptions,
