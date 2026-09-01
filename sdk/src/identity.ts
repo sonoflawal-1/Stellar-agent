@@ -77,6 +77,27 @@ export class IdentityClient extends BaseClient {
     });
   }
 
+  /**
+   * Convenience helper: look up an agent by its owner's wallet address.
+   *
+   * Combines `agentOf` and `getAgent` into a single call. Returns `null` if
+   * the owner has not registered an agent.
+   *
+   * @param ownerAddress - The owner's Stellar address in StrKey format.
+   * @returns The `Agent` record, or `null` if no agent is registered for this owner.
+   *
+   * @example
+   * const agent = await identity.getAgentByOwner('GBUQWP3BOUZX34ULNQG23RQ6F4YUSXHTBVDJ42LPBK4EK4YLYL2QQ5K');
+   * if (agent) {
+   *   console.log('Agent ID:', agent.id);
+   * }
+   */
+  async getAgentByOwner(ownerAddress: string): Promise<Agent | null> {
+    const id = await this.agentOf(ownerAddress);
+    if (id == null) return null;
+    return this.getAgent(id);
+  }
+
   /** Update an agent's metadata URI (owner-only). */
   async updateUri(owner: Signer, id: bigint, uri: string): Promise<void> {
     const op = this.contract.call(
