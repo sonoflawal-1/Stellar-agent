@@ -28,6 +28,7 @@
     loading: { stats: false, wallets: false, agents: false, jobs: false },
     jobFilter: "Active",
     jobSearch: "",
+    agentSearch: "",
     agentPage: 1,
     agentPageSize: 24,
     agentTotal: 0,
@@ -978,39 +979,122 @@
   }
 
   // 4. Agents
-  async function renderAgents() {
-    setPage(
-      '<div class="section-header"><div><div class="section-title">Agents</div><div class="page-subtitle" style="margin-top:2px">On-chain identity registry for AI agents</div></div>' +
-        '<button class="btn btn-primary" onclick="window.__showRegisterAgent()">+ Register Agent</button></div>' +
-        skeletonList(3),
-    );
+  function matchAgent(a, query) {
+    if (!query) return true;
+    const q = query.toLowerCase().trim();
+    if (!q) return true;
 
-    await loadAgents();
+    const nameMatch = Boolean(a.name && String(a.name).toLowerCase().includes(q));
+    const descMatch = Boolean(a.description && String(a.description).toLowerCase().includes(q));
+    const tagsMatch = Boolean(
+      Array.isArray(a.tags)
+        ? a.tags.some(function (t) {
+            return String(t).toLowerCase().includes(q);
+          })
+        : typeof a.tags === "string" && a.tags.toLowerCase().includes(q),
+    );
+    const skillsMatch = Boolean(
+      Array.isArray(a.skills)
+        ? a.skills.some(function (s) {
+            return String(s).toLowerCase().includes(q);
+          })
+        : typeof a.skill === "string" && a.skill.toLowerCase().includes(q),
+    );
+    const uriMatch = Boolean(a.uri && String(a.uri).toLowerCase().includes(q));
+    const ownerMatch = Boolean(a.owner && String(a.owner).toLowerCase().includes(q));
+    const idMatch = Boolean(a.id !== undefined && String(a.id).toLowerCase().includes(q));
+
+    return nameMatch || descMatch || tagsMatch || skillsMatch || uriMatch || ownerMatch || idMatch;
+  }
+
+  async function renderAgents() {
+    if (!state.agents) {
+      setPage(
+        '<div class="section-header"><div><div class="section-title">Agents</div><div class="page-subtitle" style="margin-top:2px">On-chain identity registry for AI agents</div></div>' +
+          '<button class="btn btn-primary" onclick="window.__showRegisterAgent()">+ Register Agent</button></div>' +
+          skeletonList(3),
+      );
+      await loadAgents();
+    }
+
     const agents = state.agents || [];
+    const searchTerm = (state.agentSearch || "").trim();
+    const filtered = searchTerm
+      ? agents.filter(function (a) {
+          return matchAgent(a, searchTerm);
+        })
+      : agents;
 
     let cards = "";
-    if (agents.length === 0) {
-      cards =
-        '<div class="empty-state">' +
-        '<div class="empty-icon"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg></div>' +
-        '<div class="empty-title">No agents registered</div>' +
-        '<div class="empty-desc">Register your first agent to get started.</div></div>';
+    if (filtered.length === 0) {
+      if (searchTerm) {
+        cards =
+          '<div class="empty-state">' +
+          '<div class="empty-icon"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg></div>' +
+          '<div class="empty-title">No agents found matching \'' +
+          escapeHtml(searchTerm) +
+          "'</div>" +
+          '<div class="empty-desc">Try a different search query or clear the filter.</div></div>';
+      } else {
+        cards =
+          '<div class="empty-state">' +
+          '<div class="empty-icon"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg></div>' +
+          '<div class="empty-title">No agents registered</div>' +
+          '<div class="empty-desc">Register your first agent to get started.</div></div>';
+      }
     } else {
       cards = '<div class="agent-grid">';
-      for (const a of agents) {
+      for (const a of filtered) {
+        let tagsHtml = "";
+        if (Array.isArray(a.tags) && a.tags.length > 0) {
+          tagsHtml =
+            '<div class="agent-field"><div class="agent-field-label">Tags</div><div class="agent-tags">' +
+            a.tags
+              .map(function (t) {
+                return '<span class="agent-tag">' + escapeHtml(String(t)) + "</span>";
+              })
+              .join("") +
+            "</div></div>";
+        }
+        let descHtml = "";
+        if (a.description) {
+          descHtml =
+            '<div class="agent-field"><div class="agent-field-label">Description</div>' +
+            '<div class="agent-field-value" style="font-family:var(--font);font-size:13px;word-break:normal">' +
+            escapeHtml(a.description) +
+            "</div></div>";
+        }
+        let nameHtml = "";
+        if (a.name) {
+          nameHtml =
+            '<div class="agent-field"><div class="agent-field-label">Name</div>' +
+            '<div class="agent-field-value" style="font-family:var(--font);font-weight:600;color:var(--text)">' +
+            escapeHtml(a.name) +
+            "</div></div>";
+        }
         cards +=
           '<div class="agent-card">' +
           '<div class="agent-card-top">' +
           agentIdenticon(a.owner) +
-          '<div class="agent-id">Agent <span>#' +
-          escapeHtml(String(a.id)) +
-          "</span></div>" +
+          '<div class="agent-id">' +
+          (a.name
+            ? escapeHtml(a.name) +
+              ' <span style="font-size:12px;color:var(--text-dim)">(#' +
+              escapeHtml(String(a.id)) +
+              ")</span>"
+            : "Agent <span>#" + escapeHtml(String(a.id)) + "</span>") +
           "</div>" +
+          "</div>" +
+          nameHtml +
+          descHtml +
+          tagsHtml +
           '<div class="agent-field"><div class="agent-field-label">Owner</div>' +
           '<div class="agent-field-value addr-with-copy">' +
-          '<span style="cursor:pointer" onclick="window.__copy(\'' + a.owner + '\')">' +
+          '<span style="cursor:pointer" onclick="window.__copy(\'' +
+          a.owner +
+          "')\">" +
           truncAddr(a.owner) +
-          '</span>' +
+          "</span>" +
           copyBtn(a.owner) +
           "</div></div>" +
           '<div class="agent-field"><div class="agent-field-label">Metadata URI</div>' +
@@ -1022,9 +1106,10 @@
       cards += "</div>";
     }
 
-    const totalPages = Math.max(1, Math.ceil(state.agentTotal / state.agentPageSize));
-    if (totalPages > 1) {
-      cards +=
+    const totalPages = Math.max(1, Math.ceil((searchTerm ? filtered.length : state.agentTotal) / state.agentPageSize));
+    let paginationHtml = "";
+    if (totalPages > 1 && !searchTerm) {
+      paginationHtml =
         '<div class="filter-tabs" style="margin-top:20px">' +
         '<button class="filter-tab" ' +
         (state.agentPage === 1 ? "disabled" : "") +
@@ -1042,6 +1127,18 @@
         ')">Next</button></div>';
     }
 
+    const searchToolbar =
+      '<div class="agent-search-wrap">' +
+      '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
+      '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>' +
+      '<input type="search" id="agent-search" class="agent-search-input" ' +
+      'placeholder="Search agents by name, skill, or tag..." ' +
+      'value="' +
+      escapeHtml(state.agentSearch || "") +
+      '" ' +
+      'oninput="window.__searchAgents(this.value)" />' +
+      "</div>";
+
     setPage(
       '<div class="section-header"><div><div class="section-title">Agents</div><div class="page-subtitle" style="margin-top:2px">On-chain identity registry for AI agents</div></div>' +
         '<button class="btn btn-primary" onclick="window.__showRegisterAgent()">+ Register Agent</button></div>' +
@@ -1049,7 +1146,7 @@
         '<div class="stat-card"><div class="stat-card-top"><div class="stat-label">Registered</div>' +
         '<div class="stat-icon blue"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg></div>' +
         '</div><div class="stat-value">' +
-        agents.length +
+        (searchTerm ? filtered.length : agents.length) +
         "</div></div>" +
         '<div class="stat-card"><div class="stat-card-top"><div class="stat-label">Network</div>' +
         '<div class="stat-icon green"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></div>' +
@@ -1058,7 +1155,9 @@
         '<div class="stat-icon orange"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>' +
         '</div><div class="stat-value" style="font-size:14px;font-weight:600;color:var(--text-muted);font-family:var(--mono)">ERC-8004</div></div>' +
         "</div>" +
-        cards,
+        searchToolbar +
+        cards +
+        paginationHtml,
     );
   }
 
@@ -1342,6 +1441,29 @@
     await loadAgents(page);
     renderAgents();
   };
+
+  // Live agent search with 200ms debounce
+  let agentSearchDebounceTimer = null;
+  window.__searchAgents = function (value) {
+    clearTimeout(agentSearchDebounceTimer);
+    agentSearchDebounceTimer = setTimeout(function () {
+      state.agentSearch = value;
+      renderAgents();
+      var input = document.getElementById("agent-search");
+      if (input) {
+        input.focus();
+        var len = input.value.length;
+        input.setSelectionRange(len, len);
+      }
+    }, 200);
+  };
+
+  // Attach input listener for agent-search
+  document.addEventListener("input", function (e) {
+    if (e.target && e.target.id === "agent-search") {
+      window.__searchAgents(e.target.value);
+    }
+  });
 
   window.__showCreateJob = function () {
     var walletField = wallet.connected
