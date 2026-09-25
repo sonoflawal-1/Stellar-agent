@@ -7,6 +7,8 @@
  */
 
 export * from "./types.js";
+export * from "./events.js";
+export * from "./errors.js";
 export { IdentityClient } from "./identity.js";
 export { CommerceClient } from "./commerce.js";
 export {

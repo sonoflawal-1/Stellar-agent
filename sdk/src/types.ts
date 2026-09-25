@@ -294,6 +294,54 @@ export function loadConfig(network: "testnet" | "mainnet"): PresetConfig {
 }
 
 /**
+ * Symbol topic names emitted by the `agent_identity` contract events (#544).
+ */
+export const IdentityEvents = {
+  Registered: "Registered",
+  UriUpdated: "UriUpdated",
+  AgentDeregistered: "AgentDeregistered",
+  OwnerTransferred: "OwnerTransferred",
+} as const;
+
+export type IdentityEventName = (typeof IdentityEvents)[keyof typeof IdentityEvents];
+
+/** Decoded payload for a `Registered` event. */
+export interface RegisteredEvent {
+  type: typeof IdentityEvents.Registered;
+  owner: Address;
+  agentId: bigint;
+}
+
+/** Decoded payload for a `UriUpdated` event. */
+export interface UriUpdatedEvent {
+  type: typeof IdentityEvents.UriUpdated;
+  owner: Address;
+  agentId: bigint;
+}
+
+/** Decoded payload for an `AgentDeregistered` event. */
+export interface AgentDeregisteredEvent {
+  type: typeof IdentityEvents.AgentDeregistered;
+  owner: Address;
+  agentId: bigint;
+}
+
+/** Decoded payload for an `OwnerTransferred` event. */
+export interface OwnerTransferredEvent {
+  type: typeof IdentityEvents.OwnerTransferred;
+  oldOwner: Address;
+  newOwner: Address;
+  agentId: bigint;
+}
+
+/** Discriminated union of all agent-identity contract events. */
+export type IdentityEvent =
+  | RegisteredEvent
+  | UriUpdatedEvent
+  | AgentDeregisteredEvent
+  | OwnerTransferredEvent;
+
+/**
  * Symbol topic names emitted by the `agentic_commerce` contract events.
  *
  * The Soroban `#[contractevent]` macro publishes the struct name (converted to
@@ -310,6 +358,8 @@ export const CommerceEvents = {
   JobCompleted: "JobCompleted",
   JobRefunded: "JobRefunded",
   JobCancelled: "JobCancelled",
+  JobDisputed: "JobDisputed",
+  JobExpired: "JobExpired",
 } as const;
 
 export type CommerceEventName = (typeof CommerceEvents)[keyof typeof CommerceEvents];
@@ -353,9 +403,33 @@ export interface JobCancelledEvent {
   jobId: bigint;
 }
 
+/** Decoded payload for a `JobDisputed` event (#545). */
+export interface JobDisputedEvent {
+  type: typeof CommerceEvents.JobDisputed;
+  client: Address;
+  jobId: bigint;
+  timestamp: bigint;
+}
+
+/** Decoded payload for a `JobExpired` event (#545). */
+export interface JobExpiredEvent {
+  type: typeof CommerceEvents.JobExpired;
+  provider: Address;
+  jobId: bigint;
+  payout: bigint;
+  fee: bigint;
+  timestamp: bigint;
+}
+
 /** Discriminated union of all agentic-commerce contract events. */
 export type JobEvent =
-  JobCreatedEvent | JobSubmittedEvent | JobCompletedEvent | JobRefundedEvent | JobCancelledEvent;
+  | JobCreatedEvent
+  | JobSubmittedEvent
+  | JobCompletedEvent
+  | JobRefundedEvent
+  | JobCancelledEvent
+  | JobDisputedEvent
+  | JobExpiredEvent;
 
 /**
  * Returns true if the given JobStatus represents a terminal (final) state.
