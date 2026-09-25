@@ -229,7 +229,9 @@ function isAlive(agentId: string): boolean {
   return entry !== undefined && Date.now() - entry.lastHeartbeat < HEARTBEAT_TIMEOUT_MS;
 }
 
-app.post("/heartbeat", requireApiKey, requireRegistryAuth, (req, res) => {
+const heartbeatAuth = REGISTRY_API_KEY ? requireRegistryAuth : requireApiKey;
+
+app.post("/heartbeat", heartbeatAuth, (req, res) => {
   const { agentId } = req.body;
   const ip = getRequestKey(req);
   if (!agentId) {

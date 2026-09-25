@@ -69,7 +69,7 @@ async function fetchAll<T>(maxId: number, getter: (id: bigint) => Promise<T | nu
 
 export async function getAllAgents(force = false): Promise<Agent[]> {
   if (!force && Date.now() - agentCache.ts < CACHE_TTL) return agentCache.data;
-  const max = await findMaxId((id) => identity.getAgent(id));
+  const max = await getRegisteredAgentCount();
   const agents = await fetchAll(max, (id) => identity.getAgent(id));
   agentCache = { data: agents, ts: Date.now() };
   return agents;
@@ -79,7 +79,7 @@ export async function getAgentsPage(
   page = 1,
   pageSize = DEFAULT_AGENT_PAGE_SIZE,
 ): Promise<{ items: Agent[]; page: number; pageSize: number; total: number; hasNext: boolean }> {
-  const max = await findMaxId((id) => identity.getAgent(id));
+  const max = await getRegisteredAgentCount();
   const start = (page - 1) * pageSize + 1;
   const end = Math.min(start + pageSize - 1, max);
   const items =
@@ -91,10 +91,26 @@ export async function getAgentsPage(
 
 export async function getAllJobs(force = false): Promise<Job[]> {
   if (!force && Date.now() - jobCache.ts < CACHE_TTL) return jobCache.data;
-  const max = await findMaxId((id) => commerce.getJob(id));
+  const max = await getJobCount();
   const jobs = await fetchAll(max, (id) => commerce.getJob(id));
   jobCache = { data: jobs, ts: Date.now() };
   return jobs;
+}
+
+async function getRegisteredAgentCount(): Promise<number> {
+  try {
+    return await identity.registeredCount();
+  } catch {
+    return findMaxId((id) => identity.getAgent(id));
+  }
+}
+
+async function getJobCount(): Promise<number> {
+  try {
+    return Number(await commerce.jobCount());
+  } catch {
+    return findMaxId((id) => commerce.getJob(id));
+  }
 }
 
 export function invalidateAgents() {

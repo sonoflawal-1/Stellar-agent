@@ -404,6 +404,11 @@ export class CommerceClient extends BaseClient {
     return this.jobsByProvider(provider, startId, limit);
   }
 
+  async jobCount(): Promise<bigint> {
+    const op = this.contract.call("job_count");
+    return await this.simulate(op, (v) => BigInt(scValToNative(v) as string));
+  }
+
   /**
    * Read the current protocol fee in basis points (bps).
    *
