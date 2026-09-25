@@ -19,7 +19,7 @@ import {
   StrKey,
   Networks,
 } from "@stellar/stellar-sdk";
-import { cfg, buyerKeypair, sellerKeypair, getKeypair, DEMO_MODE } from "./lib/config.js";
+import { cfg, rpcUrls, buyerKeypair, sellerKeypair, getKeypair, DEMO_MODE } from "./lib/config.js";
 import {
   getAllAgents,
   getAgentsPage,
@@ -58,6 +58,25 @@ app.use("/app", express.static(path.join(__dirname, "public")));
 const server = new rpc.Server(cfg.rpcUrl, {
   allowHttp: cfg.rpcUrl.startsWith("http://"),
 });
+
+const rpcFallbackServers = rpcUrls.map(
+  (url) =>
+    new rpc.Server(url, {
+      allowHttp: url.startsWith("http://"),
+    }),
+);
+
+async function withRpcFallback<T>(operation: (server: rpc.Server) => Promise<T>): Promise<T> {
+  let lastError: unknown;
+  for (const candidate of rpcFallbackServers) {
+    try {
+      return await operation(candidate);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("All Stellar RPC providers failed");
+}
 
 const identityContract = new Contract(cfg.identityContract);
 const commerceContract = new Contract(cfg.commerceContract);
@@ -145,6 +164,8 @@ const submitXdrSchema = z.object({
 
 const jobsQuerySchema = z.object({
   status: z.string().min(1).optional(),
+  page: z.coerce.number().int().positive().optional(),
+  limit: z.coerce.number().int().positive().max(100).optional(),
 });
 
 const agentsQuerySchema = z.object({
@@ -174,6 +195,36 @@ function handleRouteError(err: unknown, res: Response): void {
   res.status(500).json({ error: (err as Error).message });
 }
 
+type AuditEntry = {
+  at: string;
+  method: string;
+  path: string;
+  wallet?: string;
+  statusCode: number;
+  ip?: string;
+};
+
+const auditTrail: AuditEntry[] = [];
+const MAX_AUDIT_ENTRIES = 500;
+
+function auditAdminAction(req: Request, res: Response, next: NextFunction) {
+  const path = req.originalUrl || req.url;
+  res.on("finish", () => {
+    auditTrail.push({
+      at: new Date().toISOString(),
+      method: req.method,
+      path,
+      wallet: String((req as any).walletAddress ?? req.body?.wallet ?? req.body?.publicKey ?? ""),
+      statusCode: res.statusCode,
+      ip: req.ip,
+    });
+    if (auditTrail.length > MAX_AUDIT_ENTRIES) {
+      auditTrail.splice(0, auditTrail.length - MAX_AUDIT_ENTRIES);
+    }
+  });
+  next();
+}
+
 app.use(
   cors({
     origin: (origin, callback) => {
@@ -200,7 +251,7 @@ app.get("/api/auth/challenge", async (req, res) => {
     });
     const parsed = publicKeySchema.parse(req.query);
     const nonce = generateNonce(parsed.publicKey);
-    const account = await server.getAccount(parsed.publicKey);
+    const account = await withRpcFallback((rpcServer) => rpcServer.getAccount(parsed.publicKey));
     const challengeTx = new TransactionBuilder(account, {
       fee: BASE_FEE,
       networkPassphrase: cfg.networkPassphrase,
@@ -364,7 +415,7 @@ async function simulateReadCall(contract: Contract, method: string): Promise<unk
     .addOperation(op)
     .setTimeout(30)
     .build();
-  const sim = await server.simulateTransaction(tx);
+  const sim = await withRpcFallback((rpcServer) => rpcServer.simulateTransaction(tx));
   if (rpc.Api.isSimulationError(sim)) return null;
   const result = (sim as rpc.Api.SimulateTransactionSuccessResponse).result;
   if (!result) return null;
@@ -401,7 +452,7 @@ async function getTokenBalance(pubkey: string): Promise<string> {
       .addOperation(op)
       .setTimeout(30)
       .build();
-    const sim = await server.simulateTransaction(tx);
+    const sim = await withRpcFallback((rpcServer) => rpcServer.simulateTransaction(tx));
     if (rpc.Api.isSimulationError(sim)) return "0";
     const result = (sim as rpc.Api.SimulateTransactionSuccessResponse).result;
     if (!result) return "0";
@@ -431,20 +482,34 @@ app.get("/api/demo-mode", (_req, res) => {
   });
 });
 
+let statsCache: { ts: number; payload: unknown } | null = null;
+const STATS_CACHE_TTL_MS = Number(process.env.STATS_CACHE_TTL_MS ?? 5_000);
+
 // GET /api/stats
-app.get("/api/stats", async (_req, res) => {
+app.get("/api/stats", async (req, res) => {
   try {
+    const forceRefresh = req.query.refresh === "true";
+    if (!forceRefresh && statsCache && Date.now() - statsCache.ts < STATS_CACHE_TTL_MS) {
+      res.json(statsCache.payload);
+      return;
+    }
     const [agents, jobs, feeBps] = await Promise.all([getAllAgents(), getAllJobs(), getFeeBps()]);
     const activeJobs = jobs.filter((j) => j.status === "Funded" || j.status === "Submitted").length;
-    res.json({
+    const payload = {
       totalAgents: agents.length,
       totalJobs: jobs.length,
       activeJobs,
       feeBps,
-    });
+    };
+    statsCache = { ts: Date.now(), payload };
+    res.json(payload);
   } catch (err: unknown) {
     res.status(500).json({ error: (err as Error).message });
   }
+});
+
+app.get("/api/audit-trail", requireAuth, (_req, res) => {
+  res.json(auditTrail.slice().reverse());
 });
 
 // Server-Sent Events: simple real-time stream for dashboard clients
@@ -521,6 +586,7 @@ app.get("/api/agents", async (req, res) => {
 // POST /api/agents/register
 app.post(
   "/api/agents/register",
+  auditAdminAction,
   optionalAuthMiddleware,
   requireDashboardWallet,
   async (req, res) => {
@@ -556,6 +622,20 @@ app.get("/api/jobs", async (req, res) => {
     } else if (parsed.status) {
       jobs = jobs.filter((j) => j.status === parsed.status);
     }
+    if (parsed.page || parsed.limit) {
+      const page = parsed.page ?? 1;
+      const limit = parsed.limit ?? 24;
+      const offset = (page - 1) * limit;
+      const items = jobs.slice(offset, offset + limit);
+      res.json({
+        page,
+        limit,
+        total: jobs.length,
+        hasNext: offset + limit < jobs.length,
+        items: serialize(items),
+      });
+      return;
+    }
     res.json(serialize(jobs));
   } catch (err: unknown) {
     if (respondWithValidationError(err, res)) return;
@@ -564,7 +644,7 @@ app.get("/api/jobs", async (req, res) => {
 });
 
 // POST /api/jobs/create
-app.post("/api/jobs/create", optionalAuthMiddleware, requireDashboardWallet, async (req, res) => {
+app.post("/api/jobs/create", auditAdminAction, optionalAuthMiddleware, requireDashboardWallet, async (req, res) => {
   try {
     const parsed = createJobSchema.parse(req.body);
     const { wallet, provider, evaluator, budget, description } = parsed;
@@ -597,6 +677,7 @@ app.post("/api/jobs/create", optionalAuthMiddleware, requireDashboardWallet, asy
 // POST /api/jobs/:id/submit
 app.post(
   "/api/jobs/:id/submit",
+  auditAdminAction,
   optionalAuthMiddleware,
   requireDashboardWallet,
   async (req, res) => {
@@ -616,6 +697,7 @@ app.post(
 // POST /api/jobs/:id/complete
 app.post(
   "/api/jobs/:id/complete",
+  auditAdminAction,
   optionalAuthMiddleware,
   requireDashboardWallet,
   async (req, res) => {
@@ -635,6 +717,7 @@ app.post(
 // POST /api/jobs/:id/cancel
 app.post(
   "/api/jobs/:id/cancel",
+  auditAdminAction,
   optionalAuthMiddleware,
   requireDashboardWallet,
   async (req, res) => {
@@ -653,7 +736,7 @@ app.post(
 
 // PUT /api/jobs/:id — cancel a job; builds unsigned XDR when publicKey provided,
 // or invokes directly when wallet (server keypair) is provided.
-app.put("/api/jobs/:id", optionalAuthMiddleware, requireDashboardWallet, async (req, res) => {
+app.put("/api/jobs/:id", auditAdminAction, optionalAuthMiddleware, requireDashboardWallet, async (req, res) => {
   try {
     const { action, publicKey, wallet } = req.body;
     if (action !== "cancel") {
@@ -690,7 +773,7 @@ const pendingTxHashes = new Set<string>();
 
 /** Build an unsigned, simulated transaction and return its XDR */
 async function buildTxXdr(publicKey: string, op: xdr.Operation): Promise<string> {
-  const account = await server.getAccount(publicKey);
+  const account = await withRpcFallback((rpcServer) => rpcServer.getAccount(publicKey));
   const tx = new TransactionBuilder(account, {
     fee: BASE_FEE,
     networkPassphrase: cfg.networkPassphrase,
@@ -698,7 +781,7 @@ async function buildTxXdr(publicKey: string, op: xdr.Operation): Promise<string>
     .addOperation(op)
     .setTimeout(30)
     .build();
-  const prepared = await server.prepareTransaction(tx);
+  const prepared = await withRpcFallback((rpcServer) => rpcServer.prepareTransaction(tx));
   const hash = prepared.hash().toString("hex");
   pendingTxHashes.add(hash);
   return prepared.toXDR();
@@ -831,14 +914,14 @@ app.post("/api/submit", optionalAuthMiddleware, async (req, res) => {
     }
     pendingTxHashes.delete(submitHash);
 
-    const sent = await server.sendTransaction(tx);
+    const sent = await withRpcFallback((rpcServer) => rpcServer.sendTransaction(tx));
     if (sent.status === "ERROR") {
       throw new Error(`submit failed: ${sent.errorResult}`);
     }
-    let getResp = await server.getTransaction(sent.hash);
+    let getResp = await withRpcFallback((rpcServer) => rpcServer.getTransaction(sent.hash));
     while (getResp.status === "NOT_FOUND") {
       await new Promise((r) => setTimeout(r, 1000));
-      getResp = await server.getTransaction(sent.hash);
+      getResp = await withRpcFallback((rpcServer) => rpcServer.getTransaction(sent.hash));
     }
     if (getResp.status !== "SUCCESS") {
       throw new Error(`tx failed: ${getResp.status}`);
