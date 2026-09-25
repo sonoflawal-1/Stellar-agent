@@ -2,6 +2,7 @@ import express, { type Request, type Response, type NextFunction } from "express
 import cors from "cors";
 import helmet from "helmet";
 import path from "path";
+import crypto from "crypto";
 import { fileURLToPath } from "url";
 import { z, ZodError } from "zod";
 import {
@@ -143,8 +144,19 @@ const submitXdrSchema = z.object({
   signedXdr: z.string().min(1),
 });
 
+const jobStatusSchema = z.enum([
+  "Active",
+  "Open",
+  "Funded",
+  "Submitted",
+  "Completed",
+  "Rejected",
+  "Cancelled",
+  "Disputed",
+]);
+
 const jobsQuerySchema = z.object({
-  status: z.string().min(1).optional(),
+  status: jobStatusSchema.optional(),
 });
 
 const agentsQuerySchema = z.object({
@@ -173,6 +185,28 @@ function handleRouteError(err: unknown, res: Response): void {
   }
   res.status(500).json({ error: (err as Error).message });
 }
+
+app.use((req, res, next) => {
+  const requestId =
+    typeof req.headers["x-request-id"] === "string" && req.headers["x-request-id"].trim()
+      ? req.headers["x-request-id"]
+      : crypto.randomUUID();
+  (req as any).requestId = requestId;
+  res.setHeader("x-request-id", requestId);
+  const startedAt = Date.now();
+  res.on("finish", () => {
+    console.log(
+      JSON.stringify({
+        requestId,
+        method: req.method,
+        path: req.originalUrl || req.url,
+        statusCode: res.statusCode,
+        durationMs: Date.now() - startedAt,
+      }),
+    );
+  });
+  next();
+});
 
 app.use(
   cors({
@@ -681,6 +715,38 @@ app.put("/api/jobs/:id", optionalAuthMiddleware, requireDashboardWallet, async (
     }
   } catch (err: unknown) {
     handleRouteError(err, res);
+  }
+});
+
+app.post("/api/dispute-job", optionalAuthMiddleware, requireDashboardWallet, async (req, res) => {
+  try {
+    const parsed = buildUnsignedActionSchema.parse(req.body);
+    const op = commerceContract.call(
+      "dispute",
+      new Address(parsed.publicKey).toScVal(),
+      nativeToScVal(BigInt(parsed.jobId), { type: "u64" }),
+    );
+    const txXdr = await buildTxXdr(parsed.publicKey, op);
+    res.json({ xdr: txXdr });
+  } catch (err: unknown) {
+    if (respondWithValidationError(err, res)) return;
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/claim-refund", optionalAuthMiddleware, requireDashboardWallet, async (req, res) => {
+  try {
+    const parsed = buildUnsignedActionSchema.parse(req.body);
+    const op = commerceContract.call(
+      "claim_refund",
+      new Address(parsed.publicKey).toScVal(),
+      nativeToScVal(BigInt(parsed.jobId), { type: "u64" }),
+    );
+    const txXdr = await buildTxXdr(parsed.publicKey, op);
+    res.json({ xdr: txXdr });
+  } catch (err: unknown) {
+    if (respondWithValidationError(err, res)) return;
+    res.status(500).json({ error: (err as Error).message });
   }
 });
 
