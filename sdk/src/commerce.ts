@@ -340,7 +340,7 @@ export class CommerceClient extends BaseClient {
     try {
       currentAllowance = await this.allowance(
         clientAddress,
-        this.contract.address,
+        this.contract.address().toString(),
         token,
       );
     } catch {
@@ -348,7 +348,7 @@ export class CommerceClient extends BaseClient {
     }
 
     if (currentAllowance < budget) {
-      await this.approve(client, this.contract.address, token, budget);
+      await this.approve(client, this.contract.address().toString(), token, budget);
     }
 
     return await this.createJob(client, provider, evaluator, token, budget, description);
@@ -542,6 +542,122 @@ export class CommerceClient extends BaseClient {
     limit: number = 100,
   ): Promise<Job[]> {
     return this.jobsByProvider(provider, startId, limit);
+  }
+
+  /**
+   * Fetch all jobs assigned to a specific provider.
+   *
+   * Typed alias for {@link jobsByProvider} with the method name from the
+   * issue spec (#543). Calls `jobs_by_provider` on the commerce contract.
+   *
+   * @param provider - Stellar public key (G...) of the provider.
+   * @param startId - Starting job ID to scan from (default: 1n).
+   * @param limit - Maximum number of jobs to return (default: 100).
+   * @returns Array of jobs assigned to the provider.
+   */
+  async getJobsByProvider(
+    provider: string,
+    startId: bigint = 1n,
+    limit: number = 100,
+  ): Promise<Job[]> {
+    return this.jobsByProvider(provider, startId, limit);
+  }
+
+  /**
+   * Fetch all jobs created by a specific client.
+   *
+   * Calls `jobs_by_client` on the commerce contract, scanning forward from
+   * `startId` (#543).
+   *
+   * @param client - Stellar public key (G...) of the client.
+   * @param startId - Starting job ID to scan from (default: 1n).
+   * @param limit - Maximum number of jobs to return (default: 100).
+   * @returns Array of jobs created by the client.
+   */
+  async getJobsByClient(
+    client: string,
+    startId: bigint = 1n,
+    limit: number = 100,
+  ): Promise<Job[]> {
+    const op = this.contract.call(
+      "jobs_by_client",
+      new Address(client).toScVal(),
+      nativeToScVal(startId, { type: "u64" }),
+      nativeToScVal(limit, { type: "u32" }),
+    );
+    return await this.simulate(op, (v) => {
+      const native = scValToNative(v);
+      if (!Array.isArray(native)) return [];
+      return native.map((j: any) => ({
+        id: BigInt(j.id),
+        client: j.client,
+        provider: j.provider,
+        evaluator: j.evaluator,
+        token: j.token,
+        budget: BigInt(j.budget),
+        status: (Array.isArray(j.status)
+          ? j.status[0]
+          : typeof j.status === "number"
+            ? JobStatusFromNumber[j.status] ?? j.status
+            : j.status) as JobStatus,
+        description: j.description,
+        deliverable: j.deliverable,
+        funded_at: BigInt(j.funded_at ?? 0),
+        created_at: BigInt(j.created_at ?? 0),
+        updated_at: BigInt(j.updated_at ?? 0),
+      })) as Job[];
+    });
+  }
+
+  /**
+   * List jobs with optional pagination (#542).
+   *
+   * Reads the total job count via `job_count`, then fetches jobs in parallel
+   * batches starting from `startId`. Null/missing jobs are filtered out.
+   *
+   * @param options.startId - First job ID to include (default: 1n).
+   * @param options.limit - Maximum number of jobs to return (default: 20).
+   * @returns Array of Job objects, ordered by ID ascending.
+   *
+   * @example
+   * ```typescript
+   * // First page of 10 jobs
+   * const page1 = await commerce.listJobs({ startId: 1n, limit: 10 });
+   * // Next page
+   * const page2 = await commerce.listJobs({ startId: 11n, limit: 10 });
+   * ```
+   */
+  async listJobs(options: { startId?: bigint; limit?: number } = {}): Promise<Job[]> {
+    const startId = options.startId ?? 1n;
+    const limit = options.limit ?? 20;
+
+    // Clamp limit to a sensible max to avoid unbounded parallel requests.
+    const effectiveLimit = Math.min(limit, 100);
+
+    let totalCount: bigint;
+    try {
+      totalCount = await this.jobCount();
+    } catch {
+      return [];
+    }
+
+    if (totalCount === 0n) return [];
+
+    // Determine the range of IDs to fetch.
+    const maxId = totalCount; // IDs are 1-based, so last ID == totalCount
+    if (startId > maxId) return [];
+
+    const endId = startId + BigInt(effectiveLimit) - 1n;
+    const clampedEnd = endId > maxId ? maxId : endId;
+
+    // Fetch all jobs in the range in parallel.
+    const promises: Promise<Job | null>[] = [];
+    for (let id = startId; id <= clampedEnd; id++) {
+      promises.push(this.getJob(id));
+    }
+
+    const results = await Promise.all(promises);
+    return results.filter((j): j is Job => j !== null);
   }
 
   async jobCount(): Promise<bigint> {

@@ -83,7 +83,7 @@ fn re_init_updates_admin_and_treasury() {
 }
 
 #[test]
-#[should_panic(expected = "not admin")]
+#[should_panic(expected = "Error(Contract, #9)")]
 fn re_init_rejects_non_admin() {
     let env = Env::default();
     env.mock_all_auths();
@@ -180,7 +180,7 @@ fn submit_flips_status_and_records_deliverable() {
 }
 
 #[test]
-#[should_panic(expected = "not provider")]
+#[should_panic(expected = "Error(Contract, #7)")]
 fn submit_rejects_non_provider() {
     let env = Env::default();
     env.mock_all_auths();
@@ -270,7 +270,7 @@ fn complete_splits_payout_99_1_between_provider_and_treasury() {
 }
 
 #[test]
-#[should_panic(expected = "not evaluator")]
+#[should_panic(expected = "Error(Contract, #8)")]
 fn complete_rejects_non_evaluator() {
     let env = Env::default();
     env.mock_all_auths();
@@ -333,7 +333,7 @@ fn cancel_refunds_buyer_when_not_yet_submitted() {
 }
 
 #[test]
-#[should_panic(expected = "not client")]
+#[should_panic(expected = "Error(Contract, #6)")]
 fn cancel_rejects_non_client() {
     let env = Env::default();
     env.mock_all_auths();
@@ -376,7 +376,7 @@ fn set_fee_bps_rejects_over_max() {
 }
 
 #[test]
-#[should_panic(expected = "not admin")]
+#[should_panic(expected = "Error(Contract, #9)")]
 fn set_treasury_rejects_non_admin() {
     let env = Env::default();
     env.mock_all_auths();
@@ -554,7 +554,7 @@ fn complete_panics_on_double_complete() {
 // 2. Complete by a non-evaluator panics with "not evaluator"
 // ---------------------------------------------------------------------------
 #[test]
-#[should_panic(expected = "not evaluator")]
+#[should_panic(expected = "Error(Contract, #8)")]
 fn complete_panics_when_called_by_non_evaluator() {
     let env = Env::default();
     env.mock_all_auths();
@@ -583,7 +583,7 @@ fn complete_panics_when_called_by_non_evaluator() {
 //    (also exercises the "non-provider" path with a distinct third address)
 // ---------------------------------------------------------------------------
 #[test]
-#[should_panic(expected = "not provider")]
+#[should_panic(expected = "Error(Contract, #7)")]
 fn submit_panics_when_called_by_non_provider() {
     let env = Env::default();
     env.mock_all_auths();
@@ -885,7 +885,7 @@ fn unpause_restores_create_job() {
 
 /// Non-admin cannot pause the contract.
 #[test]
-#[should_panic(expected = "not admin")]
+#[should_panic(expected = "Error(Contract, #9)")]
 fn emergency_pause_rejects_non_admin() {
     let env = Env::default();
     env.mock_all_auths();
@@ -900,7 +900,7 @@ fn emergency_pause_rejects_non_admin() {
 
 /// upgrade() with a non-admin address must panic with "not admin".
 #[test]
-#[should_panic(expected = "not admin")]
+#[should_panic(expected = "Error(Contract, #9)")]
 fn upgrade_rejects_non_admin() {
     let env = Env::default();
     env.mock_all_auths();
