@@ -1,7 +1,7 @@
 #![no_std]
 use soroban_sdk::{contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, token, Address, Env, String, Vec};
 
-/// Contract-level error codes for agentic-commerce (#323).
+/// Contract-level error codes for agentic-commerce (#323, #541).
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -11,6 +11,15 @@ pub enum Error {
     InvalidParties = 2,
     /// The contract is paused; no state-changing operations are allowed.
     ContractPaused = 3,
+    // 4 and 5 are reserved for future use.
+    /// Caller is not the job's client.
+    NotClient = 6,
+    /// Caller is not the job's provider.
+    NotProvider = 7,
+    /// Caller is not the job's evaluator.
+    NotEvaluator = 8,
+    /// Caller is not the contract admin.
+    NotAdmin = 9,
 }
 
 /// Lifecycle states for a job escrow.
@@ -270,7 +279,7 @@ impl AgenticCommerceContract {
         caller.require_auth();
         let current_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         if caller != current_admin {
-            panic!("not admin");
+            panic_with_error!(&env, Error::NotAdmin);
         }
         // #24 — reject zero/default treasury on re-init as well.
         let zero_address = Address::from_str(&env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF");
@@ -309,7 +318,7 @@ impl AgenticCommerceContract {
             .get(&DataKey::Admin)
             .expect("not initialized");
         if admin != current_admin {
-            panic!("not admin");
+            panic_with_error!(&env, Error::NotAdmin);
         }
         env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
@@ -325,7 +334,7 @@ impl AgenticCommerceContract {
         caller.require_auth();
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         if caller != admin {
-            panic!("not admin");
+            panic_with_error!(&env, Error::NotAdmin);
         }
         env.storage().instance().set(&DataKey::Paused, &true);
         Paused {
@@ -341,7 +350,7 @@ impl AgenticCommerceContract {
         caller.require_auth();
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         if caller != admin {
-            panic!("not admin");
+            panic_with_error!(&env, Error::NotAdmin);
         }
         env.storage().instance().set(&DataKey::Paused, &false);
         Unpaused {
@@ -460,7 +469,7 @@ impl AgenticCommerceContract {
             .get(&DataKey::Job(id))
             .unwrap_or_else(|| panic!("job not found"));
         if caller != job.provider {
-            panic!("not provider");
+            panic_with_error!(&env, Error::NotProvider);
         }
         if job.status != JobStatus::Funded {
             panic!("invalid status");
@@ -504,7 +513,7 @@ impl AgenticCommerceContract {
             .get(&DataKey::Job(id))
             .unwrap_or_else(|| panic!("job not found"));
         if caller != job.evaluator {
-            panic!("not evaluator");
+            panic_with_error!(&env, Error::NotEvaluator);
         }
         // #22 — evaluator may resolve a job in either Submitted or Disputed state.
         if job.status != JobStatus::Submitted && job.status != JobStatus::Disputed {
@@ -556,7 +565,7 @@ impl AgenticCommerceContract {
             .get(&DataKey::Job(id))
             .unwrap_or_else(|| panic!("job not found"));
         if caller != job.client {
-            panic!("not client");
+            panic_with_error!(&env, Error::NotClient);
         }
         // #22 — allow cancel from Funded, Submitted, or Disputed.
         if job.status != JobStatus::Funded && job.status != JobStatus::Submitted && job.status != JobStatus::Disputed {
@@ -602,7 +611,7 @@ impl AgenticCommerceContract {
             .get(&DataKey::Job(id))
             .unwrap_or_else(|| panic!("job not found"));
         if caller != job.client {
-            panic!("not client");
+            panic_with_error!(&env, Error::NotClient);
         }
         if job.status != JobStatus::Submitted {
             panic!("invalid status");
@@ -628,7 +637,7 @@ impl AgenticCommerceContract {
         caller.require_auth();
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         if caller != admin {
-            panic!("not admin");
+            panic_with_error!(&env, Error::NotAdmin);
         }
         // #24 — prevent accidentally burning fees by setting treasury to the
         // zero/default Address (32 zero bytes). Callers must pass a real address.
@@ -646,7 +655,7 @@ impl AgenticCommerceContract {
         caller.require_auth();
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         if caller != admin {
-            panic!("not admin");
+            panic_with_error!(&env, Error::NotAdmin);
         }
         if new_bps > MAX_FEE_BPS {
             panic!("fee too high");
@@ -758,7 +767,7 @@ impl AgenticCommerceContract {
             .get(&DataKey::Job(id))
             .unwrap_or_else(|| panic!("job not found"));
         if caller != job.client {
-            panic!("not client");
+            panic_with_error!(&env, Error::NotClient);
         }
         if job.status != JobStatus::Funded {
             panic!("invalid status");
@@ -799,7 +808,7 @@ impl AgenticCommerceContract {
             .get(&DataKey::Job(id))
             .unwrap_or_else(|| panic!("job not found"));
         if caller != job.provider {
-            panic!("not provider");
+            panic_with_error!(&env, Error::NotProvider);
         }
         if job.status != JobStatus::Submitted {
             panic!("invalid status");
