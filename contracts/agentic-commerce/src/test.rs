@@ -1,7 +1,7 @@
 use super::*;
 use soroban_sdk::testutils::{Address as _, Events as _};
 use soroban_sdk::token::{StellarAssetClient, TokenClient};
-use soroban_sdk::{Address, Env, Event, String};
+use soroban_sdk::{Address, BytesN, Env, Event, String};
 
 fn setup<'a>(env: &Env) -> (AgenticCommerceContractClient<'a>, Address, Address) {
     let admin = Address::generate(env);
@@ -892,4 +892,39 @@ fn emergency_pause_rejects_non_admin() {
     let (client, _admin, _treasury) = setup(&env);
     let mallory = Address::generate(&env);
     client.emergency_pause(&mallory);
+}
+
+// ===========================================================================
+// #536 — upgrade entry point tests
+// ===========================================================================
+
+/// upgrade() with a non-admin address must panic with "not admin".
+#[test]
+#[should_panic(expected = "not admin")]
+fn upgrade_rejects_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _treasury) = setup(&env);
+
+    let mallory = Address::generate(&env);
+    // Any 32-byte hash — the call must panic at the admin check
+    // before reaching the deployer, so we never actually upload WASM.
+    let fake_hash: BytesN<32> = BytesN::from_array(&env, &[0u8; 32]);
+    client.upgrade(&mallory, &fake_hash);
+}
+
+/// upgrade() panics with "not initialized" when init() was never called.
+#[test]
+#[should_panic(expected = "not initialized")]
+fn upgrade_panics_when_not_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Register but never call init()
+    let contract_id = env.register(AgenticCommerceContract, ());
+    let client = AgenticCommerceContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let fake_hash: BytesN<32> = BytesN::from_array(&env, &[0u8; 32]);
+    client.upgrade(&admin, &fake_hash);
 }

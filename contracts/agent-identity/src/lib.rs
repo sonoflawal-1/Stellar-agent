@@ -36,6 +36,7 @@ enum DataKey {
     Agent(u64),
     OwnerToId(Address),
     Version,
+    Admin,
 }
 
 // --- Events ---
@@ -78,6 +79,42 @@ pub struct AgentIdentityContract;
 
 #[contractimpl]
 impl AgentIdentityContract {
+    /// Initializer. Sets the contract admin address.
+    /// Panics if the contract has already been initialized.
+    ///
+    /// The admin is the only address authorised to call `upgrade()`. This must
+    /// be called once after deployment before any `upgrade` can be performed.
+    pub fn init(env: Env, admin: Address) {
+        admin.require_auth();
+        if env.storage().instance().has(&DataKey::Admin) {
+            panic!("already initialized");
+        }
+        env.storage().instance().set(&DataKey::Admin, &admin);
+    }
+
+    /// Upgrade the contract's WASM executable to a new hash.
+    ///
+    /// Only the current admin (set via `init`) may call this. After the call
+    /// the contract immediately executes the new WASM for all future
+    /// invocations while all persistent storage (agents, owner mappings, etc.)
+    /// is preserved unchanged.
+    ///
+    /// # Panics
+    /// - `"not initialized"` if `init()` has never been called.
+    /// - `"not admin"` if `admin` does not match the stored admin.
+    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: soroban_sdk::BytesN<32>) {
+        admin.require_auth();
+        let current_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("not initialized");
+        if admin != current_admin {
+            panic!("not admin");
+        }
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+    }
+
     /// Register a new agent owned by `owner`. Caller must sign for `owner`.
     /// Returns the newly-assigned sequential agent id (starts at 1).
     ///

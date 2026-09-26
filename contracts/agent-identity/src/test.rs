@@ -1,6 +1,6 @@
 use super::*;
 use soroban_sdk::testutils::{Address as _, Events as _};
-use soroban_sdk::{Address, Env, Event, String};
+use soroban_sdk::{Address, BytesN, Env, Event, String};
 
 /// register() must return the new agent's id directly so callers never need a
 /// follow-up agentOf() query to learn the assigned id.
@@ -702,4 +702,68 @@ fn test_update_owner_unauthorized_fails() {
     // update_owner with herself as the caller.
     let id = client.register(&alice, &String::from_str(&env, "ipfs://alice.json"));
     client.update_owner(&mallory, &id, &bob);
+}
+
+// ===========================================================================
+// #535 — upgrade entry point tests
+// ===========================================================================
+
+/// init() stores the admin and allows a second init call to be rejected.
+#[test]
+fn init_sets_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AgentIdentityContract, ());
+    let client = AgentIdentityContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.init(&admin); // must not panic
+}
+
+/// Calling init() twice must panic with "already initialized".
+#[test]
+#[should_panic(expected = "already initialized")]
+fn init_panics_on_double_init() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AgentIdentityContract, ());
+    let client = AgentIdentityContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    client.init(&admin);
+    client.init(&admin); // second call must panic
+}
+
+/// upgrade() with a non-admin address must panic with "not admin".
+#[test]
+#[should_panic(expected = "not admin")]
+fn upgrade_rejects_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AgentIdentityContract, ());
+    let client = AgentIdentityContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let mallory = Address::generate(&env);
+    client.init(&admin);
+
+    // Any 32-byte hash will do for the auth-check test — the call is expected
+    // to panic before it reaches the deployer, so we never actually upload WASM.
+    let fake_hash: BytesN<32> = BytesN::from_array(&env, &[0u8; 32]);
+    client.upgrade(&mallory, &fake_hash);
+}
+
+/// upgrade() panics with "not initialized" when init() was never called.
+#[test]
+#[should_panic(expected = "not initialized")]
+fn upgrade_panics_when_not_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AgentIdentityContract, ());
+    let client = AgentIdentityContractClient::new(&env, &contract_id);
+
+    // init() was never called — upgrade must panic.
+    let admin = Address::generate(&env);
+    let fake_hash: BytesN<32> = BytesN::from_array(&env, &[0u8; 32]);
+    client.upgrade(&admin, &fake_hash);
 }

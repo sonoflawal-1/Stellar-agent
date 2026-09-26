@@ -69,6 +69,82 @@ export function formatAmount(
 }
 
 /**
+ * Parse a human-readable decimal string back into atomic bigint units.
+ *
+ * This is the inverse of `formatAmount`. It converts a user-supplied string
+ * such as `"10.5"` (USDC) into its atomic representation `105_000_000n` using
+ * integer arithmetic only — no floating-point rounding errors.
+ *
+ * @param input    Human-readable amount, e.g. `"10.5"`, `"0.0000001"`, `"1000"`.
+ * @param decimals Token decimal places (defaults to 7, matching Stellar assets).
+ * @returns        Atomic bigint amount.
+ *
+ * @throws {RangeError}  if `decimals < 0`.
+ * @throws {TypeError}   if `input` contains invalid characters, more than one
+ *                       decimal point, is empty, or is negative.
+ * @throws {RangeError}  if the fractional part has more digits than `decimals`
+ *                       (precision beyond the token's resolution is rejected to
+ *                       avoid silent truncation; callers should round first).
+ *
+ * @example
+ * parseAmount("10.5", 7)       // 105_000_000n
+ * parseAmount("1", 7)          // 10_000_000n
+ * parseAmount("0.0000001", 7)  // 1n
+ * parseAmount("0", 7)          // 0n
+ * parseAmount("1000", 6)       // 1_000_000_000n  (6-decimal token)
+ */
+export function parseAmount(input: string, decimals = 7): bigint {
+  if (decimals < 0) {
+    throw new RangeError("parseAmount: decimals must be >= 0");
+  }
+
+  const trimmed = input.trim();
+
+  if (trimmed.length === 0) {
+    throw new TypeError("parseAmount: input must not be empty");
+  }
+
+  // Reject negative values
+  if (trimmed.startsWith("-")) {
+    throw new TypeError("parseAmount: negative amounts are not supported");
+  }
+
+  // Validate characters: only digits and at most one decimal point
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) {
+    throw new TypeError(
+      `parseAmount: invalid characters in input "${input}". Only digits and a single decimal point are allowed.`,
+    );
+  }
+
+  const dotIndex = trimmed.indexOf(".");
+  let intPart: string;
+  let fracPart: string;
+
+  if (dotIndex === -1) {
+    intPart = trimmed;
+    fracPart = "";
+  } else {
+    intPart = trimmed.slice(0, dotIndex);
+    fracPart = trimmed.slice(dotIndex + 1);
+  }
+
+  if (fracPart.length > decimals) {
+    throw new RangeError(
+      `parseAmount: fractional part "${fracPart}" has ${fracPart.length} digits but token only supports ${decimals} decimal places`,
+    );
+  }
+
+  // Pad fractional part with trailing zeros to reach full `decimals` precision
+  const fracPadded = fracPart.padEnd(decimals, "0");
+
+  const factor = 10n ** BigInt(decimals);
+  const wholeBig = BigInt(intPart || "0") * factor;
+  const fracBig = BigInt(fracPadded || "0");
+
+  return wholeBig + fracBig;
+}
+
+/**
  * Validate an agent metadata URI to prevent SSRF and script-injection when
  * clients later fetch it.
  *

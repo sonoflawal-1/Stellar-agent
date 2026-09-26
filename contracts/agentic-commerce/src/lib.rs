@@ -289,6 +289,32 @@ impl AgenticCommerceContract {
     }
 
     // -----------------------------------------------------------------------
+    // #536 — contract upgrade entry point
+    // -----------------------------------------------------------------------
+
+    /// Upgrade the contract's WASM executable to a new hash.
+    ///
+    /// Only the current admin may call this. All persistent storage (jobs,
+    /// balances, etc.) is preserved across an upgrade; only the executable
+    /// code is replaced. The new WASM takes effect for all future invocations.
+    ///
+    /// # Panics
+    /// - `"not initialized"` if `init()` has never been called.
+    /// - `"not admin"` if `admin` does not match the stored admin.
+    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: soroban_sdk::BytesN<32>) {
+        admin.require_auth();
+        let current_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("not initialized");
+        if admin != current_admin {
+            panic!("not admin");
+        }
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+    }
+
+    // -----------------------------------------------------------------------
     // #29 — Emergency pause / unpause
     // -----------------------------------------------------------------------
 
