@@ -292,6 +292,11 @@ export class IdentityClient extends BaseClient {
     return agents;
   }
 
+  async registeredCount(): Promise<number> {
+    const op = this.contract.call("registered_count");
+    return await this.simulate(op, (v) => Number(scValToNative(v)));
+  }
+
   /**
    * Disconnect and clean up any resources held by this client.
    *

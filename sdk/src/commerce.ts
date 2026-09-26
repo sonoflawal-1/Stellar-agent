@@ -186,6 +186,7 @@ export class CommerceClient extends BaseClient {
     token: string,
     budget: bigint,
     description: string,
+    options: { memo?: string } = {},
   ): Promise<bigint> {
     if (budget <= 0n) throw new Error("budget must be greater than 0");
     if (budget > MAX_I128) throw new Error("budget exceeds i128 max");
@@ -199,7 +200,33 @@ export class CommerceClient extends BaseClient {
       nativeToScVal(budget, { type: "i128" }),
       nativeToScVal(description, { type: "string" }),
     );
-    return await this.invoke(client, op, (v) => BigInt(scValToNative(v) as string), "commerce");
+    return await this.invoke(
+      client,
+      op,
+      (v) => BigInt(scValToNative(v) as string),
+      "commerce",
+      options,
+    );
+  }
+
+  async estimateCreateJobFee(
+    client: Signer,
+    provider: string,
+    evaluator: string,
+    token: string,
+    budget: bigint,
+    description: string,
+  ): Promise<bigint> {
+    const op = this.contract.call(
+      "create_job",
+      new Address(signerPublicKey(client)).toScVal(),
+      new Address(provider).toScVal(),
+      new Address(evaluator).toScVal(),
+      new Address(token).toScVal(),
+      nativeToScVal(budget, { type: "i128" }),
+      nativeToScVal(description, { type: "string" }),
+    );
+    return this.estimateOperationFee(op);
   }
 
   /**
@@ -515,6 +542,11 @@ export class CommerceClient extends BaseClient {
     limit: number = 100,
   ): Promise<Job[]> {
     return this.jobsByProvider(provider, startId, limit);
+  }
+
+  async jobCount(): Promise<bigint> {
+    const op = this.contract.call("job_count");
+    return await this.simulate(op, (v) => BigInt(scValToNative(v) as string));
   }
 
   /**

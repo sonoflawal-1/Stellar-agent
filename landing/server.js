@@ -61,7 +61,8 @@ function loadDeployments() {
 }
 
 function handleApiRequest(req, res) {
-  if (req.url === "/api/contract-addresses" && req.method === "GET") {
+  const parsedUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+  if (parsedUrl.pathname === "/api/contract-addresses" && req.method === "GET") {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Cache-Control", "public, max-age=300, stale-while-revalidate=60");
     res.setHeader("Content-Type", "application/json");
@@ -97,7 +98,7 @@ function handleApiRequest(req, res) {
     return true;
   }
 
-  if (req.url === "/api/stats" && req.method === "GET") {
+  if (parsedUrl.pathname === "/api/stats" && req.method === "GET") {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Cache-Control", "public, max-age=60, stale-while-revalidate=30");
     res.setHeader("Content-Type", "application/json");
@@ -139,7 +140,8 @@ const server = http.createServer((req, res) => {
   }
 
   // Serve static files
-  let filePath = path.join(__dirname, req.url === "/" ? "index.html" : req.url);
+  const parsedUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+  let filePath = path.join(__dirname, parsedUrl.pathname === "/" ? "index.html" : parsedUrl.pathname);
 
   // Prevent directory traversal
   const realPath = path.resolve(filePath);

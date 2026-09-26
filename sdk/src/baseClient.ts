@@ -1,4 +1,4 @@
-import { Keypair, rpc, TransactionBuilder, BASE_FEE, xdr, Account } from "@stellar/stellar-sdk";
+import { Keypair, rpc, TransactionBuilder, BASE_FEE, xdr, Account, Memo } from "@stellar/stellar-sdk";
 import type { MarcConfig } from "./types.js";
 import type { Signer } from "./signer.js";
 import { toSigner } from "./signer.js";
@@ -69,16 +69,18 @@ export abstract class BaseClient {
     op: xdr.Operation,
     decode: (scVal: xdr.ScVal) => T,
     txLabel: string,
+    options: { memo?: string } = {},
   ): Promise<T> {
     const walletSigner = toSigner(signer);
     const account = await this.server.getAccount(walletSigner.publicKey);
-    const tx = new TransactionBuilder(account, {
+    let builder = new TransactionBuilder(account, {
       fee: BASE_FEE,
       networkPassphrase: this.cfg.networkPassphrase,
-    })
-      .addOperation(op)
-      .setTimeout(30)
-      .build();
+    }).addOperation(op);
+    if (options.memo) {
+      builder = builder.addMemo(Memo.text(options.memo));
+    }
+    const tx = builder.setTimeout(30).build();
     const prepared = await this.server.prepareTransaction(tx);
     const signedXdr = await walletSigner.signTransaction(prepared.toXDR(), {
       networkPassphrase: this.cfg.networkPassphrase,
@@ -128,6 +130,25 @@ export abstract class BaseClient {
     }
     this.cfg.onTx?.(sent.hash, txLabel);
     return decode(getResp.returnValue!);
+  }
+
+  /**
+   * Simulate one contract operation and return the RPC-estimated resource fee.
+   */
+  protected async estimateOperationFee(op: xdr.Operation): Promise<bigint> {
+    const ephemeral = Keypair.random();
+    const dummy = new Account(ephemeral.publicKey(), "0");
+    const tx = new TransactionBuilder(dummy, {
+      fee: BASE_FEE,
+      networkPassphrase: this.cfg.networkPassphrase,
+    })
+      .addOperation(op)
+      .setTimeout(30)
+      .build();
+    const sim = await this.server.simulateTransaction(tx);
+    if (rpc.Api.isSimulationError(sim)) throw new Error(maskSecret(sim.error));
+    const fee = (sim as rpc.Api.SimulateTransactionSuccessResponse).minResourceFee ?? BASE_FEE;
+    return BigInt(fee);
   }
 
   /**

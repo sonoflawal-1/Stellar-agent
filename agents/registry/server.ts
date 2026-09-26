@@ -189,6 +189,11 @@ function requireRegistryAuth(req: any, res: any, next: any) {
 function rateLimitAgentList(req: any, res: any, next: any) {
   const key = getRequestKey(req);
   const now = Date.now();
+  for (const [ip, bucket] of agentListRequestCounts.entries()) {
+    if (now >= bucket.resetAt) {
+      agentListRequestCounts.delete(ip);
+    }
+  }
   const existing = agentListRequestCounts.get(key);
   if (!existing || now >= existing.resetAt) {
     agentListRequestCounts.set(key, { count: 1, resetAt: now + AGENT_LIST_RATE_WINDOW_MS });
@@ -229,7 +234,9 @@ function isAlive(agentId: string): boolean {
   return entry !== undefined && Date.now() - entry.lastHeartbeat < HEARTBEAT_TIMEOUT_MS;
 }
 
-app.post("/heartbeat", requireApiKey, requireRegistryAuth, (req, res) => {
+const heartbeatAuth = REGISTRY_API_KEY ? requireRegistryAuth : requireApiKey;
+
+app.post("/heartbeat", heartbeatAuth, (req, res) => {
   const { agentId } = req.body;
   const ip = getRequestKey(req);
   if (!agentId) {

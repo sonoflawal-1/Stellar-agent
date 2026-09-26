@@ -403,22 +403,11 @@ export interface JobCancelledEvent {
   jobId: bigint;
 }
 
-/** Decoded payload for a `JobDisputed` event (#545). */
+/** Decoded payload for a `JobDisputed` event. */
 export interface JobDisputedEvent {
   type: typeof CommerceEvents.JobDisputed;
   client: Address;
   jobId: bigint;
-  timestamp: bigint;
-}
-
-/** Decoded payload for a `JobExpired` event (#545). */
-export interface JobExpiredEvent {
-  type: typeof CommerceEvents.JobExpired;
-  provider: Address;
-  jobId: bigint;
-  payout: bigint;
-  fee: bigint;
-  timestamp: bigint;
 }
 
 /** Discriminated union of all agentic-commerce contract events. */
@@ -428,8 +417,7 @@ export type JobEvent =
   | JobCompletedEvent
   | JobRefundedEvent
   | JobCancelledEvent
-  | JobDisputedEvent
-  | JobExpiredEvent;
+  | JobDisputedEvent;
 
 /**
  * Returns true if the given JobStatus represents a terminal (final) state.

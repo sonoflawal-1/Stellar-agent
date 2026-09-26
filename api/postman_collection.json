@@ -8,6 +8,16 @@
     {
       "name": "Agent Registry (4500)",
       "description": "Service discovery and agent lifecycle management",
+      "auth": {
+        "type": "apikey",
+        "apikey": [
+          {
+            "key": "key",
+            "value": "{{api_key}}",
+            "type": "string"
+          }
+        ]
+      },
       "item": [
         {
           "name": "List All Agents",
@@ -194,7 +204,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"jobId\": \"1001\",\n  \"task\": \"Build a landing page for a SaaS product about AI agents\"\n}"
+              "raw": "{\n  \"jobId\": \"{{job_id}}\",\n  \"task\": \"Build a landing page for a SaaS product about AI agents\"\n}"
             },
             "url": {
               "raw": "{{webbuilder_url}}/job",
@@ -217,7 +227,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"jobId\": \"1002\",\n  \"task\": \"Build a landing page for a SaaS product about AI agents\",\n  \"buildSpec\": {\n    \"framework\": \"modern CSS Grid\",\n    \"pages\": [\"Home\", \"Features\", \"Pricing\"],\n    \"theme\": \"dark blue with white accents\"\n  }\n}"
+              "raw": "{\n  \"jobId\": \"{{job_id}}\",\n  \"task\": \"Build a landing page for a SaaS product about AI agents\",\n  \"buildSpec\": {\n    \"framework\": \"modern CSS Grid\",\n    \"pages\": [\"Home\", \"Features\", \"Pricing\"],\n    \"theme\": \"dark blue with white accents\"\n  }\n}"
             },
             "url": {
               "raw": "{{webbuilder_url}}/job",
@@ -274,7 +284,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"jobId\": \"2001\",\n  \"task\": \"Write copy for a blockchain identity service\"\n}"
+              "raw": "{\n  \"jobId\": \"{{job_id}}\",\n  \"task\": \"Write copy for a blockchain identity service\"\n}"
             },
             "url": {
               "raw": "{{copywriter_url}}/job",
@@ -297,7 +307,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"jobId\": \"2002\",\n  \"task\": \"Write copy for a blockchain identity service\",\n  \"tone\": \"professional but approachable\",\n  \"audience\": \"technical founders and crypto enthusiasts\",\n  \"keywords\": [\"self-sovereign\", \"decentralized\", \"privacy\"]\n}"
+              "raw": "{\n  \"jobId\": \"{{job_id}}\",\n  \"task\": \"Write copy for a blockchain identity service\",\n  \"tone\": \"professional but approachable\",\n  \"audience\": \"technical founders and crypto enthusiasts\",\n  \"keywords\": [\"self-sovereign\", \"decentralized\", \"privacy\"]\n}"
             },
             "url": {
               "raw": "{{copywriter_url}}/job",
@@ -354,7 +364,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"jobId\": \"3001\",\n  \"task\": \"Generate names for an AI agent commerce platform\"\n}"
+              "raw": "{\n  \"jobId\": \"{{job_id}}\",\n  \"task\": \"Generate names for an AI agent commerce platform\"\n}"
             },
             "url": {
               "raw": "{{namer_url}}/job",
@@ -411,7 +421,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"jobId\": \"4001\",\n  \"task\": \"Research the history and impact of blockchain technology\",\n  \"depth\": \"brief\"\n}"
+              "raw": "{\n  \"jobId\": \"{{job_id}}\",\n  \"task\": \"Research the history and impact of blockchain technology\",\n  \"depth\": \"brief\"\n}"
             },
             "url": {
               "raw": "{{researcher_url}}/job",
@@ -434,7 +444,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"jobId\": \"4002\",\n  \"task\": \"Research the history and impact of blockchain technology\",\n  \"depth\": \"standard\"\n}"
+              "raw": "{\n  \"jobId\": \"{{job_id}}\",\n  \"task\": \"Research the history and impact of blockchain technology\",\n  \"depth\": \"standard\"\n}"
             },
             "url": {
               "raw": "{{researcher_url}}/job",
@@ -457,7 +467,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"jobId\": \"4003\",\n  \"task\": \"Research the history and impact of blockchain technology\",\n  \"depth\": \"deep\"\n}"
+              "raw": "{\n  \"jobId\": \"{{job_id}}\",\n  \"task\": \"Research the history and impact of blockchain technology\",\n  \"depth\": \"deep\"\n}"
             },
             "url": {
               "raw": "{{researcher_url}}/job",
@@ -465,6 +475,403 @@
               "path": ["job"]
             },
             "description": "Submit a deep research task (8-15 sources, exhaustive analysis)"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Dashboard (3000)",
+      "description": "MARC dashboard API backed by Stellar Soroban contracts",
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "{{session_token}}",
+            "type": "string"
+          }
+        ]
+      },
+      "item": [
+        {
+          "name": "Dashboard Stats",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{dashboard_url}}/api/stats",
+              "host": ["{{dashboard_url}}"],
+              "path": ["api", "stats"]
+            },
+            "description": "Get agent, job, active escrow, and fee-rate totals"
+          },
+          "response": []
+        },
+        {
+          "name": "Wallets",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{dashboard_url}}/api/wallets",
+              "host": ["{{dashboard_url}}"],
+              "path": ["api", "wallets"]
+            },
+            "description": "Get buyer and seller Stellar wallet balances"
+          },
+          "response": []
+        },
+        {
+          "name": "Demo Mode",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{dashboard_url}}/api/demo-mode",
+              "host": ["{{dashboard_url}}"],
+              "path": ["api", "demo-mode"]
+            },
+            "description": "Read the dashboard demo-mode configuration"
+          },
+          "response": []
+        },
+        {
+          "name": "Build Register Agent XDR",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"publicKey\": \"{{public_key}}\",\n  \"uri\": \"{{description}}\"\n}"
+            },
+            "url": {
+              "raw": "{{dashboard_url}}/api/build/register",
+              "host": ["{{dashboard_url}}"],
+              "path": ["api", "build", "register"]
+            },
+            "description": "Build an unsigned agent registration transaction"
+          },
+          "response": []
+        },
+        {
+          "name": "List Agents",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{dashboard_url}}/api/agents",
+              "host": ["{{dashboard_url}}"],
+              "path": ["api", "agents"]
+            },
+            "description": "List all registered agent identities"
+          },
+          "response": []
+        },
+        {
+          "name": "List Agents (Paged)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{dashboard_url}}/api/agents?page=1&pageSize=24",
+              "host": ["{{dashboard_url}}"],
+              "path": ["api", "agents"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "pageSize", "value": "24" }
+              ]
+            },
+            "description": "List a page of registered agent identities"
+          },
+          "response": []
+        },
+        {
+          "name": "Register Agent (Freighter XDR)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"wallet\": \"freighter\",\n  \"publicKey\": \"{{public_key}}\",\n  \"uri\": \"{{description}}\"\n}"
+            },
+            "url": {
+              "raw": "{{dashboard_url}}/api/agents/register",
+              "host": ["{{dashboard_url}}"],
+              "path": ["api", "agents", "register"]
+            },
+            "description": "Build an unsigned agent registration transaction"
+          },
+          "response": []
+        },
+        {
+          "name": "List Jobs",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{dashboard_url}}/api/jobs",
+              "host": ["{{dashboard_url}}"],
+              "path": ["api", "jobs"]
+            },
+            "description": "List all jobs or filter with status=Active"
+          },
+          "response": []
+        },
+        {
+          "name": "Create Job",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"wallet\": \"{{public_key}}\",\n  \"provider\": \"{{public_key}}\",\n  \"evaluator\": \"{{public_key}}\",\n  \"budget\": \"{{budget}}\",\n  \"description\": \"{{description}}\"\n}"
+            },
+            "url": {
+              "raw": "{{dashboard_url}}/api/jobs/create",
+              "host": ["{{dashboard_url}}"],
+              "path": ["api", "jobs", "create"]
+            },
+            "description": "Create and fund a job with a Stellar wallet"
+          },
+          "response": []
+        },
+        {
+          "name": "Build Create Job XDR",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"publicKey\": \"{{public_key}}\",\n  \"provider\": \"{{public_key}}\",\n  \"evaluator\": \"{{public_key}}\",\n  \"budget\": \"{{budget}}\",\n  \"description\": \"{{description}}\"\n}"
+            },
+            "url": {
+              "raw": "{{dashboard_url}}/api/build/createJob",
+              "host": ["{{dashboard_url}}"],
+              "path": ["api", "build", "createJob"]
+            },
+            "description": "Build an unsigned Soroban create_job transaction"
+          },
+          "response": []
+        },
+        {
+          "name": "Submit Job",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"wallet\": \"{{public_key}}\",\n  \"deliverable\": \"{{deliverable}}\"\n}"
+            },
+            "url": {
+              "raw": "{{dashboard_url}}/api/jobs/{{job_id}}/submit",
+              "host": ["{{dashboard_url}}"],
+              "path": ["api", "jobs", "{{job_id}}", "submit"]
+            },
+            "description": "Submit a deliverable for a funded job"
+          },
+          "response": []
+        },
+        {
+          "name": "Build Submit XDR",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"publicKey\": \"{{public_key}}\",\n  \"jobId\": \"{{job_id}}\",\n  \"deliverable\": \"{{deliverable}}\"\n}"
+            },
+            "url": {
+              "raw": "{{dashboard_url}}/api/build/submit",
+              "host": ["{{dashboard_url}}"],
+              "path": ["api", "build", "submit"]
+            },
+            "description": "Build an unsigned Soroban submit transaction"
+          },
+          "response": []
+        },
+        {
+          "name": "Complete Job",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"wallet\": \"{{public_key}}\"\n}"
+            },
+            "url": {
+              "raw": "{{dashboard_url}}/api/jobs/{{job_id}}/complete",
+              "host": ["{{dashboard_url}}"],
+              "path": ["api", "jobs", "{{job_id}}", "complete"]
+            },
+            "description": "Approve a submission and release escrow"
+          },
+          "response": []
+        },
+        {
+          "name": "Cancel Job",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"wallet\": \"{{public_key}}\"\n}"
+            },
+            "url": {
+              "raw": "{{dashboard_url}}/api/jobs/{{job_id}}/cancel",
+              "host": ["{{dashboard_url}}"],
+              "path": ["api", "jobs", "{{job_id}}", "cancel"]
+            },
+            "description": "Cancel a funded job and refund the client"
+          },
+          "response": []
+        },
+        {
+          "name": "Build Complete XDR",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"publicKey\": \"{{public_key}}\",\n  \"jobId\": \"{{job_id}}\"\n}"
+            },
+            "url": {
+              "raw": "{{dashboard_url}}/api/build/complete",
+              "host": ["{{dashboard_url}}"],
+              "path": ["api", "build", "complete"]
+            },
+            "description": "Build an unsigned Soroban completion transaction"
+          },
+          "response": []
+        },
+        {
+          "name": "Legacy Cancel Job",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"action\": \"cancel\",\n  \"publicKey\": \"{{public_key}}\"\n}"
+            },
+            "url": {
+              "raw": "{{dashboard_url}}/api/jobs/{{job_id}}",
+              "host": ["{{dashboard_url}}"],
+              "path": ["api", "jobs", "{{job_id}}"]
+            },
+            "description": "Cancel a job through the legacy action endpoint"
+          },
+          "response": []
+        },
+        {
+          "name": "Build Cancel XDR",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"publicKey\": \"{{public_key}}\",\n  \"jobId\": \"{{job_id}}\"\n}"
+            },
+            "url": {
+              "raw": "{{dashboard_url}}/api/build/cancel",
+              "host": ["{{dashboard_url}}"],
+              "path": ["api", "build", "cancel"]
+            },
+            "description": "Build an unsigned Soroban cancel transaction"
+          },
+          "response": []
+        },
+        {
+          "name": "Submit Signed XDR",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"signedXdr\": \"{{signed_xdr}}\"\n}"
+            },
+            "url": {
+              "raw": "{{dashboard_url}}/api/submit",
+              "host": ["{{dashboard_url}}"],
+              "path": ["api", "submit"]
+            },
+            "description": "Submit a wallet-signed transaction built by the dashboard"
+          },
+          "response": []
+        },
+        {
+          "name": "Auth Challenge",
+          "request": {
+            "auth": null,
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{dashboard_url}}/api/auth/challenge?publicKey={{public_key}}",
+              "host": ["{{dashboard_url}}"],
+              "path": ["api", "auth", "challenge"],
+              "query": [{ "key": "publicKey", "value": "{{public_key}}" }]
+            },
+            "description": "Request a nonce transaction for wallet authentication"
+          },
+          "response": []
+        },
+        {
+          "name": "Auth Verify",
+          "request": {
+            "auth": null,
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"publicKey\": \"{{public_key}}\",\n  \"nonce\": \"{{auth_nonce}}\",\n  \"signedXdr\": \"{{signed_xdr}}\"\n}"
+            },
+            "url": {
+              "raw": "{{dashboard_url}}/api/auth/verify",
+              "host": ["{{dashboard_url}}"],
+              "path": ["api", "auth", "verify"]
+            },
+            "description": "Verify the signed nonce and receive a dashboard session token"
+          },
+          "response": []
+        },
+        {
+          "name": "Auth Logout",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{dashboard_url}}/api/auth/logout",
+              "host": ["{{dashboard_url}}"],
+              "path": ["api", "auth", "logout"]
+            },
+            "description": "Invalidate the current dashboard session"
+          },
+          "response": []
+        },
+        {
+          "name": "Balance by Public Key",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{dashboard_url}}/api/balance/{{public_key}}",
+              "host": ["{{dashboard_url}}"],
+              "path": ["api", "balance", "{{public_key}}"]
+            },
+            "description": "Get XLM and MUSD balances for a Stellar public key"
+          },
+          "response": []
+        },
+        {
+          "name": "Invalidation Stream",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Accept", "value": "text/event-stream" }],
+            "url": {
+              "raw": "{{dashboard_url}}/api/stream",
+              "host": ["{{dashboard_url}}"],
+              "path": ["api", "stream"]
+            },
+            "description": "Subscribe to dashboard invalidation events"
           },
           "response": []
         }
@@ -495,6 +902,76 @@
     {
       "key": "researcher_url",
       "value": "http://localhost:4504",
+      "type": "string"
+    },
+    {
+      "key": "dashboard_url",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "identity_contract",
+      "value": "CAMPXYFZJTIPEVOPOAZPRG5OHXKNBDPGTPRCOIO4LVPGEM4TONPY65A5",
+      "type": "string"
+    },
+    {
+      "key": "commerce_contract",
+      "value": "CD2KWU7IE74Z2QKVP3FQ67J46XHNMGIDTNKXVWE7ZNVRC7T6UH46GQXE",
+      "type": "string"
+    },
+    {
+      "key": "usdc_token",
+      "value": "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA",
+      "type": "string"
+    },
+    {
+      "key": "api_key",
+      "value": "dev-registry-key",
+      "type": "string"
+    },
+    {
+      "key": "public_key",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "job_id",
+      "value": "1",
+      "type": "string"
+    },
+    {
+      "key": "wallet",
+      "value": "buyer",
+      "type": "string"
+    },
+    {
+      "key": "description",
+      "value": "Dashboard test job",
+      "type": "string"
+    },
+    {
+      "key": "budget",
+      "value": "10000000",
+      "type": "string"
+    },
+    {
+      "key": "deliverable",
+      "value": "ipfs://dashboard-delivery",
+      "type": "string"
+    },
+    {
+      "key": "signed_xdr",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "session_token",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "auth_nonce",
+      "value": "",
       "type": "string"
     }
   ]
