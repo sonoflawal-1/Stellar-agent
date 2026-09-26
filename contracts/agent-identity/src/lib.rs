@@ -250,6 +250,109 @@ impl AgentIdentityContract {
             .unwrap_or(0u32);
         env.storage()
             .instance()
-            .set(&DataKey::Registere
+            .set(&DataKey::RegisteredCount, &count.saturating_sub(1));
 
-/* … truncated 4627 chars — edit only what you need near the top … */
+        AgentDeregistered {
+            owner: agent.owner,
+            agent_id: id,
+        }
+        .publish(&env);
+    }
+
+    /// Transfer ownership of an agent to a new wallet. Caller must be the
+    /// current owner. The new owner must not already own an agent.
+    pub fn transfer_owner(env: Env, caller: Address, id: u64, new_owner: Address) {
+        caller.require_auth();
+        let mut agent: Agent = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Agent(id))
+            .unwrap_or_else(|| panic!("agent not found"));
+        if agent.owner != caller {
+            panic!("not agent owner");
+        }
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::OwnerToId(new_owner.clone()))
+        {
+            panic_with_error!(&env, Error::AlreadyRegistered);
+        }
+        env.storage()
+            .persistent()
+            .remove(&DataKey::OwnerToId(agent.owner.clone()));
+        env.storage()
+            .persistent()
+            .set(&DataKey::OwnerToId(new_owner.clone()), &id);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::OwnerToId(new_owner.clone()), LEDGER_THRESHOLD, LEDGER_BUMP);
+        agent.owner = new_owner.clone();
+        env.storage().persistent().set(&DataKey::Agent(id), &agent);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Agent(id), LEDGER_THRESHOLD, LEDGER_BUMP);
+
+        OwnerTransferred {
+            old_owner: caller,
+            new_owner,
+            agent_id: id,
+        }
+        .publish(&env);
+    }
+
+    /// Fetch an agent by its id. Returns `None` if no such agent exists.
+    pub fn get_agent(env: Env, id: u64) -> Option<Agent> {
+        let key = DataKey::Agent(id);
+        let agent: Option<Agent> = env.storage().persistent().get(&key);
+        if agent.is_some() {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
+        }
+        agent
+    }
+
+    /// Fetch an agent directly by its owner address in a single call.
+    ///
+    /// Resolves the owner's agent id from the `OwnerToId` index and returns
+    /// the full `Agent` record, or `None` if the owner has no registered
+    /// agent. This avoids the two-call `agent_of` + `get_agent` round trip.
+    pub fn get_agent_by_owner(env: Env, owner: Address) -> Option<Agent> {
+        let key = DataKey::OwnerToId(owner);
+        let agent_id: Option<u64> = env.storage().persistent().get(&key);
+        match agent_id {
+            Some(id) => Self::get_agent(env, id),
+            None => None,
+        }
+    }
+
+    /// Return the agent id owned by `owner`, or `None` if none is registered.
+    pub fn agent_of(env: Env, owner: Address) -> Option<u64> {
+        env.storage().persistent().get(&DataKey::OwnerToId(owner))
+    }
+
+    /// Return the total number of agents ever registered (append-only).
+    pub fn registered_count(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::RegisteredCount)
+            .unwrap_or(0u32)
+    }
+
+    /// Return the next agent id that will be assigned on the next `register`.
+    pub fn next_id(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::NextId)
+            .unwrap_or(1u64)
+    }
+
+    /// Return the contract version marker.
+    pub fn version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::Version)
+            .unwrap_or(1u32)
+    }
+}
