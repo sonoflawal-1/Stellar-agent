@@ -75,11 +75,10 @@ Phase 0 (scaffold)
 ## Cut list (if we fall behind, in order)
 
 1. Dark mode toggle (never started)
-2. Orange particle background animation
-3. How-it-works section on landing
-4. `docs/PROTOCOL.md` (reference only — lightpaper is enough)
-5. `cancel` entry point + its test (only if literally cannot compile)
-6. Landing page entirely — ship just README + video
+2. How-it-works section on landing
+3. `docs/PROTOCOL.md` (reference only — lightpaper is enough)
+4. `cancel` entry point + its test (only if literally cannot compile)
+5. Landing page entirely — ship just README + video
 
 **Never cut:** both contracts, the CLI demo, the pitch video, the README.
 
