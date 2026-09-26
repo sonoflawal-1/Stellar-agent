@@ -103,6 +103,34 @@ export class TransactionTimeoutError extends Error {
 }
 
 /**
+ * Thrown when `marcFetch` exhausts all retries after an HTTP 402 payment
+ * challenge without the payment settling in time (#651).
+ *
+ * Includes the request URL, the number of attempts made, and the total
+ * elapsed time spent waiting for settlement.
+ */
+export class MarcPaymentTimeoutError extends Error {
+  /** The request URL that kept returning HTTP 402. */
+  readonly url: string;
+  /** Total number of attempts made (initial request plus retries). */
+  readonly attempts: number;
+  /** Total elapsed time spent retrying in milliseconds. */
+  readonly durationMs: number;
+
+  constructor(url: string, attempts: number, durationMs: number, message?: string) {
+    const msg =
+      message ||
+      `Payment for ${url} did not settle after ${attempts} attempt(s) (${durationMs}ms)`;
+    super(msg);
+    this.name = "MarcPaymentTimeoutError";
+    this.url = url;
+    this.attempts = attempts;
+    this.durationMs = durationMs;
+    Object.setPrototypeOf(this, MarcPaymentTimeoutError.prototype);
+  }
+}
+
+/**
  * Extract an on-chain Soroban contract error code from a message or error string if present.
  *
  * Handles standard Soroban host error strings such as:
