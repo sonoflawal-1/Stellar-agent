@@ -14,6 +14,28 @@ import { createEd25519Signer, STELLAR_TESTNET_CAIP2, STELLAR_PUBNET_CAIP2 } from
 export type PaymentStatus = "signing" | "pending" | "settled" | "failed";
 
 /**
+ * Error thrown when payment settlement does not complete within the configured
+ * number of retries after an HTTP 402 response.
+ *
+ * Indicates the payment was submitted but the server kept returning 402
+ * (e.g. settlement lag or network congestion) until all retries were exhausted.
+ */
+export class MarcPaymentTimeoutError extends Error {
+  /** Number of retry attempts made before giving up. */
+  readonly attempts: number;
+  /** The last HTTP 402 response received, if any. */
+  readonly lastResponse?: Response;
+
+  constructor(message: string, attempts: number, lastResponse?: Response) {
+    super(message);
+    this.name = "MarcPaymentTimeoutError";
+    this.attempts = attempts;
+    this.lastResponse = lastResponse;
+    Object.setPrototypeOf(this, MarcPaymentTimeoutError.prototype);
+  }
+}
+
+/**
  * Configuration options for {@link marcFetch}.
  *
  * Controls the Stellar keypair used for signing, the network target,
@@ -34,6 +56,12 @@ export interface MarcFetchOptions {
   timeoutMs?: number;
   /** Maximum number of automatic payment-retry attempts on HTTP 402 responses. Default: `1`. */
   maxPaymentAttempts?: number;
+  /** Maximum number of retries after a 402 following payment submission. Default: `3`. */
+  retries?: number;
+  /** Base delay in milliseconds before the first retry. Default: `500`. */
+  retryDelay?: number;
+  /** Multiplier applied to the delay on each subsequent retry. Default: `2`. */
+  retryBackoff?: number;
   /** Optional custom fetch implementation. Defaults to the global `fetch`. Used by tests and adapters. */
   fetchImpl?: typeof fetch;
 }
@@ -75,6 +103,21 @@ export function parsePaymentRequiredHeader(headerValue: string): ParsedPaymentRe
 }
 
 /**
+ * Compute the exponential backoff delay (in ms) for a given retry attempt,
+ * applying ±20% jitter to avoid thundering-herd retries.
+ *
+ * @param attempt - Zero-based retry index (0 for the first retry).
+ * @param baseDelay - Base delay in milliseconds.
+ * @param backoff - Multiplier applied per attempt.
+ * @returns Delay in milliseconds, jittered by ±20%.
+ */
+export function computeRetryDelay(attempt: number, baseDelay: number, backoff: number): number {
+  const exponential = baseDelay * Math.pow(backoff, attempt);
+  const jitter = 1 + (Math.random() * 0.4 - 0.2);
+  return Math.max(0, Math.round(exponential * jitter));
+}
+
+/**
  * Create a `fetch`-compatible function that automatically handles HTTP 402
  * responses by building, signing, and submitting a Stellar payment, then
  * retrying the original request with the payment proof headers attached.
@@ -87,6 +130,7 @@ export function parsePaymentRequiredHeader(headerValue: string): ParsedPaymentRe
  * @returns An async function with the same signature as `fetch` that transparently
  *          handles 402 Payment Required responses by paying with the provided keypair.
  *
+ * @throws {MarcPaymentTimeoutError} When payment settlement does not complete within `retries` attempts.
  * @throws {Error} When payment fails or `maxPaymentAttempts` is exceeded.
  * @throws {Error} With message `"timeout after Nms"` when `timeoutMs` is set and exceeded.
  *
@@ -117,6 +161,9 @@ export function marcFetch(opts: MarcFetchOptions) {
     onPayment,
     timeoutMs,
     maxPaymentAttempts = 1,
+    retries = 3,
+    retryDelay = 500,
+    retryBackoff = 2,
     fetchImpl,
   } = opts;
 
@@ -205,40 +252,59 @@ export function marcFetch(opts: MarcFetchOptions) {
             const payload = await (client as any).createPaymentPayload(reqHeader);
             signedProof = typeof payload === "string" ? payload : JSON.stringify(payload);
           }
-        } catch {
-          // ignore and fallback
-        }
-
-        if (!signedProof) {
-          try {
-            signedProof = signer.sign(Buffer.from(reqHeader || "x402-payment")).toString("base64");
-          } catch {
-            signedProof = "mock-signed-payment-proof";
+        } catch (err) {
+          if (onPayment) {
+            onPayment("failed");
           }
+          throw err;
         }
 
         if (onPayment) {
           onPayment("pending");
         }
 
-        const existingHeaders = (requestInit?.headers as Record<string, string>) || {};
-        requestInit = {
-          ...requestInit,
-          headers: {
-            ...existingHeaders,
-            "Payment-Signature": signedProof,
-            "X-Payment": signedProof,
-            Authorization: `Bearer ${signedProof}`,
-          },
+        const paymentHeaders: Record<string, string> = {
+          ...(customHeaders ?? {}),
+          ...((init?.headers as Record<string, string> | undefined) ?? {}),
+          "X-PAYMENT": signedProof,
         };
-      } catch (err) {
-        if (timeoutMs && err instanceof DOMException && err.name === "AbortError") {
-          throw new Error(`timeout after ${timeoutMs}ms`);
+
+        requestInit = { ...init, headers: paymentHeaders };
+
+        let lastResponse: Response | undefined;
+        for (let retry = 0; retry <= retries; retry += 1) {
+          const retryResponse = await baseFetch(input, requestInit);
+          if (retryResponse.status !== 402) {
+            if (onPayment && retryResponse.ok) {
+              onPayment("settled");
+            }
+            return retryResponse;
+          }
+          lastResponse = retryResponse;
+          if (retry < retries) {
+            const delay = computeRetryDelay(retry, retryDelay, retryBackoff);
+            await new Promise((resolve) => setTimeout(resolve, delay));
+          }
         }
-        throw err;
+
+        if (onPayment) {
+          onPayment("failed");
+        }
+        throw new MarcPaymentTimeoutError(
+          `Payment settlement did not complete after ${retries} retries`,
+          retries,
+          lastResponse
+        );
+      } catch (err) {
+        if (err instanceof MarcPaymentTimeoutError) {
+          throw err;
+        }
+        if (attempts >= maxPaymentAttempts) {
+          throw err;
+        }
       }
     }
 
-    throw new Error(`max payment attempts reached: ${maxPaymentAttempts}`);
+    throw new Error(`Payment failed after ${maxPaymentAttempts} attempt(s)`);
   };
 }

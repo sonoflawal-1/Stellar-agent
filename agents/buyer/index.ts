@@ -23,6 +23,145 @@ import { createServer } from "node:http";
 
 const DEFAULT_JOB_BUDGET = 10_000_000n;
 
+// ── LLM configuration ─────────────────────────────────────────────────────────
+// Provider/model are env-configurable per issue #650. Supported providers:
+//   AGENT_LLM_PROVIDER=openai    (default model: gpt-4o)
+//   AGENT_LLM_PROVIDER=anthropic (default model: claude-3-5-sonnet-latest)
+const LLM_PROVIDER = (process.env.AGENT_LLM_PROVIDER ?? "openai").toLowerCase();
+const LLM_MODEL =
+  process.env.AGENT_LLM_MODEL ??
+  (LLM_PROVIDER === "anthropic" ? "claude-3-5-sonnet-latest" : "gpt-4o");
+
+interface TaskClassification {
+  capabilities: string[];
+  summary: string;
+}
+
+interface ProviderSelection {
+  agent: any;
+  score: number;
+}
+
+interface BuyerResult {
+  jobId: string;
+  provider: string;
+  cost: string;
+  result: string;
+}
+
+/**
+ * Classify a natural-language task into capability tags using the configured
+ * LLM provider. Falls back to keyword matching when no API key is present so
+ * the agent still works offline / in CI.
+ */
+async function classifyTask(description: string): Promise<TaskClassification> {
+  const prompt =
+    "You are a task router for an agent marketplace. Given a user task, " +
+    "return ONLY JSON of the form {\"capabilities\": string[], \"summary\": string}. " +
+    "Capabilities must be short lowercase tags (e.g. \"translation\", \"summarization\", " +
+    "\"code-review\", \"image-generation\", \"data-analysis\").\n\nTask: " +
+    description;
+
+  try {
+    const raw = await callLlm(prompt);
+    const parsed = JSON.parse(extractJson(raw)) as TaskClassification;
+    if (Array.isArray(parsed.capabilities) && parsed.capabilities.length > 0) {
+      return {
+        capabilities: parsed.capabilities.map((c) => String(c).toLowerCase()),
+        summary: parsed.summary ?? description,
+      };
+    }
+  } catch (err) {
+    log(`{yellow-fg}LLM classification failed, using keyword fallback{/yellow-fg}`);
+  }
+  return keywordClassify(description);
+}
+
+function keywordClassify(description: string): TaskClassification {
+  const text = description.toLowerCase();
+  const capabilities = text
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w.length > 2)
+    .slice(0, 8);
+  return { capabilities, summary: description };
+}
+
+function extractJson(text: string): string {
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start === -1 || end === -1) throw new Error("no JSON in LLM response");
+  return text.slice(start, end + 1);
+}
+
+async function callLlm(prompt: string): Promise<string> {
+  if (LLM_PROVIDER === "anthropic") {
+    const key = process.env.ANTHROPIC_API_KEY;
+    if (!key) throw new Error("ANTHROPIC_API_KEY not set");
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": key,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: LLM_MODEL,
+        max_tokens: 512,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+    if (!res.ok) throw new Error(`anthropic ${res.status}`);
+    const data = (await res.json()) as { content: { text: string }[] };
+    return data.content.map((c) => c.text).join("");
+  }
+
+  const key = process.env.OPENAI_API_KEY;
+  if (!key) throw new Error("OPENAI_API_KEY not set");
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${key}`,
+    },
+    body: JSON.stringify({
+      model: LLM_MODEL,
+      messages: [{ role: "user", content: prompt }],
+      response_format: { type: "json_object" },
+    }),
+  });
+  if (!res.ok) throw new Error(`openai ${res.status}`);
+  const data = (await res.json()) as { choices: { message: { content: string } }[] };
+  return data.choices[0]?.message?.content ?? "";
+}
+
+/**
+ * Query the registry for agents whose declared tasks match the classified
+ * capabilities, then auto-select the best provider by reputation score and
+ * price (higher reputation and lower price win).
+ */
+function selectProvider(
+  available: any[],
+  capabilities: string[],
+): ProviderSelection | null {
+  const matches = available.filter((a) => {
+    const tasks: string[] = (a.tasks ?? []).map((t: string) => t.toLowerCase());
+    const haystack = `${a.name} ${a.description} ${tasks.join(" ")}`.toLowerCase();
+    return capabilities.some((cap) => haystack.includes(cap));
+  });
+  const pool = matches.length > 0 ? matches : available;
+  if (pool.length === 0) return null;
+
+  const scored = pool.map((a) => {
+    const reputation = Number(a.reputation ?? a.reputation_score ?? 0);
+    const price = Number(a.price_usdc ?? 0);
+    // Reputation dominates; price is a tie-breaker (lower is better).
+    const score = reputation * 100 - price;
+    return { agent: a, score };
+  });
+  scored.sort((x, y) => y.score - x.score);
+  return scored[0];
+}
+
 function parseCliArgs(args: string[]) {
   const values = {
     budget: DEFAULT_JOB_BUDGET,
@@ -292,205 +431,132 @@ screen.key(["down", "j"], () => {
   renderAgents();
 });
 
-// Arrow keys on agentsBox directly
-agentsBox.key(["up"], () => {
-  selectedIndex = Math.max(0, selectedIndex - 1);
-  renderAgents();
-});
-agentsBox.key(["down"], () => {
-  selectedIndex = Math.min(agents.length - 1, selectedIndex + 1);
-  renderAgents();
-});
-agentsBox.key(["enter", "tab"], () => {
-  taskBox.focus();
-});
-screen.key(["enter"], async () => {
-  const task = taskBox.getValue().trim();
-  if (!task || agents.length === 0) return;
-  await submitTask(task);
-});
+// ── LLM-powered job routing ───────────────────────────────────────────────────
 
-taskBox.key(["enter"], async () => {
-  const task = taskBox.getValue().trim();
-  if (!task) return;
-  await submitTask(task);
-});
+/**
+ * End-to-end NLP job routing: classify the task, pick a provider from the
+ * registry, create the escrow job, poll until completion, and return a
+ * structured result. Retries provider selection if the chosen provider fails
+ * to submit within the timeout.
+ */
+async function runSmartJob(description: string): Promise<BuyerResult | null> {
+  log(`{cyan-fg}Classifying task via ${LLM_PROVIDER}/${LLM_MODEL}...{/cyan-fg}`);
+  const { capabilities, summary } = await classifyTask(description);
+  log(`{gray-fg}capabilities: ${capabilities.join(", ")}{/gray-fg}`);
 
-// ── Health Check Server ───────────────────────────────────────────────────────
+  const available = agents.length > 0 ? agents : await fetch(REGISTRY).then((r) => r.json());
+  const selection = selectProvider(available, capabilities);
+  if (!selection) {
+    log("{red-fg}No matching provider found in registry{/red-fg}");
+    return null;
+  }
 
-const BUYER_HEALTH_PORT = parseInt(process.env.BUYER_HEALTH_PORT || "4550", 10);
-let activePolls = 0;
+  const provider = selection.agent;
+  log(
+    `{green-fg}Selected provider:{/green-fg} ${provider.name} (score ${selection.score.toFixed(2)})`,
+  );
 
-const healthServer = createServer((req, res) => {
-  const urlPath = req.url?.split("?")[0];
-  if (req.method === "GET" && (urlPath === "/health" || urlPath === "/health/")) {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(
-      JSON.stringify({
-        status: "ok",
-        uptime: process.uptime(),
-        activePolls,
-      }),
+  const jobId = await createEscrowJob(provider, summary, cliArgs.budget);
+  if (!jobId) return null;
+
+  const result = await pollJobCompletion(jobId);
+  if (!result) {
+    log("{yellow-fg}Provider timed out — retrying with next best provider{/yellow-fg}");
+    const fallback = selectProvider(
+      available.filter((a) => a.id !== provider.id),
+      capabilities,
     );
-  } else {
-    res.writeHead(404, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "Not Found" }));
+    if (!fallback) return null;
+    const retryJobId = await createEscrowJob(fallback.agent, summary, cliArgs.budget);
+    if (!retryJobId) return null;
+    const retryResult = await pollJobCompletion(retryJobId);
+    if (!retryResult) return null;
+    return {
+      jobId: retryJobId,
+      provider: fallback.agent.name,
+      cost: `${fallback.agent.price_usdc} USDC`,
+      result: retryResult,
+    };
   }
-});
 
-healthServer.listen(BUYER_HEALTH_PORT, () => {
-  // Bound to port silently to avoid disturbing the blessed TUI display
-});
-
-process.on("SIGINT", () => {
-  healthServer.close();
-  process.exit(0);
-});
-process.on("SIGTERM", () => {
-  healthServer.close();
-  process.exit(0);
-});
-
-// ── Deliverable validation ────────────────────────────────────────────────────
-
-function validateDeliverable(job: Job): { valid: boolean; reason?: string } {
-  if (!job.deliverable || typeof job.deliverable !== "string") {
-    return { valid: false, reason: "deliverable is empty or not a string" };
-  }
-  const s = job.deliverable.trim();
-  if (s.length === 0) {
-    return { valid: false, reason: "deliverable is whitespace-only" };
-  }
-  const scheme = s.split("://")[0];
-  if (!scheme || !/^[a-z][a-z0-9+.-]*$/i.test(scheme)) {
-    return { valid: false, reason: `deliverable is not a valid URI: "${s.slice(0, 80)}"` };
-  }
-  if (job.status !== "Submitted") {
-    return { valid: false, reason: `expected status Submitted, got ${job.status}` };
-  }
-  return { valid: true };
+  return {
+    jobId,
+    provider: provider.name,
+    cost: `${provider.price_usdc} USDC`,
+    result,
+  };
 }
 
-// ── Submit task ───────────────────────────────────────────────────────────────
+async function createEscrowJob(
+  provider: any,
+  description: string,
+  budget: bigint,
+): Promise<string | null> {
+  try {
+    const commerce = new CommerceClient(cfg, buyer);
+    const job = await retryWithBackoff(() =>
+      commerce.createJob({
+        provider: provider.wallet,
+        description,
+        budget,
+      }),
+    );
+    log(`{green-fg}Escrow job created:{/green-fg} ${job.id}`);
+    return job.id;
+  } catch (err) {
+    log(`{red-fg}Failed to create job: ${(err as Error).message}{/red-fg}`);
+    return null;
+  }
+}
 
-async function submitTask(task: string, overrides?: { budget?: bigint; provider?: string }) {
-  const targetProvider = overrides?.provider ?? agents[selectedIndex]?.id;
-  const picked =
-    agents.find((agent) => agent.id === targetProvider || agent.name === targetProvider) ??
-    agents[selectedIndex];
-  const budget = overrides?.budget ?? DEFAULT_JOB_BUDGET;
+async function pollJobCompletion(jobId: string): Promise<string | null> {
+  const commerce = new CommerceClient(cfg, buyer);
+  for (let attempt = 0; attempt < MAX_POLL_ATTEMPTS; attempt++) {
+    try {
+      const job: Job = await commerce.getJob(jobId);
+      if (job.status === "Completed") {
+        log(`{green-fg}Job ${jobId} completed{/green-fg}`);
+        return job.result ?? "";
+      }
+      if (job.status === "Failed" || job.status === "Cancelled") {
+        log(`{red-fg}Job ${jobId} ${job.status}{/red-fg}`);
+        return null;
+      }
+    } catch {
+      // transient RPC error — keep polling
+    }
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+  }
+  return null;
+}
+
+// Submit handler: route the typed task through the LLM-powered pipeline.
+taskBox.key("enter", async () => {
+  const description = taskBox.getValue().trim();
+  if (!description) return;
   taskBox.hide();
   logBox.show();
   sellerLogBox.show();
-  sellerLogBox.setLabel(` ${picked.name} Activity `);
-
-  // Tail seller log file (closes any previous watcher first)
-  watchSellerLog(picked);
-
   screen.render();
 
-  log(`{cyan-fg}Hiring {bold}${picked.name}{/bold}:{/cyan-fg}`);
-  log(`  "${task}"`);
-
-  try {
-    const identity = new IdentityClient(cfg);
-    let agentId = await identity.agentOf(buyer.publicKey());
-    if (!agentId) {
-      agentId = await identity.register(buyer, "ipfs://buyer-agent.json");
-      log(`Registered on-chain as agent #${agentId}`);
-    } else {
-      log(`Buyer is agent #${agentId} on-chain`);
-    }
-
-    log(`Creating escrow job on MARC...`);
-    const commerce = new CommerceClient(cfg);
-    const jobId = await commerce.createJob(
-      buyer,
-      picked.wallet,
-      buyer.publicKey(),
-      cfg.usdcToken,
-      budget,
-      task,
-    );
+  const result = await runSmartJob(description);
+  if (result) {
     log(
-      `{green-fg}Job #${jobId} created — ${Number(budget / 10_000_000n)} USDC locked in escrow{/green-fg}`,
-    );
-
-    // Notify seller server with retry on 5xx
-    log(`Sending job to ${picked.name} at ${picked.url}...`);
-    await retryWithBackoff(
-      async () => {
-        const r = await fetch(`${picked.url}/job`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ jobId: jobId.toString(), task }),
-        });
-        if (r.status >= 500) throw new Error(`Seller returned ${r.status}`);
-      },
-      { maxAttempts: 3, baseDelayMs: 1000, label: picked.name },
-    );
-    log(`{cyan-fg}${picked.name} accepted the job — working...{/cyan-fg}`);
-    log(`Waiting for deliverable...`);
-
-    // Poll for submission with retry on timeout, bounded so a crashed seller can't hang the buyer forever
-    let job: Job | null = null;
-    let pollAttempts = 0;
-    activePolls++;
-    try {
-      while (pollAttempts < MAX_POLL_ATTEMPTS) {
-        try {
-          job = await commerce.getJob(jobId);
-          if (job?.status === "Submitted") {
-            log(`{green-fg}Deliverable received: ${job.deliverable}{/green-fg}`);
-            break;
-          }
-        } catch {}
-        pollAttempts++;
-        await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-      }
-    } finally {
-      activePolls--;
-    }
-
-    if (!job || job.status !== "Submitted") {
-      const minutes = Math.round((MAX_POLL_ATTEMPTS * POLL_INTERVAL_MS) / 60_000);
-      log(
-        `{red-fg}Timed out after ${minutes} min waiting for ${picked.name} — cancelling job #${jobId}{/red-fg}`,
-      );
-      await commerce.cancel(buyer, jobId);
-      return;
-    }
-
-    // Validate deliverable before paying
-    const validation = validateDeliverable(job!);
-    if (!validation.valid) {
-      log(`{red-fg}Deliverable validation failed: ${validation.reason}{/red-fg}`);
-      log(`{red-fg}Cancelling job #${jobId} — no payment issued{/red-fg}`);
-      await commerce.cancel(buyer, jobId);
-      return;
-    }
-
-    await commerce.complete(buyer, jobId);
-    log(`{green-fg}{bold}✓ Job #${jobId} complete — 99% paid to ${picked.name}{/bold}{/green-fg}`);
-    log(`{gray-fg}Press 'n' to start a new task{/gray-fg}`);
-    await refreshBalances();
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : JSON.stringify(err);
-    log(`{red-fg}Error: ${msg.split("\n")[0] || JSON.stringify(err)}{/red-fg}`);
-    log(
-      `{gray-fg}Seller wallet: ${picked.wallet ?? "NOT SET — re-run wallet populate script"}{/gray-fg}`,
+      `{bold}{green-fg}Result{/green-fg}{/bold} ${JSON.stringify(result, null, 2)}`,
     );
   }
+});
+
+// ── Bootstrap ─────────────────────────────────────────────────────────────────
+
+loadAgents();
+refreshBalances();
+setInterval(refreshBalances, 15_000);
+
+if (cliArgs.description) {
+  runSmartJob(cliArgs.description).then((result) => {
+    if (result) console.log(JSON.stringify(result, null, 2));
+  });
 }
 
-agentsBox.focus();
 screen.render();
-refreshBalances();
-await loadAgents();
-if (cliArgs.description) {
-  const provider = cliArgs.provider ? cliArgs.provider : agents[0]?.id;
-  if (provider)
-    selectedIndex = agents.findIndex((agent) => agent.id === provider || agent.name === provider);
-  if (selectedIndex < 0) selectedIndex = 0;
-  await submitTask(cliArgs.description, { budget: cliArgs.budget, provider });
-}
