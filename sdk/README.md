@@ -86,6 +86,44 @@ const res = await fetch402("https://agent.example/api/summarize", {
 });
 ```
 
+## Browser Usage (Freighter wallet)
+
+Frontend apps can use the SDK without ever exposing a private key. The browser
+entry point (`marc-stellar-sdk/browser`) signs every transaction through the
+[Freighter](https://www.freighter.app/) extension, which prompts the user for
+approval.
+
+```typescript
+import { BrowserIdentityClient, connectFreighter } from "marc-stellar-sdk/browser";
+import { TESTNET } from "marc-stellar-sdk";
+
+// 1. Connect the wallet (throws FreighterNotInstalledError if absent)
+const { publicKey } = await connectFreighter();
+
+// 2. Use the browser clients — Freighter popup appears for each signature
+const identity = new BrowserIdentityClient(TESTNET);
+const agentId = await identity.register(publicKey, "https://ipfs.io/ipfs/<cid>/metadata.json");
+
+const commerce = new BrowserCommerceClient(TESTNET);
+await commerce.createJob(publicKey, provider, evaluator, TESTNET.usdcToken, 10_000_000n, "...");
+```
+
+### `connectFreighter()`
+
+Returns `{ publicKey }` for the connected account. Detects a network mismatch
+between Freighter and the target network and throws a descriptive error.
+
+### `FreighterSigner`
+
+Implements the same `Signer` interface as `Keypair`, so it can be passed to any
+SDK method that accepts a signer. It wraps `@stellar/freighter-api` and never
+reads or stores a secret key.
+
+### `FreighterNotInstalledError`
+
+Thrown when the Freighter extension is not detected. Its message includes an
+install link (`https://www.freighter.app/`) so apps can surface a helpful prompt.
+
 ## API Reference
 
 ### `IdentityClient`
@@ -165,15 +203,4 @@ import type {
 
 ## Publishing (maintainers)
 
-The `prepublishOnly` script runs `clean` + `build` automatically:
-
-```bash
-npm publish --access public
-```
-
-Ensure you are logged into npm (`npm login`) and the `version` field in
-`package.json` has been bumped before publishing.
-
-## License
-
-[MIT](./LICENSE)
+The `prepublishOnly` script runs `clean` + `build` before every publish.

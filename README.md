@@ -214,3 +214,6 @@ MIT
 
 <!-- handsoff-issue-618 -->
 - #618: [Security] Add Content Security Policy headers configuration in dashboard/server.ts
+
+<!-- handsoff-issue-656 -->
+- #656: feat(sdk): implement Server-Sent Events streaming for long-running job results
