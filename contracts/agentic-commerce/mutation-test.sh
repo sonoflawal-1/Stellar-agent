@@ -5,7 +5,7 @@
 # Usage: ./mutation-test.sh [--in-place]
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 cargo mutants \
   --package agentic-commerce \
