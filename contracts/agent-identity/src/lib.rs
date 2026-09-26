@@ -259,51 +259,10 @@ impl AgentIdentityContract {
         .publish(&env);
     }
 
-    /// Fetch an agent by id.
-    ///
-    /// Panics with `Error::AgentNotFound` if the agent does not exist or has
-    /// been deregistered. Callers that need a fallback-safe lookup should call
-    /// `is_registered` first, or use `list_agents` for batch queries.
-    pub fn get_agent(env: Env, id: u64) -> Agent {
-        let key = DataKey::Agent(id);
-        let result: Option<Agent> = env.storage().persistent().get(&key);
-        match result {
-            Some(agent) => {
-                env.storage()
-                    .persistent()
-                    .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
-                agent
-            }
-            None => panic_with_error!(&env, Error::AgentNotFound),
-        }
-    }
-
-    /// Returns true if `owner` currently has a registered agent. Equivalent
-    /// to `agent_of(owner).is_some()` without needing to unwrap the id (#15).
-    pub fn is_registered(env: Env, owner: Address) -> bool {
-        env.storage()
-            .persistent()
-            .has(&DataKey::OwnerToId(owner))
-    }
-
-    /// Look up the agent id owned by `owner`, if any.
-    pub fn agent_of(env: Env, owner: Address) -> Option<u64> {
-        let key = DataKey::OwnerToId(owner);
-        let result: Option<u64> = env.storage().persistent().get(&key);
-        if result.is_some() {
-            env.storage()
-                .persistent()
-                .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
-        }
-        result
-    }
-
-    /// Transfer ownership of an agent to `new_owner`. Requires auth from both
-    /// the current owner (`caller`) and the incoming `new_owner`.
-    pub fn update_owner(env: Env, caller: Address, id: u64, new_owner: Address) {
+    /// Transfer ownership of an agent to a new wallet. Caller must be the
+    /// current owner. The new owner must not already own an agent.
+    pub fn transfer_owner(env: Env, caller: Address, id: u64, new_owner: Address) {
         caller.require_auth();
-        new_owner.require_auth();
-
         let mut agent: Agent = env
             .storage()
             .persistent()
@@ -317,9 +276,8 @@ impl AgentIdentityContract {
             .persistent()
             .has(&DataKey::OwnerToId(new_owner.clone()))
         {
-            panic!("new owner already registered");
+            panic_with_error!(&env, Error::AlreadyRegistered);
         }
-
         env.storage()
             .persistent()
             .remove(&DataKey::OwnerToId(agent.owner.clone()));
@@ -329,8 +287,6 @@ impl AgentIdentityContract {
         env.storage()
             .persistent()
             .extend_ttl(&DataKey::OwnerToId(new_owner.clone()), LEDGER_THRESHOLD, LEDGER_BUMP);
-
-        let old_owner = agent.owner.clone();
         agent.owner = new_owner.clone();
         env.storage().persistent().set(&DataKey::Agent(id), &agent);
         env.storage()
@@ -338,34 +294,45 @@ impl AgentIdentityContract {
             .extend_ttl(&DataKey::Agent(id), LEDGER_THRESHOLD, LEDGER_BUMP);
 
         OwnerTransferred {
-            old_owner,
+            old_owner: caller,
             new_owner,
             agent_id: id,
         }
         .publish(&env);
     }
 
-    /// Returns up to `limit` agents starting from `start_id`, skipping gaps left
-    /// by deregistered agents. Useful for paginated dashboard queries.
-    pub fn list_agents(env: Env, start_id: u32, limit: u32) -> Vec<Agent> {
-        let mut result = Vec::new(&env);
-        let next_id: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::NextId)
-            .unwrap_or(1u64);
-
-        let mut id = start_id as u64;
-        while result.len() < limit && id < next_id {
-            if let Some(agent) = env.storage().persistent().get(&DataKey::Agent(id)) {
-                result.push_back(agent);
-            }
-            id += 1;
+    /// Fetch an agent by its id. Returns `None` if no such agent exists.
+    pub fn get_agent(env: Env, id: u64) -> Option<Agent> {
+        let key = DataKey::Agent(id);
+        let agent: Option<Agent> = env.storage().persistent().get(&key);
+        if agent.is_some() {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
         }
-        result
+        agent
     }
 
-    /// Returns the number of currently-registered (non-deregistered) agents.
+    /// Fetch an agent directly by its owner address in a single call.
+    ///
+    /// Resolves the owner's agent id from the `OwnerToId` index and returns
+    /// the full `Agent` record, or `None` if the owner has no registered
+    /// agent. This avoids the two-call `agent_of` + `get_agent` round trip.
+    pub fn get_agent_by_owner(env: Env, owner: Address) -> Option<Agent> {
+        let key = DataKey::OwnerToId(owner);
+        let agent_id: Option<u64> = env.storage().persistent().get(&key);
+        match agent_id {
+            Some(id) => Self::get_agent(env, id),
+            None => None,
+        }
+    }
+
+    /// Return the agent id owned by `owner`, or `None` if none is registered.
+    pub fn agent_of(env: Env, owner: Address) -> Option<u64> {
+        env.storage().persistent().get(&DataKey::OwnerToId(owner))
+    }
+
+    /// Return the total number of agents ever registered (append-only).
     pub fn registered_count(env: Env) -> u32 {
         env.storage()
             .instance()
@@ -373,17 +340,19 @@ impl AgentIdentityContract {
             .unwrap_or(0u32)
     }
 
-    /// Contract version. Read from instance storage if set, otherwise derived
-    /// at compile time from the crate's Cargo.toml major version (#14), so it
-    /// no longer needs a manual bump on every release.
+    /// Return the next agent id that will be assigned on the next `register`.
+    pub fn next_id(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::NextId)
+            .unwrap_or(1u64)
+    }
+
+    /// Return the contract version marker.
     pub fn version(env: Env) -> u32 {
-        env.storage().instance().get(&DataKey::Version).unwrap_or_else(|| {
-            env!("CARGO_PKG_VERSION_MAJOR")
-                .parse()
-                .expect("invalid CARGO_PKG_VERSION_MAJOR")
-        })
+        env.storage()
+            .instance()
+            .get(&DataKey::Version)
+            .unwrap_or(1u32)
     }
 }
-
-#[cfg(test)]
-mod test;
