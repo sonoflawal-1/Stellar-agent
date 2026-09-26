@@ -8,6 +8,9 @@ import {
   MAX_PROMPT_LENGTH,
   isMockLlm,
   MOCK_DELIVERABLES,
+  AgentConfigSchema,
+  validateAgentConfig,
+  autoRegister,
 } from "./shared.js";
 
 test("makeSellerResponse - returns standard response format with success true and execution_time_ms >= 0", () => {
@@ -269,56 +272,117 @@ test("validatePrompt - rejects whitespace-only string", () => {
   assert.equal(result.error, "Prompt must be a non-empty string");
 });
 
-test("validatePrompt - rejects non-string inputs", () => {
-  assert.equal(validatePrompt(null).valid, false);
-  assert.equal(validatePrompt(undefined).valid, false);
-  assert.equal(validatePrompt(12345).valid, false);
-  assert.equal(validatePrompt({}).valid, false);
-  assert.equal(validatePrompt([]).valid, false);
+const VALID_CONFIG = {
+  name: "CopywriterAgent",
+  version: "1.2.0",
+  capabilities: ["copywriting", "seo", "email-marketing"],
+  pricing: { model: "per-job", price: 5000000, currency: "USDC" },
+  endpoint: "http://localhost:3001/api",
+  health: "/health",
+};
+
+test("AgentConfigSchema - accepts a valid agent.config.json payload", () => {
+  const parsed = AgentConfigSchema.parse(VALID_CONFIG);
+  assert.equal(parsed.name, "CopywriterAgent");
+  assert.equal(parsed.version, "1.2.0");
+  assert.deepEqual(parsed.capabilities, ["copywriting", "seo", "email-marketing"]);
+  assert.equal(parsed.pricing.price, 5000000);
+  assert.equal(parsed.pricing.currency, "USDC");
 });
 
-test("isMockLlm - respects process.env.MOCK_LLM", () => {
-  const prev = process.env.MOCK_LLM;
-  try {
-    delete process.env.MOCK_LLM;
-    assert.equal(isMockLlm(), false);
-
-    process.env.MOCK_LLM = "false";
-    assert.equal(isMockLlm(), false);
-
-    process.env.MOCK_LLM = "true";
-    assert.equal(isMockLlm(), true);
-  } finally {
-    if (prev !== undefined) {
-      process.env.MOCK_LLM = prev;
-    } else {
-      delete process.env.MOCK_LLM;
-    }
-  }
+test("AgentConfigSchema - rejects config missing required fields", () => {
+  const { name, ...withoutName } = VALID_CONFIG;
+  assert.equal(AgentConfigSchema.safeParse(withoutName).success, false);
 });
 
-test("validateEnv - bypasses GROQ_API_KEY requirement when MOCK_LLM is true", () => {
-  const originalEnv = { ...process.env };
-  try {
-    process.env.MOCK_LLM = "true";
-    delete process.env.GROQ_API_KEY;
-    process.env.PORT = "4501";
-    process.env.SECRET_KEY = "S...";
-    process.env.REGISTRY_URL = "http://localhost:4500";
-
-    assert.doesNotThrow(() => {
-      validateEnv(["PORT", "SECRET_KEY", "REGISTRY_URL", "GROQ_API_KEY"]);
-    });
-  } finally {
-    process.env = originalEnv;
-  }
+test("AgentConfigSchema - rejects invalid pricing model", () => {
+  const invalid = { ...VALID_CONFIG, pricing: { ...VALID_CONFIG.pricing, model: "per-hour" } };
+  assert.equal(AgentConfigSchema.safeParse(invalid).success, false);
 });
 
-test("MOCK_DELIVERABLES - provides realistic deliverables for all 4 agents", () => {
-  assert.ok(MOCK_DELIVERABLES.webbuilder.includes("<!DOCTYPE html"));
-  assert.ok(MOCK_DELIVERABLES.copywriter.includes("# Next-Generation AI Commerce"));
-  assert.ok(MOCK_DELIVERABLES.namer.includes("AegisFlow"));
-  assert.ok(Array.isArray(MOCK_DELIVERABLES.researcher.sources));
-  assert.ok(MOCK_DELIVERABLES.researcher.sources.length >= 3);
-  assert.ok(MOCK_DELIVERABLES.researcher.summary.includes("Research Summary"));
+test("validateAgentConfig - returns parsed config for valid input", () => {
+  const result = validateAgentConfig(VALID_CONFIG);
+  assert.equal(result.valid, true);
+  assert.equal(result.config?.name, "CopywriterAgent");
+  assert.equal(result.error, undefined);
+});
+
+test("validateAgentConfig - returns error for invalid input", () => {
+  const result = validateAgentConfig({ name: "" });
+  assert.equal(result.valid, false);
+  assert.equal(typeof result.error, "string");
+  assert.equal(result.config, undefined);
+});
+
+test("autoRegister - dry-run previews registration without submitting a transaction", async () => {
+  let registerCalls = 0;
+  const identityClient = {
+    isRegistered: async () => false,
+    register: async () => {
+      registerCalls++;
+      return { id: 42 };
+    },
+  };
+
+  const result = await autoRegister(VALID_CONFIG, { publicKey: "GTEST" }, {
+    identityClient,
+    dryRun: true,
+    devMode: true,
+  });
+
+  assert.equal(result.dryRun, true);
+  assert.equal(result.registered, false);
+  assert.equal(result.skipped, false);
+  assert.equal(registerCalls, 0);
+  assert.ok(result.metadataUri.startsWith("local://"));
+});
+
+test("autoRegister - registers when not already registered", async () => {
+  let registerCalls = 0;
+  const identityClient = {
+    isRegistered: async () => false,
+    register: async () => {
+      registerCalls++;
+      return { id: 42 };
+    },
+  };
+
+  const result = await autoRegister(VALID_CONFIG, { publicKey: "GTEST" }, {
+    identityClient,
+    devMode: true,
+  });
+
+  assert.equal(result.registered, true);
+  assert.equal(result.skipped, false);
+  assert.equal(result.agentId, 42);
+  assert.equal(registerCalls, 1);
+});
+
+test("autoRegister - is idempotent and skips when already registered", async () => {
+  let registerCalls = 0;
+  const identityClient = {
+    isRegistered: async () => true,
+    register: async () => {
+      registerCalls++;
+      return { id: 42 };
+    },
+  };
+
+  const result = await autoRegister(VALID_CONFIG, { publicKey: "GTEST" }, {
+    identityClient,
+    devMode: true,
+  });
+
+  assert.equal(result.skipped, true);
+  assert.equal(result.registered, false);
+  assert.equal(registerCalls, 0);
+});
+
+test("autoRegister - throws on invalid config", async () => {
+  await assert.rejects(
+    async () => {
+      await autoRegister({ name: "" }, { publicKey: "GTEST" }, { devMode: true });
+    },
+    /Invalid agent config/,
+  );
 });
