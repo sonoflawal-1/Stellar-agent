@@ -214,3 +214,6 @@ MIT
 
 <!-- handsoff-issue-618 -->
 - #618: [Security] Add Content Security Policy headers configuration in dashboard/server.ts
+
+<!-- handsoff-issue-524 -->
+- #524: [Bug] Define missing JobExpired event struct in agentic-commerce contract
