@@ -33,7 +33,7 @@
     "build:browser": "esbuild src/browser.ts --bundle --platform=browser --target=es2022 --format=esm --outfile=dist/browser.js --sourcemap && tsc --project tsconfig.browser.json --declaration --emitDeclarationOnly --outDir dist",
     "clean": "rm -rf dist",
     "typecheck": "tsc --noEmit",
-    "test": "rm -rf .tmp-tests && ./node_modules/.bin/tsc --project tsconfig.json --outDir .tmp-tests && node --test .tmp-tests/*.test.js",
+    "test": "node -e \"fs.rmSync('.tmp-tests',{recursive:true,force:true})\" && tsc --project tsconfig.json --outDir .tmp-tests && node --test .tmp-tests/*.test.js",
     "prepublishOnly": "npm run clean && npm run build"
   },
   "peerDependencies": {
