@@ -214,3 +214,6 @@ MIT
 
 <!-- handsoff-issue-618 -->
 - #618: [Security] Add Content Security Policy headers configuration in dashboard/server.ts
+
+<!-- handsoff-issue-646 -->
+- #646: feat(contracts): implement on-chain agent reputation scoring system
