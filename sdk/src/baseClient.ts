@@ -104,7 +104,7 @@ export abstract class BaseClient {
     }
 
     const startTime = Date.now();
-    const timeoutMs = 30000;
+    const timeoutMs = this.cfg.pollTimeoutMs ?? 60000;
     let getResp = await this.server.getTransaction(sent.hash);
     while (getResp.status === "NOT_FOUND") {
       if (Date.now() - startTime >= timeoutMs) {
@@ -193,79 +193,6 @@ export abstract class BaseClient {
       } catch (err) {
         if (err instanceof ContractError) throw err;
         if (attempt === 3) throw err;
-        await new Promise((r) => setTimeout(r, 2000 * attempt));
-      }
-    }
-    throw new Error("unreachable");
-  }
+        await new Promise((r) => setTimeout(r, 2000 * attempt))
 
-  /**
-   * Simulate a contract call whose return type is `Option<T>` (may be absent).
-   *
-   * Behaves like {@link simulate} but handles Soroban `ScVal::Void` (the encoding
-   * of `Option::None`) by returning `null` instead of decoding. Throws on any
-   * RPC/simulation error so callers can distinguish "not found" from "outage".
-   *
-   * Retries up to 3 times with exponential backoff on transient failures.
-   *
-   * @param op - The contract operation to simulate.
-   * @param decode - Decoder applied to a non-void `retval` ScVal.
-   * @returns The decoded value, or `null` if the contract returned `None` / `ScVal::Void`.
-   * @throws {Error} On RPC/simulation failure after 3 attempts.
-   */
-  protected async simulateOption<T>(
-    op: xdr.Operation,
-    decode: (v: xdr.ScVal) => T,
-  ): Promise<T | null> {
-    const ephemeral = Keypair.random();
-    const dummy = new Account(ephemeral.publicKey(), "0");
-    const tx = new TransactionBuilder(dummy, {
-      fee: BASE_FEE,
-      networkPassphrase: this.cfg.networkPassphrase,
-    })
-      .addOperation(op)
-      .setTimeout(30)
-      .build();
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        const sim = await this.server.simulateTransaction(tx);
-        // RPC-level error — throw so callers know the network/contract failed.
-        if (rpc.Api.isSimulationError(sim)) {
-          const errMsg = maskSecret(sim.error);
-          const code = extractContractErrorCode(errMsg);
-          if (code !== null) {
-            throw new ContractError(
-              code,
-              this.cfg.commerceContract,
-              resolveContractErrorExplanation(code, this.cfg.commerceContract, this.cfg.identityContract),
-            );
-          }
-          throw new SimulationError(errMsg, sim, tx.toXDR());
-        }
-        const result = (sim as rpc.Api.SimulateTransactionSuccessResponse).result;
-        // No result object means the RPC response was malformed — throw.
-        if (!result) throw new SimulationError("no simulation result", sim, tx.toXDR());
-        // ScVal::Void is how Soroban encodes Option::None — genuine not-found.
-        if (result.retval.switch() === xdr.ScValType.scvVoid()) return null;
-        return decode(result.retval);
-      } catch (err) {
-        if (err instanceof ContractError) throw err;
-        if (attempt === 3) throw err;
-        await new Promise((r) => setTimeout(r, 2000 * attempt));
-      }
-    }
-    throw new Error("unreachable");
-  }
-
-  /**
-   * Disconnect and clean up any resources held by this client.
-   *
-   * The Soroban RPC server uses stateless HTTP connections, so no active
-   * connections need to be closed. This method is a no-op and exists for
-   * API symmetry — call it when disposing of client instances in code that
-   * manages connection lifecycles.
-   */
-  disconnect(): void {
-    // No-op: RPC Server uses stateless HTTP, no long-lived connections to close
-  }
-}
+/* … truncated 2984 chars — edit only what you need near the top … */
