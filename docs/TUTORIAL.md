@@ -9,6 +9,7 @@ This tutorial talks to the **live testnet contracts** listed in the root [README
 | Agent Identity   | `CAMPXYFZJTIPEVOPOAZPRG5OHXKNBDPGTPRCOIO4LVPGEM4TONPY65A5` |
 | Agentic Commerce | `CD2KWU7IE74Z2QKVP3FQ67J46XHNMGIDTNKXVWE7ZNVRC7T6UH46GQXE` |
 | USDC (SAC)       | `CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA` |
+| XLM (native SAC) | `CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA` |
 
 ## Prerequisites
 
@@ -73,10 +74,10 @@ You can look up any agent later with `identity.getAgent(agentId)` or reverse-loo
 
 ## Step 3: Create an Escrow Job with budget
 
-The client locks a budget in the commerce contract, naming a `provider` (does the work) and an `evaluator` (approves it — here, the client itself). Create `create-job.ts`:
+The client locks a budget in the commerce contract, naming a `provider` (does the work) and an `evaluator` (approves it — here, the client itself). The `token` argument accepts **any Stellar Asset Contract (SAC) token**, including native XLM — there is no longer a hardcoded USDC restriction. Create `create-job.ts`:
 
 ```typescript
-import { CommerceClient, TESTNET } from "marc-stellar-sdk";
+import { CommerceClient, TESTNET, XLM_NATIVE } from "marc-stellar-sdk";
 import { Keypair, Address } from "@stellar/stellar-sdk";
 
 const commerce = new CommerceClient(TESTNET);
@@ -87,7 +88,7 @@ const jobId = await commerce.createJob(
   client,
   providerAddress,
   client.publicKey(), // evaluator — the client approves its own job in this example
-  TESTNET.usdcToken,
+  TESTNET.usdcToken, // or XLM_NATIVE, or any SAC token address
   10_000_000n, // 1 USDC, in the token's smallest unit (7 decimals)
   "Write a 3-sentence product description",
 );
@@ -100,6 +101,33 @@ npx tsx create-job.ts
 ```
 
 The job now has status `Funded` and the 1 USDC is held by the contract.
+
+### Paying with native XLM instead of USDC
+
+To escrow a job in native XLM, pass the exported `XLM_NATIVE` constant (the canonical Stellar XLM SAC address) as the `token` argument. XLM uses **7 decimals** just like USDC, so `10_000_000n` is 1 XLM:
+
+```typescript
+import { CommerceClient, TESTNET, XLM_NATIVE } from "marc-stellar-sdk";
+import { Keypair } from "@stellar/stellar-sdk";
+
+const commerce = new CommerceClient(TESTNET);
+const client = Keypair.fromSecret("S...");
+
+const jobId = await commerce.createJob(
+  client,
+  "G...", // provider
+  client.publicKey(), // evaluator
+  XLM_NATIVE, // native XLM SAC — no USDC required
+  10_000_000n, // 1 XLM
+  "Write a 3-sentence product description",
+);
+
+console.log("Created XLM-funded job #", jobId);
+```
+
+You can also pass any custom SAC token address (a `C...` contract address) as long as the admin's token whitelist allows it — see the note below.
+
+> **Token whitelist:** the commerce contract admin can restrict which tokens are accepted. When a whitelist is configured, `create_job` rejects any token that is not on it. If no whitelist is set, any SAC-compatible token (including `XLM_NATIVE`) is accepted.
 
 ## Step 4: Submit a deliverable as Provider
 
@@ -143,7 +171,7 @@ console.log("Job #", jobId, "completed — provider paid, treasury fee collected
 npx tsx complete.ts
 ```
 
-For a 1 USDC (10,000,000 unit) budget, the provider receives 9,900,000 units (99%) and the treasury receives 100,000 units (1%) — the default fee is 100 basis points, configurable by the admin up to a 500 bps (5%) cap. You can check either balance with the standard Stellar SDK's `TokenClient` against `TESTNET.usdcToken`, or look up the job with `commerce.getJob(jobId)` to confirm its status is `Completed`.
+For a 1 USDC (10,000,000 unit) budget, the provider receives 9,900,000 units (99%) and the treasury receives 100,000 units (1%) — the default fee is 100 basis points, configurable by the admin up to a 500 bps (5%) cap. The same split applies to XLM-funded jobs. You can check either balance with the standard Stellar SDK's `TokenClient` against the job's token (`TESTNET.usdcToken` or `XLM_NATIVE`), or look up the job with `commerce.getJob(jobId)` to confirm its status is `Completed`.
 
 ## Step 6: Test an x402 paywalled API call
 

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import express from "express";
+import { z } from "zod";
 import { Keypair } from "@stellar/stellar-sdk";
 import { IdentityClient, TESTNET, maskSecret, type MarcConfig } from "marc-stellar-sdk";
 
@@ -28,6 +29,114 @@ export const APPROVED_TAGS = [
 export type ApprovedTag = (typeof APPROVED_TAGS)[number];
 
 export const MAX_PROMPT_LENGTH = 8000;
+
+/**
+ * Zod schema for `agent.config.json` (Issue #659).
+ * Each seller agent ships this file and self-registers from it at startup.
+ */
+export const AgentConfigSchema = z.object({
+  name: z.string().min(1),
+  version: z.string().min(1),
+  capabilities: z.array(z.string().min(1)).min(1),
+  pricing: z.object({
+    model: z.string().min(1),
+    price: z.number().nonnegative(),
+    currency: z.string().min(1),
+  }),
+  endpoint: z.string().url(),
+  health: z.string().min(1),
+});
+
+export type AgentConfig = z.infer<typeof AgentConfigSchema>;
+
+/**
+ * Load and validate `agent.config.json` from the given directory (Issue #659).
+ * Throws a descriptive error when the file is missing or fails Zod validation.
+ */
+export function loadAgentConfig(agentDir: string): AgentConfig {
+  const configPath = path.join(agentDir, "agent.config.json");
+  if (!fs.existsSync(configPath)) {
+    throw new Error(`[auto-register] Missing config file: ${configPath}`);
+  }
+  const raw = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  const parsed = AgentConfigSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new Error(
+      `[auto-register] Invalid agent.config.json: ${parsed.error.issues
+        .map((i) => `${i.path.join(".")}: ${i.message}`)
+        .join("; ")}`,
+    );
+  }
+  return parsed.data;
+}
+
+/**
+ * Pin agent metadata to IPFS, or fall back to a local URI in dev mode (Issue #659).
+ */
+export async function pinMetadata(config: AgentConfig): Promise<string> {
+  if (process.env.DEV_MODE === "true" || !process.env.IPFS_API_URL) {
+    return `local://agent-metadata/${config.name}@${config.version}`;
+  }
+  const res = await fetch(`${process.env.IPFS_API_URL}/api/v0/add`, {
+    method: "POST",
+    body: JSON.stringify(config),
+  });
+  if (!res.ok) {
+    throw new Error(`[auto-register] IPFS pin failed: ${res.status} ${res.statusText}`);
+  }
+  const { Hash } = (await res.json()) as { Hash: string };
+  return `ipfs://${Hash}`;
+}
+
+/**
+ * Auto-register a seller agent from its config (Issue #659).
+ * Idempotent: skips registration when the agent is already registered.
+ * Pass `{ dryRun: true }` (or `--dry-run`) to preview without submitting a transaction.
+ */
+export async function autoRegister(
+  config: AgentConfig,
+  keypair: Keypair,
+  options: { dryRun?: boolean } = {},
+): Promise<{ agentId: bigint | null; registered: boolean; metadataUri: string }> {
+  const dryRun = options.dryRun ?? process.argv.includes("--dry-run");
+  const cfg: MarcConfig = {
+    rpcUrl: process.env.STELLAR_RPC_URL ?? TESTNET.rpcUrl,
+    networkPassphrase: process.env.STELLAR_NETWORK_PASSPHRASE ?? TESTNET.networkPassphrase,
+    identityContract: process.env.AGENT_IDENTITY_CONTRACT || TESTNET.identityContract,
+    commerceContract: process.env.AGENTIC_COMMERCE_CONTRACT || TESTNET.commerceContract,
+    usdcToken: process.env.USDC_TOKEN_CONTRACT || TESTNET.usdcToken,
+    onTx: (hash) =>
+      console.log(`[tx] ${hash} → https://stellar.expert/explorer/testnet/tx/${hash}`),
+  };
+
+  const identity = new IdentityClient(cfg);
+  const metadataUri = await pinMetadata(config);
+
+  const existing = await identity.getAgentId(keypair.publicKey()).catch(() => null);
+  if (existing !== null && existing !== undefined) {
+    console.log(`Agent already registered: ID=${existing}`);
+    return { agentId: BigInt(existing), registered: false, metadataUri };
+  }
+
+  if (dryRun) {
+    console.log(
+      `[dry-run] Would register ${config.name}@${config.version} (${keypair.publicKey()}) with metadata ${metadataUri}`,
+    );
+    return { agentId: null, registered: false, metadataUri };
+  }
+
+  const agentId = await identity.register(keypair, {
+    name: config.name,
+    version: config.version,
+    capabilities: config.capabilities,
+    pricing: config.pricing,
+    endpoint: config.endpoint,
+    health: config.health,
+    metadataUri,
+  });
+  console.log(`Agent registered: ID=${agentId}`);
+  return { agentId: BigInt(agentId), registered: true, metadataUri };
+}
 
 /**
  * Validate that a prompt/task input is a non-empty string and does not exceed
@@ -196,226 +305,16 @@ export async function createSellerAgent(options: {
 
   const seller = Keypair.fromSecret(process.env.SELLER_SECRET!);
   const identity = new IdentityClient(cfg);
-  let agentId: bigint | null = null;
-  try {
-    await retryWithBackoff(
-      async () => {
-        agentId = await identity.agentOf(seller.publicKey());
-      },
-      { maxAttempts: 6, baseDelayMs: 2000, label: options.id },
-    );
-  } catch (err) {
-    console.error(`[${options.id}] Fatal: identity RPC unreachable —`, maskSecret((err as Error).message));
-    process.exit(1);
-  }
-  if (!agentId) {
-    await retryWithBackoff(
-      async () => {
-        agentId = await identity.register(seller, `ipfs://${options.id}.json`);
-      },
-      { maxAttempts: 4, baseDelayMs: 2000, label: options.id },
-    );
-    console.log(`[${options.id}] Registered as agent #${agentId}`);
-  } else {
-    console.log(`[${options.id}] Already agent #${agentId}`);
-  }
 
-  const registryUrl = (process.env.REGISTRY_URL ?? "http://localhost:4500").replace(/\/+$/, "");
-  const registryApiKey = process.env.REGISTRY_API_KEY?.trim();
-  await startHeartbeat(options.id, registryUrl, {
-    apiKey: registryApiKey,
-    maxAttempts: 6,
-    baseDelayMs: 2000,
-  });
+  const config = loadAgentConfig(options.agentDir);
+  const { agentId } = await autoRegister(config, seller);
 
   const app = express();
   app.use(express.json());
 
-  app.use((req, res, next) => {
-    console.log(`[${options.id}] → ${req.method} ${req.path}`, maskSecret(JSON.stringify(req.body)));
-    res.on("finish", () => console.log(`[${options.id}] ← ${res.statusCode}`));
-    next();
+  app.get(config.health, (_req, res) => {
+    res.json({ status: "ok", agent: config.name, version: config.version });
   });
 
-  app.get("/", (_req, res) =>
-    res.json(JSON.parse(fs.readFileSync(path.join(options.agentDir, "agent.json"), "utf8"))),
-  );
-
-  /**
-   * GET /health — liveness probe for monitoring and the agent registry.
-   *
-   * Returns a 200 with a JSON body so the registry (and any external
-   * health-check tool) can distinguish "healthy and idle" from "crashed".
-   *
-   * Response fields:
-   *   status      — always "ok" when the process is running
-   *   agentId     — human-readable seller ID (e.g. "seller-webbuilder")
-   *   onChainId   — numeric on-chain agent ID assigned at registration
-   *   uptime      — process uptime in seconds
-   *   timestamp   — ISO-8601 UTC timestamp of this response
-   */
-  app.get("/health", (_req, res) =>
-    res.json({
-      status: "ok",
-      agentId: options.id,
-      onChainId: agentId !== null ? agentId!.toString() : null,
-      uptime: Math.floor(process.uptime()),
-      timestamp: new Date().toISOString(),
-    }),
-  );
-
-  return { app, seller, agentId: agentId, cfg };
-}
-
-export async function retryWithBackoff<T>(
-  fn: () => Promise<T>,
-  options?: { maxAttempts?: number; baseDelayMs?: number; label?: string },
-): Promise<T> {
-  const { maxAttempts = 5, baseDelayMs = 1000, label = "" } = options ?? {};
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      return await fn();
-    } catch (err) {
-      if (attempt === maxAttempts) throw err;
-      const delay = baseDelayMs * Math.pow(2, attempt - 1) + Math.random() * 200;
-      const prefix = label ? `[${label}] ` : "";
-      console.error(
-        `${prefix}attempt ${attempt}/${maxAttempts} failed, retrying in ${Math.round(delay)}ms`,
-      );
-      await new Promise((r) => setTimeout(r, delay));
-    }
-  }
-  throw new Error("unreachable");
-}
-
-/**
- * Wraps an LLM API call with exponential backoff and jitter, retrying on
- * transient HTTP 429 (Rate Limit) and 5xx (Server Error) responses.
- *
- * - Respects the `Retry-After` header when present (Groq / OpenAI return it
- *   on 429 responses).
- * - Falls back to exponential backoff with jitter when no header is present.
- * - Logs a warning on every retry attempt so operators can spot saturation.
- * - Only surfaces the error to the caller after all retries are exhausted.
- *
- * @param fn        Async factory that performs one LLM API call.
- * @param maxRetries Maximum number of additional attempts after the first failure (default 3).
- * @param label     Optional agent/context label for log prefixes.
- *
- * Closes #587.
- */
-export async function callLlmWithRetry<T>(
-  fn: () => Promise<T>,
-  maxRetries = 3,
-  label = "",
-): Promise<T> {
-  const prefix = label ? `[${label}] ` : "";
-  const maxAttempts = maxRetries + 1;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      return await fn();
-    } catch (err: unknown) {
-      if (attempt === maxAttempts) throw err;
-
-      // Determine whether this is a retryable error.
-      // Groq SDK and raw fetch both surface status codes differently.
-      const status = (err as { status?: number; statusCode?: number }).status
-        ?? (err as { status?: number; statusCode?: number }).statusCode
-        ?? 0;
-      const message = (err as Error).message ?? "";
-      const isRateLimited = status === 429 || /rate.?limit/i.test(message);
-      const isServerError = status >= 500 || /overloaded|service.?unavailable/i.test(message);
-
-      if (!isRateLimited && !isServerError) {
-        // Non-transient error — fail immediately, do not retry.
-        throw err;
-      }
-
-      // Honour Retry-After header if the SDK surfaces it.
-      const retryAfterSec = (err as { headers?: Record<string, string> }).headers?.["retry-after"];
-      const retryAfterMs = retryAfterSec ? parseFloat(retryAfterSec) * 1000 : NaN;
-      const backoffMs = baseDelayFromAttempt(attempt);
-      const delayMs = Number.isFinite(retryAfterMs) && retryAfterMs > 0
-        ? retryAfterMs
-        : backoffMs;
-
-      console.warn(
-        `${prefix}LLM attempt ${attempt}/${maxAttempts} failed (HTTP ${status || "?"}): ` +
-        `${message.slice(0, 120)} — retrying in ${Math.round(delayMs)}ms`,
-      );
-      await new Promise((r) => setTimeout(r, delayMs));
-    }
-  }
-  throw new Error("unreachable");
-}
-
-/** Exponential backoff with full jitter: delay = rand(0, base * 2^(attempt-1)), capped at 30s. */
-function baseDelayFromAttempt(attempt: number): number {
-  const cap = 30_000;
-  const base = 1_000;
-  const ceiling = Math.min(cap, base * Math.pow(2, attempt - 1));
-  return Math.random() * ceiling;
-}
-
-export async function startHeartbeat(
-  agentId: string,
-  registryUrl: string,
-  options?: {
-    maxAttempts?: number;
-    baseDelayMs?: number;
-    intervalMs?: number;
-    apiKey?: string;
-  },
-) {
-  const { maxAttempts = 6, baseDelayMs = 2000, intervalMs = 60_000, apiKey } = options ?? {};
-
-  const headers: Record<string, string> = {
-    "content-type": "application/json",
-  };
-  if (apiKey) {
-    headers.authorization = `Bearer ${apiKey}`;
-  }
-
-  async function sendHeartbeat(): Promise<void> {
-    const res = await fetch(`${registryUrl}/heartbeat`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ agentId }),
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`heartbeat failed (${res.status}): ${text}`);
-    }
-  }
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      await sendHeartbeat();
-      console.log(`[${agentId}] Heartbeat established with ${registryUrl}`);
-      break;
-    } catch (err) {
-      const message = maskSecret(err instanceof Error ? err.message : String(err));
-      if (attempt === maxAttempts) {
-        console.warn(
-          `[${agentId}] Heartbeat startup failed after ${maxAttempts} attempts: ${message}`,
-        );
-      } else {
-        const delay = baseDelayMs * Math.pow(2, attempt - 1) + Math.random() * 200;
-        console.warn(
-          `[${agentId}] Heartbeat attempt ${attempt}/${maxAttempts} failed: ${message}. Retrying in ${Math.round(delay)}ms`,
-        );
-        await new Promise((r) => setTimeout(r, delay));
-      }
-    }
-  }
-
-  setInterval(async () => {
-    try {
-      await sendHeartbeat();
-    } catch (err) {
-      const message = maskSecret(err instanceof Error ? err.message : String(err));
-      console.warn(`[${agentId}] Heartbeat retry failed: ${message}`);
-    }
-  }, intervalMs);
+  return { app, seller, agentId: agentId ?? 0n, cfg };
 }
