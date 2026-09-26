@@ -1,3 +1,4 @@
+import { marcPaywallCore } from "./marcPaywallCore.js";
 import type { MarcPaywallCoreOptions } from "./marcPaywallCore.js";
 
 export type MarcPaywallHonoOptions = MarcPaywallCoreOptions;
@@ -9,19 +10,18 @@ type HonoContext = {
 
 export function marcPaywallHono(opts: MarcPaywallHonoOptions) {
   return async (c: HonoContext, next: () => Promise<void>) => {
-    if (!c.req.header("x-payment")) {
-      return c.json(
-        {
-          error: "payment_required",
-          payTo: opts.payTo,
-          price: opts.price,
-          network: opts.network ?? "stellar:testnet",
-          token: opts.token,
-          description: opts.description ?? "MARC-protected API call",
-        },
-        402,
-      );
+    const result = await marcPaywallCore({
+      ...opts,
+      headers: {
+        "x-payment": c.req.header("x-payment"),
+        "x-payment-tx": c.req.header("x-payment-tx"),
+      },
+    });
+
+    if (!result.ok) {
+      return c.json(result.body, result.status);
     }
+
     return next();
   };
 }

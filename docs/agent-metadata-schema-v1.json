@@ -1,0 +1,76 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://handsoff.dev/schemas/agent-metadata-schema-v1.json",
+  "title": "Agent Metadata v1",
+  "description": "Validated metadata document referenced by an agent's metadata_uri. Pinned to IPFS and addressed by CID.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "version", "capabilities"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Human-readable agent name."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$",
+      "description": "Semantic version of the metadata document."
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 2048
+    },
+    "capabilities": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64
+      },
+      "description": "List of capability identifiers the agent exposes."
+    },
+    "pricing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model", "currency"],
+      "properties": {
+        "model": {
+          "type": "string",
+          "enum": ["free", "per-job", "per-token", "subscription", "metered"]
+        },
+        "currency": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 12
+        },
+        "amount": {
+          "type": "number",
+          "minimum": 0
+        },
+        "unit": {
+          "type": "string",
+          "maxLength": 32
+        }
+      }
+    },
+    "endpoint": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https?://",
+      "description": "HTTPS endpoint the agent is reachable at."
+    },
+    "tags": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 32 }
+    },
+    "license": {
+      "type": "string",
+      "maxLength": 64
+    }
+  }
+}
