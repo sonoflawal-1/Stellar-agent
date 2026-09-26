@@ -217,3 +217,5 @@ MIT
 
 <!-- handsoff-issue-538 -->
 - #538: [Feature] Add batch job lookup get_jobs in agentic-commerce
+<!-- handsoff-issue-538 -->
+- #538: [Feature] Add batch job lookup get_jobs in agentic-commerce (follow-up)
