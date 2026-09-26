@@ -1330,9 +1330,37 @@
         '<button class="btn btn-primary" onclick="window.__showRegisterAgent()">+ Register Agent</button></div>' +
         skeletonAgentCards(4),
     );
+    const skillsMatch = Boolean(
+      Array.isArray(a.skills)
+        ? a.skills.some(function (s) {
+            return String(s).toLowerCase().includes(q);
+          })
+        : typeof a.skill === "string" && a.skill.toLowerCase().includes(q),
+    );
+    const uriMatch = Boolean(a.uri && String(a.uri).toLowerCase().includes(q));
+    const ownerMatch = Boolean(a.owner && String(a.owner).toLowerCase().includes(q));
+    const idMatch = Boolean(a.id !== undefined && String(a.id).toLowerCase().includes(q));
 
-    await loadAgents();
+    return nameMatch || descMatch || tagsMatch || skillsMatch || uriMatch || ownerMatch || idMatch;
+  }
+
+  async function renderAgents() {
+    if (!state.agents) {
+      setPage(
+        '<div class="section-header"><div><div class="section-title">Agents</div><div class="page-subtitle" style="margin-top:2px">On-chain identity registry for AI agents</div></div>' +
+          '<button class="btn btn-primary" onclick="window.__showRegisterAgent()">+ Register Agent</button></div>' +
+          skeletonList(3),
+      );
+      await loadAgents();
+    }
+
     const agents = state.agents || [];
+    const searchTerm = (state.agentSearch || "").trim();
+    const filtered = searchTerm
+      ? agents.filter(function (a) {
+          return matchAgent(a, searchTerm);
+        })
+      : agents;
 
     // #583 — apply agent search filter
     var agentQuery = (state.agentSearch || "").toLowerCase().trim();
@@ -1422,6 +1450,18 @@
         ')">Next</button></div>';
     }
 
+    const searchToolbar =
+      '<div class="agent-search-wrap">' +
+      '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
+      '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>' +
+      '<input type="search" id="agent-search" class="agent-search-input" ' +
+      'placeholder="Search agents by name, skill, or tag..." ' +
+      'value="' +
+      escapeHtml(state.agentSearch || "") +
+      '" ' +
+      'oninput="window.__searchAgents(this.value)" />' +
+      "</div>";
+
     setPage(
       '<div class="section-header"><div><div class="section-title">Agents</div><div class="page-subtitle" style="margin-top:2px">On-chain identity registry for AI agents</div></div>' +
         '<button class="btn btn-primary" onclick="window.__showRegisterAgent()">+ Register Agent</button></div>' +
@@ -1429,7 +1469,7 @@
         '<div class="stat-card"><div class="stat-card-top"><div class="stat-label">Registered</div>' +
         '<div class="stat-icon blue"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg></div>' +
         '</div><div class="stat-value">' +
-        agents.length +
+        (searchTerm ? filtered.length : agents.length) +
         "</div></div>" +
         '<div class="stat-card"><div class="stat-card-top"><div class="stat-label">Network</div>' +
         '<div class="stat-icon green"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></div>' +
