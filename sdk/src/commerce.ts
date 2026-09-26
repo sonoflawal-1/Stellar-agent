@@ -235,7 +235,7 @@ export class CommerceClient extends BaseClient {
    * Functionally identical to {@link createJob} — included for API symmetry
    * with patterns that distinguish "fire-and-forget" from "wait for finality".
    *
-   * @param client - The client's Keypair. Funds are pulled from this account.
+   * @param client - The client's Signer. Funds are pulled from this account.
    * @param provider - The service provider's Stellar address (G...).
    * @param evaluator - The evaluator's Stellar address (G...).
    * @param token - The token contract address (C...) for payment.
@@ -245,7 +245,7 @@ export class CommerceClient extends BaseClient {
    * @throws {Error} If `budget <= 0`, `budget` exceeds `i128` max, or the transaction fails.
    */
   async createJobAndWait(
-    client: Keypair,
+    client: Signer,
     provider: string,
     evaluator: string,
     token: string,
@@ -256,12 +256,125 @@ export class CommerceClient extends BaseClient {
   }
 
   /**
+   * Check the current token allowance granted from `owner` to `spender`.
+   *
+   * @param owner - The token owner's Stellar address.
+   * @param spender - The approved spender's Stellar address (e.g. commerce contract).
+   * @param token - The SAC token contract address.
+   * @returns The current allowance as a `bigint`.
+   */
+  async allowance(owner: string, spender: string, token: string): Promise<bigint> {
+    const tokenContract = new Contract(token);
+    const op = tokenContract.call(
+      "allowance",
+      new Address(owner).toScVal(),
+      new Address(spender).toScVal(),
+    );
+    return await this.simulate(op, (v) => BigInt(scValToNative(v) as string));
+  }
+
+  /**
+   * Submit an `approve` operation on the token contract to set an allowance for `spender`.
+   *
+   * @param client - The account granting the allowance (Signer).
+   * @param spender - The address authorized to spend tokens (e.g. commerce contract).
+   * @param token - The SAC token contract address.
+   * @param amount - The approved allowance amount in smallest token units.
+   * @param expirationLedger - Optional expiration ledger sequence. Defaults to current + 1000.
+   */
+  async approve(
+    client: Signer,
+    spender: string,
+    token: string,
+    amount: bigint,
+    expirationLedger?: number,
+  ): Promise<void> {
+    const clientAddr = signerPublicKey(client);
+    const tokenContract = new Contract(token);
+    let liveUntil = expirationLedger;
+    if (!liveUntil) {
+      try {
+        const latest = await this.server.getLatestLedger();
+        liveUntil = latest.sequence + 1000;
+      } catch {
+        liveUntil = 100_000_000;
+      }
+    }
+    const op = tokenContract.call(
+      "approve",
+      new Address(clientAddr).toScVal(),
+      new Address(spender).toScVal(),
+      nativeToScVal(amount, { type: "i128" }),
+      nativeToScVal(liveUntil, { type: "u32" }),
+    );
+    await this.invoke(client, op, () => undefined, "token:approve");
+  }
+
+  /**
+   * Check token allowance for the commerce escrow contract, submit an approval transaction
+   * if allowance is insufficient, and then create and fund the job (#546).
+   *
+   * Works cleanly with both Keypair and WalletSigner.
+   *
+   * @param client - The client's Signer (Keypair or WalletSigner).
+   * @param provider - The service provider's Stellar address.
+   * @param evaluator - The evaluator's Stellar address.
+   * @param token - The token contract address for payment.
+   * @param budget - The escrow budget in smallest token units.
+   * @param description - Human-readable description of the work.
+   * @returns The newly created job ID as a `bigint`.
+   */
+  async approveAndCreateJob(
+    client: Signer,
+    provider: string,
+    evaluator: string,
+    token: string,
+    budget: bigint,
+    description: string,
+  ): Promise<bigint> {
+    if (budget <= 0n) throw new Error("budget must be greater than 0");
+    if (budget > MAX_I128) throw new Error("budget exceeds i128 max");
+
+    const clientAddress = signerPublicKey(client);
+    let currentAllowance = 0n;
+    try {
+      currentAllowance = await this.allowance(
+        clientAddress,
+        this.contract.address,
+        token,
+      );
+    } catch {
+      currentAllowance = 0n;
+    }
+
+    if (currentAllowance < budget) {
+      await this.approve(client, this.contract.address, token, budget);
+    }
+
+    return await this.createJob(client, provider, evaluator, token, budget, description);
+  }
+
+  /**
+   * Helper alias for {@link approveAndCreateJob} (#546).
+   */
+  async createJobWithApproval(
+    client: Signer,
+    provider: string,
+    evaluator: string,
+    token: string,
+    budget: bigint,
+    description: string,
+  ): Promise<bigint> {
+    return this.approveAndCreateJob(client, provider, evaluator, token, budget, description);
+  }
+
+  /**
    * Provider submits a deliverable URL or content for a funded job.
    *
    * Transitions the job from `Funded` → `Submitted` status. Only the assigned
    * provider address can call this method successfully.
    *
-   * @param provider - The provider's Keypair. Must match the job's `provider` field.
+   * @param provider - The provider's Signer. Must match the job's `provider` field.
    * @param jobId - The ID of the job to submit a deliverable for.
    * @param deliverable - URL or content string representing the completed work
    *                      (e.g. an IPFS URL, a raw text summary, or a hosted file link).
@@ -274,7 +387,7 @@ export class CommerceClient extends BaseClient {
    * await commerce.submit(providerKeypair, jobId, "https://ipfs.io/ipfs/Qm...");
    * ```
    */
-  async submit(provider: Keypair, jobId: bigint, deliverable: string): Promise<void> {
+  async submit(provider: Signer, jobId: bigint, deliverable: string): Promise<void> {
     const op = this.contract.call(
       "submit",
       new Address(signerPublicKey(provider)).toScVal(),

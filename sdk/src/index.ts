@@ -1,4 +1,6 @@
 export * from "./types.js";
+export * from "./events.js";
+export * from "./errors.js";
 export { formatAmount, isValidMetadataUri } from "./format.js";
 export { IdentityClient } from "./identity.js";
 export { CommerceClient } from "./commerce.js";
