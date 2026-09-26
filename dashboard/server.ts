@@ -87,6 +87,27 @@ const allowedOrigins = [
   process.env.ALLOWED_ORIGIN,
 ].filter(Boolean) as string[];
 
+const mutatingBuckets = new Map<string, { count: number; resetAt: number }>();
+const MUTATING_RATE_LIMIT = Number(process.env.MUTATING_RATE_LIMIT ?? 30);
+const MUTATING_RATE_WINDOW_MS = Number(process.env.MUTATING_RATE_WINDOW_MS ?? 60_000);
+
+function rateLimitMutating(req: Request, res: Response, next: NextFunction) {
+  const key = req.ip || "unknown";
+  const now = Date.now();
+  const bucket = mutatingBuckets.get(key);
+  if (!bucket || now >= bucket.resetAt) {
+    mutatingBuckets.set(key, { count: 1, resetAt: now + MUTATING_RATE_WINDOW_MS });
+    next();
+    return;
+  }
+  if (bucket.count >= MUTATING_RATE_LIMIT) {
+    res.status(429).json({ error: "rate limit exceeded" });
+    return;
+  }
+  bucket.count += 1;
+  next();
+}
+
 function isStellarAddress(value: string): boolean {
   if (typeof value !== "string") return false;
   if (!StrKey.isValidEd25519PublicKey(value)) return false;
@@ -238,7 +259,19 @@ app.use(
   }),
 );
 
-app.get("/health", (_req, res) => res.json({ status: "ok", timestamp: new Date().toISOString() }));
+app.get("/health", async (_req, res) => {
+  try {
+    await server.getLatestLedger();
+    res.json({ status: "ok", rpc: "ok", timestamp: new Date().toISOString() });
+  } catch (err: unknown) {
+    res.status(503).json({
+      status: "degraded",
+      rpc: "error",
+      error: (err as Error).message,
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
 app.get("/healthz", (_req, res) => res.send("ok"));
 
 // --- Authentication Endpoints ---
@@ -539,7 +572,10 @@ app.get("/api/stream", (req, res) => {
   events.on("invalidate", onInvalidate);
 
   // heartbeat
-  const hb = setInterval(() => send("ping", { t: Date.now() }), 25000);
+  const hb = setInterval(
+    () => send("ping", { t: Date.now(), retryAfterMs: 25_000 }),
+    25000,
+  );
 
   req.on("close", () => {
     clearInterval(hb);
@@ -790,6 +826,7 @@ async function buildTxXdr(publicKey: string, op: xdr.Operation): Promise<string>
 // POST /api/build/register — build unsigned register agent tx
 app.post(
   "/api/build/register",
+  rateLimitMutating,
   optionalAuthMiddleware,
   requireDashboardWallet,
   async (req, res) => {
@@ -812,6 +849,7 @@ app.post(
 // POST /api/build/createJob — build unsigned create_job tx
 app.post(
   "/api/build/createJob",
+  rateLimitMutating,
   optionalAuthMiddleware,
   requireDashboardWallet,
   async (req, res) => {
@@ -846,7 +884,7 @@ app.post(
 );
 
 // POST /api/build/submit — build unsigned submit tx
-app.post("/api/build/submit", optionalAuthMiddleware, requireDashboardWallet, async (req, res) => {
+app.post("/api/build/submit", rateLimitMutating, optionalAuthMiddleware, requireDashboardWallet, async (req, res) => {
   try {
     const parsed = buildUnsignedActionSchema.parse(req.body);
     const op = commerceContract.call(
@@ -866,6 +904,7 @@ app.post("/api/build/submit", optionalAuthMiddleware, requireDashboardWallet, as
 // POST /api/build/complete — build unsigned complete tx
 app.post(
   "/api/build/complete",
+  rateLimitMutating,
   optionalAuthMiddleware,
   requireDashboardWallet,
   async (req, res) => {
@@ -886,7 +925,7 @@ app.post(
 );
 
 // POST /api/build/cancel — build unsigned cancel tx
-app.post("/api/build/cancel", optionalAuthMiddleware, requireDashboardWallet, async (req, res) => {
+app.post("/api/build/cancel", rateLimitMutating, optionalAuthMiddleware, requireDashboardWallet, async (req, res) => {
   try {
     const parsed = buildUnsignedActionSchema.parse(req.body);
     const op = commerceContract.call(
@@ -903,7 +942,7 @@ app.post("/api/build/cancel", optionalAuthMiddleware, requireDashboardWallet, as
 });
 
 // POST /api/submit — submit a Freighter-signed transaction
-app.post("/api/submit", optionalAuthMiddleware, async (req, res) => {
+app.post("/api/submit", rateLimitMutating, optionalAuthMiddleware, async (req, res) => {
   try {
     const parsed = submitXdrSchema.parse(req.body);
     const tx = TransactionBuilder.fromXDR(parsed.signedXdr, cfg.networkPassphrase);
