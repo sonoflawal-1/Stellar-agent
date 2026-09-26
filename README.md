@@ -217,3 +217,6 @@ MIT
 
 <!-- handsoff-issue-646 -->
 - #646: feat(contracts): implement on-chain agent reputation scoring system
+
+<!-- handsoff-issue-648 -->
+- #648: feat(dashboard): add real-time job feed with WebSocket live updates
