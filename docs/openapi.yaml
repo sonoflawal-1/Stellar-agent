@@ -1,0 +1,467 @@
+openapi: 3.1.0
+info:
+  title: Bear Protocol Dashboard API
+  version: 1.0.0
+  description: |
+    Machine-readable OpenAPI 3.1 specification for the Bear Protocol dashboard API.
+    All routes are served by `dashboard/server.ts` and require an API key unless
+    otherwise noted.
+  license:
+    name: MIT
+servers:
+  - url: http://localhost:3000
+    description: Local development
+  - url: https://api.bearprotocol.xyz
+    description: Production
+security:
+  - ApiKeyAuth: []
+tags:
+  - name: Health
+    description: Service liveness and readiness
+  - name: Agents
+    description: Agent registry and lifecycle
+  - name: Tasks
+    description: Task submission and tracking
+  - name: Metrics
+    description: Protocol metrics and analytics
+  - name: Config
+    description: Runtime configuration
+paths:
+  /api/health:
+    get:
+      tags: [Health]
+      summary: Liveness probe
+      security: []
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: ok
+                uptime: 12345
+  /api/ready:
+    get:
+      tags: [Health]
+      summary: Readiness probe
+      security: []
+      responses:
+        '200':
+          description: Service is ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: ready
+                uptime: 12345
+  /api/agents:
+    get:
+      tags: [Agents]
+      summary: List registered agents
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: A paginated list of agents
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Agent'
+              example:
+                - id: agent_01HXYZ
+                  name: oracle-1
+                  status: active
+                  createdAt: '2024-01-01T00:00:00Z'
+    post:
+      tags: [Agents]
+      summary: Register a new agent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentCreate'
+            example:
+              name: oracle-1
+              endpoint: https://oracle.example.com
+      responses:
+        '201':
+          description: Agent created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Agent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /api/agents/{id}:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+    get:
+      tags: [Agents]
+      summary: Get an agent by id
+      responses:
+        '200':
+          description: Agent found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Agent'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Agents]
+      summary: Deregister an agent
+      responses:
+        '204':
+          description: Agent removed
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/agents/{id}/heartbeat:
+    post:
+      tags: [Agents]
+      summary: Record an agent heartbeat
+      parameters:
+        - $ref: '#/components/parameters/AgentId'
+      responses:
+        '200':
+          description: Heartbeat recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/tasks:
+    get:
+      tags: [Tasks]
+      summary: List tasks
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, running, completed, failed]
+      responses:
+        '200':
+          description: A paginated list of tasks
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Task'
+    post:
+      tags: [Tasks]
+      summary: Submit a task
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskCreate'
+            example:
+              agentId: agent_01HXYZ
+              payload:
+                action: summarize
+      responses:
+        '201':
+          description: Task accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /api/tasks/{id}:
+    parameters:
+      - $ref: '#/components/parameters/TaskId'
+    get:
+      tags: [Tasks]
+      summary: Get a task by id
+      responses:
+        '200':
+          description: Task found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/tasks/{id}/cancel:
+    post:
+      tags: [Tasks]
+      summary: Cancel a running task
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      responses:
+        '200':
+          description: Task cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/metrics:
+    get:
+      tags: [Metrics]
+      summary: Get protocol metrics
+      responses:
+        '200':
+          description: Current metrics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Metrics'
+  /api/metrics/agents:
+    get:
+      tags: [Metrics]
+      summary: Get per-agent metrics
+      responses:
+        '200':
+          description: Agent metrics
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Metrics'
+  /api/metrics/tasks:
+    get:
+      tags: [Metrics]
+      summary: Get task metrics
+      responses:
+        '200':
+          description: Task metrics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Metrics'
+  /api/config:
+    get:
+      tags: [Config]
+      summary: Read runtime configuration
+      responses:
+        '200':
+          description: Current configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Config'
+    put:
+      tags: [Config]
+      summary: Update runtime configuration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Config'
+      responses:
+        '200':
+          description: Updated configuration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Config'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /api/version:
+    get:
+      tags: [Health]
+      summary: Get API version
+      security: []
+      responses:
+        '200':
+          description: Version information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version:
+                    type: string
+                required: [version]
+              example:
+                version: 1.0.0
+  /api/stats:
+    get:
+      tags: [Metrics]
+      summary: Aggregate protocol statistics
+      responses:
+        '200':
+          description: Aggregate statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Metrics'
+  /api/logs:
+    get:
+      tags: [Config]
+      summary: Stream recent server logs
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Recent log entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    level:
+                      type: string
+                    message:
+                      type: string
+                    timestamp:
+                      type: string
+                      format: date-time
+                  required: [level, message, timestamp]
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key issued by the Bear Protocol dashboard.
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    Offset:
+      name: offset
+      in: query
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+    AgentId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    TaskId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+  responses:
+    BadRequest:
+      description: Invalid request payload
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        uptime:
+          type: number
+      required: [status]
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+      required: [error]
+    Agent:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum: [active, inactive, degraded]
+        endpoint:
+          type: string
+          format: uri
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, name, status, createdAt]
+    AgentCreate:
+      type: object
+      properties:
+        name:
+          type: string
+        endpoint:
+          type: string
+          format: uri
+      required: [name, endpoint]
+    Task:
+      type: object
+      properties:
+        id:
+          type: string
+        agentId:
+          type: string
+        status:
+          type: string
+          enum: [pending, running, completed, failed]
+        payload:
+          type: object
+          additionalProperties: true
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, agentId, status, createdAt]
+    TaskCreate:
+      type: object
+      properties:
+        agentId:
+          type: string
+        payload:
+          type: object
+          additionalProperties: true
+      required: [agentId, payload]
+    Metrics:
+      type: object
+      properties:
+        agents:
+          type: integer
+        tasks:
+          type: integer
+        uptime:
+          type: number
+      required: [agents, tasks]
+    Config:
+      type: object
+      properties:
+        logLevel:
+          type: string
+          enum: [debug, info, warn, error]
+        maxAgents:
+          type: integer
+        heartbeatIntervalMs:
+          type: integer
+      required: [logLevel]
