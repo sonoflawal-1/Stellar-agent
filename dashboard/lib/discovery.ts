@@ -20,18 +20,20 @@ const DEFAULT_AGENT_PAGE_SIZE = 24;
 // Event emitter used to notify server of invalidations for SSE
 export const events = new EventEmitter();
 
+const MAX_DISCOVERY_PROBE_ID = Number(process.env.MAX_DISCOVERY_PROBE_ID ?? 1_000_000);
+
 /** Find the max existing ID via exponential probe + binary search */
 async function findMaxId(getter: (id: bigint) => Promise<unknown | null>): Promise<number> {
   // Exponential probe
   let probe = 1;
-  while (probe <= 1024) {
+  while (probe <= MAX_DISCOVERY_PROBE_ID) {
     const result = await getter(BigInt(probe));
     if (result === null) break;
-    probe *= 2;
+    probe = Math.min(probe * 2, MAX_DISCOVERY_PROBE_ID + 1);
   }
   // Binary search between probe/2 and probe
   let lo = Math.floor(probe / 2);
-  let hi = probe;
+  let hi = Math.min(probe, MAX_DISCOVERY_PROBE_ID);
   while (lo < hi) {
     const mid = Math.ceil((lo + hi) / 2);
     const result = await getter(BigInt(mid));
