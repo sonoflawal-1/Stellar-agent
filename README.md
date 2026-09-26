@@ -157,6 +157,15 @@ cd dashboard && npm start
 # Visit http://localhost:3000/app
 ```
 
+## Dashboard Theming
+
+The dashboard supports a dark/light mode toggle that respects your OS preference by default and remembers your manual choice.
+
+- **System preference:** On first load, the theme is auto-detected via the `prefers-color-scheme` media query.
+- **Manual toggle:** Clicking the theme toggle sets a `data-theme` attribute (`dark` or `light`) on the `<html>` element and animates the icon on switch.
+- **Persistence:** Your manual choice is stored in `localStorage` under the key `bear-theme` and restored on subsequent visits.
+- **Accessibility:** The toggle exposes an `aria-label` and keeps a visible focus ring in both modes.
+
 ## SDK Usage
 
 ```typescript
