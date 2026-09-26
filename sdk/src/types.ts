@@ -45,6 +45,19 @@ export interface Agent {
  * The string values match the Rust enum variant names emitted by
  * `scValToNative` so we can round-trip without a manual mapping table.
  *
+ * The numeric index of each variant matches the Rust enum declaration in
+ * `agentic-commerce/src/lib.rs`:
+ *
+ * | Index | Variant   |
+ * | ----- | --------- |
+ * | 0     | Open      |
+ * | 1     | Funded    |
+ * | 2     | Submitted |
+ * | 3     | Completed |
+ * | 4     | Rejected  |
+ * | 5     | Cancelled |
+ * | 6     | Disputed  |
+ *
  * NOTE: `Open` is reserved for a future "unfunded intent" flow — the current
  * contract transitions straight from pre-creation to `Funded` during
  * `create_job` because the escrow transfer happens atomically. We keep the
@@ -238,221 +251,52 @@ function resolveDeploymentValues(network: "testnet" | "mainnet") {
  *
  * @example
  * // .env — per-network override (takes priority over STELLAR_RPC_URL)
- * STELLAR_TESTNET_RPC_URL=https://my-rpc-provider.example.com
+ * STELLAR_TESTNET_RPC_URL=http://localhost:8000/soroban/rpc
  */
-export function getEnvRpcUrl(network: "testnet" | "mainnet", defaultRpcUrl: string): string {
-  if (typeof process === "undefined") return defaultRpcUrl;
-  const networkKey = network === "testnet" ? "STELLAR_TESTNET_RPC_URL" : "STELLAR_MAINNET_RPC_URL";
-  return process.env[networkKey] ?? process.env["STELLAR_RPC_URL"] ?? defaultRpcUrl;
+function resolveRpcUrl(network: "testnet" | "mainnet", defaultRpcUrl: string) {
+  const networkSpecific = getEnvValue(
+    network === "testnet" ? "STELLAR_TESTNET_RPC_URL" : "STELLAR_MAINNET_RPC_URL",
+  );
+  const generic = getEnvValue("STELLAR_RPC_URL");
+  return networkSpecific || generic || defaultRpcUrl;
 }
 
 /**
- * Preset configuration for Stellar testnet.
+ * Testnet preset configuration.
  *
- * Defaults to the latest deployed testnet addresses when available, while still
- * allowing environment overrides for custom RPC endpoints or deployment paths.
- *
- * RPC URL resolution order:
- *   `STELLAR_TESTNET_RPC_URL` → `STELLAR_RPC_URL` → `https://soroban-testnet.stellar.org`
+ * Uses the public SDF Soroban RPC endpoint by default. Override via the
+ * `STELLAR_TESTNET_RPC_URL` or `STELLAR_RPC_URL` environment variables.
+ * Contract addresses are resolved from env vars or `deployments/testnet.json`,
+ * falling back to the known testnet deployment.
  */
-export const TESTNET: PresetConfig = {
-  network: "stellar-testnet",
+export const TESTNET: MarcConfig = {
+  rpcUrl: resolveRpcUrl("testnet", "https://soroban-testnet.stellar.org"),
   networkPassphrase: "Test SDF Network ; September 2015",
-  rpcUrl: getEnvRpcUrl("testnet", "https://soroban-testnet.stellar.org"),
   ...resolveDeploymentValues("testnet"),
-  deployer: "GA5VIZYCUM3IUZZNQTTB7YSLJSE5WZ2EI5EGWNLTWQ234SLSH45MPKX3" as Address,
 };
 
 /**
- * Preset configuration for Stellar mainnet.
+ * Mainnet preset configuration.
  *
- * RPC URL resolution order:
- *   `STELLAR_MAINNET_RPC_URL` → `STELLAR_RPC_URL` → `https://soroban-rpc.mainnet.stellar.org`
+ * Uses the public SDF Soroban RPC endpoint by default. Override via the
+ * `STELLAR_MAINNET_RPC_URL` or `STELLAR_RPC_URL` environment variables.
+ * Contract addresses are resolved from env vars or `deployments/mainnet.json`.
  */
-export const MAINNET: PresetConfig = {
-  network: "stellar-mainnet",
+export const MAINNET: MarcConfig = {
+  rpcUrl: resolveRpcUrl("mainnet", "https://soroban-mainnet.stellar.org"),
   networkPassphrase: "Public Global Stellar Network ; September 2015",
-  rpcUrl: getEnvRpcUrl("mainnet", "https://soroban-rpc.mainnet.stellar.org"),
   ...resolveDeploymentValues("mainnet"),
 };
 
 /**
- * Demo preset — identical to TESTNET but with the custom MUSD token used by
- * the Bear Protocol demo and dashboard instead of Circle's testnet USDC.
+ * Preset configurations keyed by network name.
  *
- * Use this preset when running `./start-agents.sh` or the dashboard locally.
- * Swap back to `TESTNET` when integrating with Circle USDC on testnet.
+ * @example
+ * ```ts
+ * const cfg = PRESETS["stellar-testnet"];
+ * ```
  */
-export const DEMO: PresetConfig = {
-  ...TESTNET,
-  usdcToken: (getEnvValue("MARC_DEMO_MUSD_TOKEN") ||
-    "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA") as Address,
+export const PRESETS: Record<PresetConfig["network"], MarcConfig> = {
+  "stellar-testnet": TESTNET,
+  "stellar-mainnet": MAINNET,
 };
-
-export function loadConfig(network: "testnet" | "mainnet"): PresetConfig {
-  return network === "mainnet" ? MAINNET : TESTNET;
-}
-
-/**
- * Symbol topic names emitted by the `agent_identity` contract events (#544).
- */
-export const IdentityEvents = {
-  Registered: "Registered",
-  UriUpdated: "UriUpdated",
-  AgentDeregistered: "AgentDeregistered",
-  OwnerTransferred: "OwnerTransferred",
-} as const;
-
-export type IdentityEventName = (typeof IdentityEvents)[keyof typeof IdentityEvents];
-
-/** Decoded payload for a `Registered` event. */
-export interface RegisteredEvent {
-  type: typeof IdentityEvents.Registered;
-  owner: Address;
-  agentId: bigint;
-}
-
-/** Decoded payload for a `UriUpdated` event. */
-export interface UriUpdatedEvent {
-  type: typeof IdentityEvents.UriUpdated;
-  owner: Address;
-  agentId: bigint;
-}
-
-/** Decoded payload for an `AgentDeregistered` event. */
-export interface AgentDeregisteredEvent {
-  type: typeof IdentityEvents.AgentDeregistered;
-  owner: Address;
-  agentId: bigint;
-}
-
-/** Decoded payload for an `OwnerTransferred` event. */
-export interface OwnerTransferredEvent {
-  type: typeof IdentityEvents.OwnerTransferred;
-  oldOwner: Address;
-  newOwner: Address;
-  agentId: bigint;
-}
-
-/** Discriminated union of all agent-identity contract events. */
-export type IdentityEvent =
-  | RegisteredEvent
-  | UriUpdatedEvent
-  | AgentDeregisteredEvent
-  | OwnerTransferredEvent;
-
-/**
- * Symbol topic names emitted by the `agentic_commerce` contract events.
- *
- * The Soroban `#[contractevent]` macro publishes the struct name (converted to
- * the Symbol string below) as the first topic of every event.  Use these
- * constants when filtering `getEvents` results so callers never have to
- * hardcode magic strings.
- *
- * Example:
- *   const events = await server.getEvents({ filters: [{ topics: [[CommerceEvents.JobCreated]] }] });
- */
-export const CommerceEvents = {
-  JobCreated: "JobCreated",
-  JobSubmitted: "JobSubmitted",
-  JobCompleted: "JobCompleted",
-  JobRefunded: "JobRefunded",
-  JobCancelled: "JobCancelled",
-  JobDisputed: "JobDisputed",
-  JobExpired: "JobExpired",
-} as const;
-
-export type CommerceEventName = (typeof CommerceEvents)[keyof typeof CommerceEvents];
-
-/** Decoded payload for a `JobCreated` event. */
-export interface JobCreatedEvent {
-  type: typeof CommerceEvents.JobCreated;
-  client: Address;
-  jobId: bigint;
-  budget: bigint;
-}
-
-/** Decoded payload for a `JobSubmitted` event. */
-export interface JobSubmittedEvent {
-  type: typeof CommerceEvents.JobSubmitted;
-  provider: Address;
-  jobId: bigint;
-}
-
-/** Decoded payload for a `JobCompleted` event. */
-export interface JobCompletedEvent {
-  type: typeof CommerceEvents.JobCompleted;
-  evaluator: Address;
-  jobId: bigint;
-  payout: bigint;
-  fee: bigint;
-  timestamp: bigint;
-}
-
-/** Decoded payload for a `JobRefunded` event. */
-export interface JobRefundedEvent {
-  type: typeof CommerceEvents.JobRefunded;
-  client: Address;
-  jobId: bigint;
-}
-
-/** Decoded payload for a `JobCancelled` event. */
-export interface JobCancelledEvent {
-  type: typeof CommerceEvents.JobCancelled;
-  client: Address;
-  jobId: bigint;
-}
-
-/** Decoded payload for a `JobDisputed` event. */
-export interface JobDisputedEvent {
-  type: typeof CommerceEvents.JobDisputed;
-  client: Address;
-  jobId: bigint;
-}
-
-/** Discriminated union of all agentic-commerce contract events. */
-export type JobEvent =
-  | JobCreatedEvent
-  | JobSubmittedEvent
-  | JobCompletedEvent
-  | JobRefundedEvent
-  | JobCancelledEvent
-  | JobDisputedEvent;
-
-/**
- * Returns true if the given JobStatus represents a terminal (final) state.
- *
- * Terminal states are those from which no further transitions are possible:
- * `Completed`, `Cancelled`, and `Rejected`.
- *
- * @example
- * if (isJobTerminal(job.status)) {
- *   console.log('Job is done — no further action needed');
- * }
- */
-export function isJobTerminal(status: JobStatus): boolean {
-  return (
-    status === JobStatus.Completed ||
-    status === JobStatus.Cancelled ||
-    status === JobStatus.Rejected
-  );
-}
-
-/**
- * Returns true if the given JobStatus represents an active (non-terminal) state.
- *
- * Active states are those where the job is still in progress:
- * `Open`, `Funded`, and `Submitted`.
- *
- * @example
- * if (isJobActive(job.status)) {
- *   console.log('Job is still in progress');
- * }
- */
-export function isJobActive(status: JobStatus): boolean {
-  return (
-    status === JobStatus.Open ||
-    status === JobStatus.Funded ||
-    status === JobStatus.Submitted
-  );
-}

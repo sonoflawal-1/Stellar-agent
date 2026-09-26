@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { MAINNET, TESTNET, loadConfig } from "./types.js";
-import { JobStatus, isJobTerminal, isJobActive } from "./types.js";
+import { JobStatus, JobStatusFromNumber, isJobTerminal, isJobActive } from "./types.js";
 
 test("loadConfig resolves the testnet deployment preset", () => {
   const cfg = loadConfig("testnet");
@@ -50,4 +50,18 @@ test('isJobTerminal and isJobActive are mutually exclusive for all JobStatus val
     assert.notEqual(isJobTerminal(status), isJobActive(status),
       `Status ${status} should be either terminal or active, not both`);
   }
+});
+
+test('JobStatusFromNumber decodes status variant 6 as Disputed', () => {
+  assert.equal(JobStatusFromNumber[6], JobStatus.Disputed);
+});
+
+test('JobStatusFromNumber decodes every on-chain status variant', () => {
+  assert.equal(JobStatusFromNumber[0], JobStatus.Open);
+  assert.equal(JobStatusFromNumber[1], JobStatus.Funded);
+  assert.equal(JobStatusFromNumber[2], JobStatus.Submitted);
+  assert.equal(JobStatusFromNumber[3], JobStatus.Completed);
+  assert.equal(JobStatusFromNumber[4], JobStatus.Cancelled);
+  assert.equal(JobStatusFromNumber[5], JobStatus.Rejected);
+  assert.equal(JobStatusFromNumber[6], JobStatus.Disputed);
 });
