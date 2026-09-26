@@ -184,19 +184,18 @@
 
   function updateWalletUI() {
     var connectedEl = document.getElementById("wallet-connected");
-    var addrText = document.getElementById("wallet-addr-text");
     var modeLabel = document.getElementById("wallet-mode-label");
     var btnWrapper = document.getElementById("swk-button-wrapper");
     if (wallet.connected && wallet.publicKey) {
       if (connectedEl) connectedEl.style.display = "flex";
-      if (addrText) {
-        addrText.textContent = wallet.publicKey.slice(0, 6) + "..." + wallet.publicKey.slice(-4);
-        // Make address clickable to copy
-        var addrDisplay = document.getElementById("wallet-addr-display");
-        if (addrDisplay)
-          addrDisplay.onclick = function () {
-            copyToClipboard(wallet.publicKey);
-          };
+      var addrDisplay = document.getElementById("wallet-addr-display");
+      if (addrDisplay) {
+        addrDisplay.title = wallet.publicKey;
+        addrDisplay.innerHTML =
+          '<span id="wallet-addr-text">' +
+          escapeHtml(truncAddr(wallet.publicKey)) +
+          "</span>" +
+          copyBtn(wallet.publicKey, "wallet public key");
       }
       if (modeLabel) {
         const netLabel =
@@ -309,18 +308,41 @@
         body: opts.body ? JSON.stringify(opts.body) : undefined,
       });
     } catch (networkErr) {
-      // Network-level failure (offline, DNS, etc.)
       var networkMsg = "Network error — could not reach the server";
-      if (!opts._silent) toast(networkMsg, "error");
-      throw new Error(networkMsg);
+      var networkError = new Error(networkMsg);
+      if (!opts._silent) notifyError(networkError);
+      throw networkError;
     }
-    const data = await res.json();
+    var responseText = "";
+    try {
+      responseText = await res.text();
+    } catch (readError) {
+      var readErrorMessage = "The server response could not be read.";
+      var readResponseError = new Error(readErrorMessage);
+      readResponseError.technicalDetails = res.status + " " + res.statusText;
+      if (!opts._silent) notifyError(readResponseError);
+      throw readResponseError;
+    }
+    var data;
+    if (responseText) {
+      try {
+        data = JSON.parse(responseText);
+      } catch (parseError) {
+        var responseMsg = "The server returned an invalid response.";
+        var responseError = new Error(responseMsg);
+        responseError.technicalDetails = res.status + " " + res.statusText + (responseText ? "\n" + responseText : "");
+        if (!opts._silent) notifyError(responseError);
+        throw responseError;
+      }
+    }
     if (!res.ok) {
-      var errMsg = data.error || "Request failed (" + res.status + ")";
-      if (!opts._silent) toast(errMsg, "error");
-      throw new Error(errMsg);
+      var rawError = data && data.error ? data.error : responseText || "Request failed (" + res.status + ")";
+      var apiError = new Error(formatSorobanError(rawError));
+      apiError.technicalDetails = responseText || getTechnicalDetails(rawError);
+      if (!opts._silent) notifyError(apiError);
+      throw apiError;
     }
-    return data;
+    return data == null ? {} : data;
   }
 
   var authPromise = null;
@@ -379,6 +401,12 @@
     const div = document.createElement("div");
     div.textContent = str;
     return div.innerHTML;
+  }
+
+  function escapeAttr(str) {
+    return escapeHtml(String(str == null ? "" : str))
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
   }
 
   function formatMusd(raw) {
@@ -459,8 +487,7 @@
   // ── Toast container — resolved from DOM once on first call ──
   var container = document.getElementById("toasts");
 
-  function toast(msg, type = "success", duration = null) {
-    // Lazily resolve in case the DOM wasn't ready at parse time
+  function toast(msg, type = "success", duration = null, details = "") {
     if (!container) container = document.getElementById("toasts");
     const el = document.createElement("div");
     el.className = "toast " + type;
@@ -470,6 +497,18 @@
     var msgSpan = document.createElement("span");
     msgSpan.textContent = msg;
     el.appendChild(msgSpan);
+
+    if (details) {
+      var detailsEl = document.createElement("details");
+      detailsEl.className = "toast-details";
+      var detailsSummary = document.createElement("summary");
+      detailsSummary.textContent = "View Technical Details";
+      var detailsText = document.createElement("pre");
+      detailsText.textContent = details;
+      detailsEl.appendChild(detailsSummary);
+      detailsEl.appendChild(detailsText);
+      el.appendChild(detailsEl);
+    }
 
     var closeBtn = document.createElement("span");
     closeBtn.className = "toast-close";
@@ -484,12 +523,82 @@
     closeBtn.addEventListener("click", dismiss);
 
     container.appendChild(el);
-    var autoDismiss = duration || 4000;
+    var autoDismiss = duration == null ? 4000 : duration;
     setTimeout(dismiss, autoDismiss);
+  }
+
+  function errorText(error) {
+    if (error == null) return "";
+    if (typeof error === "string") return error;
+    if (error instanceof Error) return error.message;
+    if (typeof error === "object") {
+      if (typeof error.error === "string") return error.error;
+      if (typeof error.message === "string") return error.message;
+      try {
+        return JSON.stringify(error);
+      } catch (e) {
+        return String(error);
+      }
+    }
+    return String(error);
+  }
+
+  function extractSorobanCode(text) {
+    var match = text.match(/(?:HostError|Error)\s*\(?\s*Contract\s*,\s*#?\s*(\d+)/i);
+    if (match) return Number(match[1]);
+    match = text.match(/contract(?:[_ ]error)?\s*(?:code)?\s*[:#]\s*(\d+)/i);
+    if (match) return Number(match[1]);
+    return null;
+  }
+
+  function formatSorobanError(error) {
+    var text = errorText(error);
+    if (!text) return "Transaction failed. Try again or view technical details.";
+    var code = extractSorobanCode(text);
+    var messages = {
+      1: "The client and provider must be different accounts.",
+      2: "The provider and evaluator must be different accounts.",
+      3: "The contract is paused. Please try again later.",
+      4: "This job is not in a valid status for this action.",
+      5: "The requested job could not be found.",
+    };
+    if (code != null && messages[code]) return messages[code];
+    if (/self[\s_-]*escrow/i.test(text)) return messages[1];
+    if (/invalid[\s_-]*(parties|addresses?|participants?)/i.test(text)) return messages[2];
+    if (/\bcontract[\s_-]*paused\b|\bpaused\b/i.test(text)) return messages[3];
+    if (/invalid[\s_-]*status/i.test(text)) return messages[4];
+    if (/job[\s_-]*not[\s_-]*found|unknown[\s_-]*job/i.test(text)) return messages[5];
+    if (/(tx failed|submit failed|simulation error|hosterror|host error|contract error|xdr)/i.test(text)) {
+      return "Transaction failed. Try again or view technical details.";
+    }
+    return text;
+  }
+
+  function getTechnicalDetails(error) {
+    if (error && typeof error.technicalDetails === "string") return error.technicalDetails;
+    if (error && typeof error.raw === "string") return error.raw;
+    if (error && error.details != null) {
+      try {
+        return JSON.stringify(error.details, null, 2);
+      } catch (e) {}
+    }
+    if (error && error.data != null) {
+      try {
+        return JSON.stringify(error.data, null, 2);
+      } catch (e) {}
+    }
+    return errorText(error);
+  }
+
+  function notifyError(error) {
+    if (error && error.__dashboardNotified) return;
+    toast(formatSorobanError(error), "error", null, getTechnicalDetails(error));
+    if (error && typeof error === "object") error.__dashboardNotified = true;
   }
 
   // Public alias required by the issue spec
   window.showToast = toast;
+  window.__formatSorobanError = formatSorobanError;
 
   // ── Transaction Overlay ──
   function showTxOverlay(text) {
@@ -506,38 +615,94 @@
   }
 
   // ── Copy to clipboard ──
-  async function copyToClipboard(text) {
+  async function copyToClipboard(text, source) {
+    var value = String(text == null ? "" : text);
+    if (!value) return false;
+    var copied = false;
     try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      const ta = document.createElement("textarea");
-      ta.value = text;
+      if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+        await navigator.clipboard.writeText(value);
+        copied = true;
+      }
+    } catch (e) {}
+    if (!copied) {
+      var ta = document.createElement("textarea");
+      ta.value = value;
       ta.style.cssText = "position:fixed;opacity:0";
       document.body.appendChild(ta);
       ta.select();
-      document.execCommand("copy");
+      try {
+        copied = document.execCommand("copy");
+      } catch (e) {}
       ta.remove();
     }
-    toast("Copied to clipboard");
+    if (!copied) {
+      toast("Could not copy to clipboard", "error");
+      return false;
+    }
+    if (source) {
+      if (!source.__copyIcon) {
+        source.__copyIcon = source.innerHTML;
+        source.__copyLabel = source.getAttribute("aria-label") || "Copy to clipboard";
+        source.__copyTitle = source.title;
+      }
+      source.classList.add("copied");
+      source.setAttribute("aria-label", "Copied!");
+      source.title = "Copied!";
+      source.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12l4 4L19 6"/></svg>';
+      clearTimeout(source.__copyResetTimer);
+      source.__copyResetTimer = setTimeout(function () {
+        source.classList.remove("copied");
+        source.setAttribute("aria-label", source.__copyLabel);
+        source.title = source.__copyTitle;
+        source.innerHTML = source.__copyIcon;
+      }, 2000);
+    }
+    toast("Copied!", "success", 2000);
+    return true;
   }
 
-  /**
-   * Renders a small inline copy-to-clipboard icon button for an address/ID.
-   * Used next to truncated addresses in job detail rows and agent cards.
-   * Closes #584 (missing helper that caused ReferenceError on render).
-   */
-  function copyBtn(value) {
-    if (!value) return "";
-    var safe = escapeHtml(String(value));
+  function copyBtn(value, label) {
+    if (value == null || String(value) === "") return "";
+    var safe = escapeAttr(String(value));
+    var safeLabel = escapeAttr(label || "value");
     return (
-      '<button class="copy-btn" title="Copy to clipboard" ' +
-      'onclick="event.stopPropagation();window.__copy(\'' + safe + '\')">' +
+      '<button type="button" class="copy-btn" data-copy-value="' +
+      safe +
+      '" aria-label="Copy ' +
+      safeLabel +
+      '" title="Copy ' +
+      safeLabel +
+      '" onclick="event.stopPropagation()">' +
       '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
       '<rect x="9" y="9" width="13" height="13" rx="2"/>' +
       '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>' +
       "</svg></button>"
     );
   }
+
+  function copyable(value, label, display) {
+    if (value == null || String(value) === "") return "";
+    var text = String(value);
+    var visible = display == null ? truncAddr(text) : String(display);
+    return (
+      '<span class="copyable-value" title="' +
+      escapeAttr(text) +
+      '">' +
+      escapeHtml(visible) +
+      "</span>" +
+      copyBtn(text, label)
+    );
+  }
+
+  document.addEventListener("click", function (event) {
+    var target = event.target && event.target.closest ? event.target.closest("[data-copy-value]") : null;
+    if (!target) return;
+    event.preventDefault();
+    event.stopPropagation();
+    copyToClipboard(target.getAttribute("data-copy-value"), target);
+  }, true);
+
 
   /**
    * Returns a human-readable relative time string (e.g. "2 hours ago") for a
@@ -700,7 +865,7 @@
       '<div class="deliverable-preview deliverable-code">' +
       '<div class="deliverable-label-row">' +
       '<div class="deliverable-label">' + (isJson ? "JSON Deliverable" : "Deliverable") + '</div>' +
-      '<button class="btn btn-secondary btn-sm" onclick="window.__copy(' + "'" + escapeHtml(codeContent).replace(/'/g, "\\'") + "'" + ')">Copy</button>' +
+      copyBtn(codeContent, "deliverable") +
       '</div>' +
       '<pre class="deliverable-pre"><code>' + escapeHtml(codeContent) + '</code></pre>' +
       '</div>'
@@ -819,15 +984,17 @@
       for (const j of recentJobs) {
         activityHtml +=
           '<div class="activity-row">' +
-          '<div class="activity-id">#' +
+          '<div class="activity-id-with-copy"><span class="activity-id">#' +
           escapeHtml(String(j.id)) +
+          "</span>" +
+          copyBtn(j.id, "job ID") +
           "</div>" +
           '<div class="activity-info">' +
           '<div class="activity-desc">' +
           escapeHtml(j.description || "\u2014") +
           "</div>" +
           '<div class="activity-meta">Client: ' +
-          truncAddr(j.client) +
+          copyable(j.client, "wallet public key") +
           "</div>" +
           "</div>" +
           '<div class="activity-right">' +
@@ -921,15 +1088,16 @@
         escapeHtml(role) +
         "</div>" +
         "</div>" +
-        '<div class="wallet-card-body">' +
-        '<div class="wallet-addr" onclick="window.__copy(\'' +
-        data.address +
-        "')\">" +
-        "<code>" +
-        escapeHtml(data.address) +
-        "</code>" +
-        '<span class="copy-hint">Click to copy</span>' +
-        "</div>" +
+         '<div class="wallet-card-body">' +
+         '<div class="wallet-addr">' +
+         '<code class="copyable-value" title="' +
+         escapeHtml(data.address) +
+         '">' +
+         escapeHtml(truncAddr(data.address)) +
+         "</code>" +
+         copyBtn(data.address, "wallet public key") +
+         '<span class="copy-hint">Copy</span>' +
+         "</div>" +
         '<div class="balance-row"><span class="balance-label xlm">XLM</span>' +
         '<span class="balance-value">' +
         parseFloat(data.xlm).toFixed(2) +
@@ -1091,17 +1259,19 @@
             "</div></div>";
         }
 
-        content +=
-          '<div class="job-row" id="job-' +
-          j.id +
-          '">' +
-          '<div class="job-summary" onclick="window.__toggleJob(\'' +
-          j.id +
-          "')\">" +
-          '<div class="job-id">#' +
-          escapeHtml(String(j.id)) +
-          "</div>" +
-          statusBadge(j.status) +
+         content +=
+           '<div class="job-row" id="job-' +
+           j.id +
+           '">' +
+           '<div class="job-summary" data-job-id="' +
+           escapeHtml(String(j.id)) +
+           '" onclick="window.__toggleJob(event.currentTarget.dataset.jobId)">' +
+           '<div class="job-id-with-copy"><span class="job-id">#' +
+           escapeHtml(String(j.id)) +
+           "</span>" +
+           copyBtn(j.id, "job ID") +
+           "</div>" +
+           statusBadge(j.status) +
           '<div class="job-desc">' +
           escapeHtml(j.description || "\u2014") +
           "</div>" +
@@ -1112,26 +1282,22 @@
           "</div>" +
           '<div class="job-detail">' +
           '<div class="detail-grid">' +
-          '<div class="detail-item"><div class="detail-label">Client</div>' +
-          '<div class="detail-value addr-with-copy">' +
-          '<span style="cursor:pointer" onclick="window.__copy(\'' + j.client + '\')">' + truncAddr(j.client) + '</span>' +
-          copyBtn(j.client) +
-          "</div></div>" +
-          '<div class="detail-item"><div class="detail-label">Provider</div>' +
-          '<div class="detail-value addr-with-copy">' +
-          '<span style="cursor:pointer" onclick="window.__copy(\'' + j.provider + '\')">' + truncAddr(j.provider) + '</span>' +
-          copyBtn(j.provider) +
-          "</div></div>" +
-          '<div class="detail-item"><div class="detail-label">Evaluator</div>' +
-          '<div class="detail-value addr-with-copy">' +
-          '<span style="cursor:pointer" onclick="window.__copy(\'' + j.evaluator + '\')">' + truncAddr(j.evaluator) + '</span>' +
-          copyBtn(j.evaluator) +
-          "</div></div>" +
-          '<div class="detail-item"><div class="detail-label">Token</div>' +
-          '<div class="detail-value addr-with-copy">' +
-          '<span style="cursor:pointer" onclick="window.__copy(\'' + j.token + '\')">' + truncAddr(j.token) + '</span>' +
-          copyBtn(j.token) +
-          "</div></div>" +
+           '<div class="detail-item"><div class="detail-label">Client</div>' +
+           '<div class="detail-value addr-with-copy">' +
+           copyable(j.client, "wallet public key") +
+           "</div></div>" +
+           '<div class="detail-item"><div class="detail-label">Provider</div>' +
+           '<div class="detail-value addr-with-copy">' +
+           copyable(j.provider, "wallet public key") +
+           "</div></div>" +
+           '<div class="detail-item"><div class="detail-label">Evaluator</div>' +
+           '<div class="detail-value addr-with-copy">' +
+           copyable(j.evaluator, "wallet public key") +
+           "</div></div>" +
+           '<div class="detail-item"><div class="detail-label">Token</div>' +
+           '<div class="detail-value addr-with-copy">' +
+           copyable(j.token, "token contract address") +
+           "</div></div>" +
           (j.created_at
             ? '<div class="detail-item"><div class="detail-label">Created</div>' +
               '<div class="detail-value" title="' + escapeHtml(new Date(Number(j.created_at) * 1000).toISOString()) + '">' +
@@ -1215,19 +1381,18 @@
       for (const a of filtered) {
         cards +=
           '<div class="agent-card">' +
-          '<div class="agent-card-top">' +
-          agentIdenticon(a.owner) +
-          '<div class="agent-id">Agent <span>#' +
-          escapeHtml(String(a.id)) +
-          "</span></div>" +
-          "</div>" +
-          '<div class="agent-field"><div class="agent-field-label">Owner</div>' +
-          '<div class="agent-field-value addr-with-copy">' +
-          '<span style="cursor:pointer" onclick="window.__copy(\'' + a.owner + '\')">' +
-          truncAddr(a.owner) +
-          '</span>' +
-          copyBtn(a.owner) +
-          "</div></div>" +
+           '<div class="agent-card-top">' +
+           agentIdenticon(a.owner) +
+           '<div class="agent-id">Agent <span>#' +
+           escapeHtml(String(a.id)) +
+           "</span>" +
+           copyBtn(a.id, "agent ID") +
+           "</div>" +
+           "</div>" +
+           '<div class="agent-field"><div class="agent-field-label">Owner</div>' +
+           '<div class="agent-field-value addr-with-copy">' +
+           copyable(a.owner, "wallet public key") +
+           "</div></div>" +
           '<div class="agent-field"><div class="agent-field-label">Metadata URI</div>' +
           '<div class="agent-field-value">' +
           escapeHtml(a.uri) +
@@ -1373,19 +1538,19 @@
               escapeHtml(ev.deliverable) +
               '" target="_blank" rel="noopener" style="color:var(--accent);font-weight:500">View Deliverable ↗</a>'
             : "";
-          meta =
-            "Client: " +
-            truncAddr(ev.actor) +
-            " &nbsp;·&nbsp; " +
-            formatMusd(ev.budget) +
-            " USDC" +
-            deliverablePart;
+           meta =
+             "Client: " +
+             copyable(ev.actor, "wallet public key") +
+             " &nbsp;·&nbsp; " +
+             formatMusd(ev.budget) +
+             " USDC" +
+             deliverablePart;
           badge = statusBadge(ev.status);
         } else {
           icon =
             '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>';
           label = "Agent registered";
-          meta = "Owner: " + truncAddr(ev.actor) + " &nbsp;·&nbsp; " + escapeHtml(ev.uri || "");
+           meta = "Owner: " + copyable(ev.actor, "wallet public key") + " &nbsp;·&nbsp; " + escapeHtml(ev.uri || "");
           badge =
             '<span class="status-badge status-Completed"><span class="dot"></span>Registered</span>';
         }
@@ -1404,11 +1569,13 @@
           meta +
           "</div>" +
           "</div>" +
-          '<div class="history-right">' +
-          '<div class="history-id">#' +
-          escapeHtml(String(ev.id)) +
-          "</div>" +
-          badge +
+           '<div class="history-right">' +
+           '<div class="history-id-with-copy"><span class="history-id">#' +
+           escapeHtml(String(ev.id)) +
+           "</span>" +
+           copyBtn(ev.id, ev.kind === "job" ? "job ID" : "agent ID") +
+           "</div>" +
+           badge +
           "</div>" +
           "</div>";
       }
@@ -1480,7 +1647,7 @@
     loadJobs(filter === "All" ? undefined : filter)
       .then(renderJobList)
       .catch(function (e) {
-        toast(e.message, "error");
+        notifyError(e);
       });
   };
 
@@ -1576,8 +1743,8 @@
   window.__showCreateJob = function () {
     var walletField = wallet.connected
       ? '<div class="form-group"><label class="form-label">Signing Wallet</label>' +
-        '<div class="form-input" style="color:var(--accent);cursor:default">' +
-        truncAddr(wallet.publicKey) +
+         '<div class="form-input signing-wallet-display" style="color:var(--accent);cursor:default">' +
+         copyable(wallet.publicKey, "wallet public key") +
         " (" + connectedWalletLabel() + ")</div></div>"
       : '<div class="form-group"><label class="form-label">Signing Wallet</label>' +
         '<select class="form-select" id="cj-wallet"><option value="buyer">Buyer (Client)</option><option value="seller">Seller</option></select></div>';
@@ -1626,7 +1793,7 @@
       renderJobList();
     } catch (e) {
       hideTxOverlay();
-      toast(e.message, "error");
+      notifyError(e);
     } finally {
       state.txPending = false;
     }
@@ -1654,7 +1821,7 @@
       renderJobList();
     } catch (e) {
       hideTxOverlay();
-      toast(e.message, "error");
+      notifyError(e);
     } finally {
       state.txPending = false;
     }
@@ -1676,7 +1843,7 @@
       renderJobList();
     } catch (e) {
       hideTxOverlay();
-      toast(e.message, "error");
+      notifyError(e);
     } finally {
       state.txPending = false;
     }
@@ -1701,7 +1868,7 @@
       renderJobList();
     } catch (e) {
       hideTxOverlay();
-      toast(e.message, "error");
+      notifyError(e);
     } finally {
       state.txPending = false;
     }
@@ -1710,8 +1877,8 @@
   window.__showRegisterAgent = function () {
     var walletField = wallet.connected
       ? '<div class="form-group"><label class="form-label">Signing Wallet</label>' +
-        '<div class="form-input" style="color:var(--accent);cursor:default">' +
-        truncAddr(wallet.publicKey) +
+         '<div class="form-input signing-wallet-display" style="color:var(--accent);cursor:default">' +
+         copyable(wallet.publicKey, "wallet public key") +
         " (" + connectedWalletLabel() + ")</div></div>"
       : '<div class="form-group"><label class="form-label">Signing Wallet</label>' +
         '<select class="form-select" id="ra-wallet"><option value="buyer">Buyer</option><option value="seller">Seller</option></select></div>';
@@ -1771,7 +1938,7 @@
       renderAgents();
     } catch (e) {
       hideTxOverlay();
-      toast(e.message, "error");
+      notifyError(e);
     } finally {
       state.txPending = false;
     }

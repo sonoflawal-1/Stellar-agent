@@ -2,8 +2,17 @@ import "dotenv/config";
 import { Keypair } from "@stellar/stellar-sdk";
 import { TESTNET, type MarcConfig } from "marc-stellar-sdk";
 
+export const rpcUrls = [
+  process.env.STELLAR_RPC_URL,
+  ...(process.env.STELLAR_RPC_FALLBACK_URLS ?? "")
+    .split(",")
+    .map((url) => url.trim())
+    .filter(Boolean),
+  TESTNET.rpcUrl,
+].filter((url, index, list): url is string => Boolean(url) && list.indexOf(url) === index);
+
 export const cfg: MarcConfig = {
-  rpcUrl: process.env.STELLAR_RPC_URL ?? TESTNET.rpcUrl,
+  rpcUrl: rpcUrls[0],
   networkPassphrase: process.env.STELLAR_NETWORK_PASSPHRASE ?? TESTNET.networkPassphrase,
   identityContract: process.env.AGENT_IDENTITY_CONTRACT || TESTNET.identityContract,
   commerceContract: process.env.AGENTIC_COMMERCE_CONTRACT || TESTNET.commerceContract,
