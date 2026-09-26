@@ -231,7 +231,7 @@ button {
   font-family: var(--mono);
   font-size: 11px;
   color: var(--accent);
-  cursor: pointer;
+  cursor: default;
   transition: all 0.15s;
 }
 .wallet-address-display:hover {
@@ -660,7 +660,7 @@ button {
 /* Activity rows */
 .activity-row {
   display: grid;
-  grid-template-columns: 40px 1fr auto;
+  grid-template-columns: 58px 1fr auto;
   align-items: center;
   gap: 12px;
   padding: 14px 22px;
@@ -943,7 +943,7 @@ button {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   margin-bottom: 20px;
-  cursor: pointer;
+  cursor: default;
   transition: all 0.15s;
 }
 .wallet-addr:hover {
@@ -1030,7 +1030,7 @@ button {
 }
 .job-summary {
   display: grid;
-  grid-template-columns: 50px 100px 1fr 100px 40px;
+  grid-template-columns: 72px 100px 1fr 100px 40px;
   align-items: center;
   gap: 14px;
   padding: 14px 20px;
@@ -1404,6 +1404,7 @@ button {
   display: flex;
   align-items: flex-start;
   gap: 10px;
+  flex-wrap: wrap;
 }
 .toast-close {
   margin-left: auto;
@@ -1609,7 +1610,7 @@ button {
     padding: 72px 16px 24px;
   }
   .job-summary {
-    grid-template-columns: 44px 80px 1fr 40px;
+    grid-template-columns: 62px 80px 1fr 40px;
     gap: 8px;
     padding: 12px 16px;
   }
@@ -1699,6 +1700,85 @@ button {
   align-items: center;
   gap: 4px;
 }
+.copyable-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text-dim);
+  background: transparent;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.copy-btn:hover,
+.copy-btn:focus-visible {
+  color: var(--accent);
+  border-color: var(--border-hover);
+  background: var(--bg-hover);
+  outline: none;
+}
+.copy-btn.copied {
+  color: var(--status-completed);
+  border-color: rgba(52, 211, 153, 0.35);
+  background: rgba(52, 211, 153, 0.1);
+}
+.job-id-with-copy,
+.activity-id-with-copy,
+.history-id-with-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.job-id-with-copy .copy-btn,
+.history-id-with-copy .copy-btn {
+  width: 20px;
+  height: 20px;
+}
+.agent-id {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.agent-id .copy-btn {
+  width: 20px;
+  height: 20px;
+}
+.signing-wallet-display {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.toast-details {
+  flex-basis: 100%;
+  width: 100%;
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+.toast-details summary {
+  cursor: pointer;
+  color: var(--text-dim);
+}
+.toast-details pre {
+  max-height: 160px;
+  margin-top: 6px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--mono);
+  font-size: 10px;
+}
 
 /* ── Relative timestamp ── */
 .job-timestamp {
@@ -1711,4 +1791,221 @@ button {
   cursor: help;
   text-decoration: underline dotted;
   text-underline-offset: 2px;
+}
+
+/* ────────────────────────────────────────────
+   #581 — SSE Connection Status Pill
+   ──────────────────────────────────────────── */
+.sse-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-dim);
+  transition: background 0.3s, border-color 0.3s, color 0.3s;
+  white-space: nowrap;
+  user-select: none;
+}
+/* Desktop sidebar variant sits below the testnet badge */
+.sse-status-sidebar {
+  margin-top: 8px;
+  width: 100%;
+  justify-content: center;
+}
+/* Mobile: pill pushed to the right in the header */
+.mobile-header .sse-status-pill {
+  margin-left: auto;
+}
+/* State: live (green) */
+.sse-status-pill.sse-live {
+  background: rgba(52, 211, 153, 0.06);
+  border-color: rgba(52, 211, 153, 0.2);
+  color: var(--status-completed);
+}
+/* State: reconnecting (amber) */
+.sse-status-pill.sse-reconnecting {
+  background: rgba(251, 191, 36, 0.06);
+  border-color: rgba(251, 191, 36, 0.2);
+  color: var(--status-submitted);
+}
+/* State: connecting (dim) */
+.sse-status-pill.sse-connecting {
+  color: var(--text-dim);
+}
+/* SSE dot */
+.sse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+  transition: background 0.3s;
+}
+/* Pulse animation for live state */
+.sse-dot.sse-dot-live {
+  background: var(--status-completed);
+  animation: sse-pulse 2s ease-in-out infinite;
+}
+.sse-dot.sse-dot-reconnecting {
+  background: var(--status-submitted);
+  animation: sse-blink 1s step-end infinite;
+}
+.sse-dot.sse-dot-connecting {
+  background: var(--text-dim);
+}
+@keyframes sse-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.5); }
+  50%       { opacity: 0.7; box-shadow: 0 0 0 4px rgba(52, 211, 153, 0); }
+}
+@keyframes sse-blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.2; }
+}
+
+/* ────────────────────────────────────────────
+   #583 — Agent Search Input
+   ──────────────────────────────────────────── */
+.agent-search-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin-bottom: 16px;
+}
+.agent-search-wrap svg {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-dim);
+  pointer-events: none;
+}
+.agent-search-input {
+  width: 100%;
+  padding: 9px 14px 9px 38px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 13px;
+  font-family: var(--font);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.agent-search-input::placeholder {
+  color: var(--text-dim);
+}
+.agent-search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* ────────────────────────────────────────────
+   #582 — Shimmer Skeleton for Agent Cards & Job Rows
+   ──────────────────────────────────────────── */
+.skeleton-job-row {
+  height: auto;
+  padding: 16px 20px;
+  margin-bottom: 6px;
+}
+.skeleton-agent-card {
+  height: auto;
+  padding: 22px 24px;
+  min-height: 130px;
+}
+
+/* ────────────────────────────────────────────
+   #580 — Deliverable Preview Box
+   ──────────────────────────────────────────── */
+.deliverable-preview {
+  margin-top: 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  overflow: hidden;
+}
+.deliverable-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+  padding: 8px 12px 4px;
+}
+.deliverable-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px 4px;
+}
+.deliverable-label-row .deliverable-label {
+  padding: 0;
+}
+/* URL variant */
+.deliverable-url .deliverable-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px 10px;
+  font-size: 12px;
+  font-family: var(--mono);
+  color: var(--accent);
+  word-break: break-all;
+  transition: opacity 0.15s;
+}
+.deliverable-url .deliverable-link:hover {
+  opacity: 0.8;
+  text-decoration: underline;
+}
+.deliverable-url .deliverable-link svg {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+/* Markdown variant */
+.deliverable-md-body {
+  padding: 8px 12px 12px;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--text-muted);
+  overflow-x: auto;
+}
+.deliverable-md-body .md-heading {
+  font-weight: 700;
+  color: var(--text);
+  margin: 8px 0 4px;
+  font-size: 13px;
+}
+.deliverable-md-body .md-code {
+  background: var(--bg-hover);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+.deliverable-md-body .md-blockquote {
+  border-left: 3px solid var(--accent);
+  padding-left: 10px;
+  color: var(--text-dim);
+  margin: 4px 0;
+}
+.deliverable-md-body li {
+  margin-left: 16px;
+  list-style: disc;
+}
+/* Code / JSON variant */
+.deliverable-pre {
+  margin: 0;
+  padding: 8px 12px 12px;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 220px;
 }

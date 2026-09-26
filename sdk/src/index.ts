@@ -1,10 +1,14 @@
 export * from "./types.js";
+export * from "./events.js";
+export * from "./errors.js";
 export { formatAmount, isValidMetadataUri } from "./format.js";
 export { IdentityClient } from "./identity.js";
 export { CommerceClient } from "./commerce.js";
 export * from "./signer.js";
 export { marcPaywall, type MarcPaywallOptions } from "./marcPaywall.js";
 export { marcPaywallFastify, type MarcPaywallFastifyOptions } from "./marcPaywallFastify.js";
+export { marcPaywallHono, type MarcPaywallHonoOptions } from "./marcPaywallHono.js";
+export { marcPaywallNext, type MarcPaywallNextOptions } from "./marcPaywallNext.js";
 export {
   marcPaywallNodeHttp,
   MarcPaywallNodeHttpHandler,

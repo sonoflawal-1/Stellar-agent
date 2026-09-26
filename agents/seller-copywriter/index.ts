@@ -12,6 +12,7 @@ import {
   validatePrompt,
   isMockLlm,
   MOCK_DELIVERABLES,
+  callLlmWithRetry,
 } from "../shared.js";
 
 validateEnv(["PORT", "SECRET_KEY", "REGISTRY_URL", "GROQ_API_KEY"]);
@@ -38,12 +39,17 @@ async function generate(prompt: string): Promise<string> {
     return MOCK_DELIVERABLES.copywriter;
   }
   callCount++;
-  const res = await groq!.chat.completions.create({
-    model: GROQ_MODEL,
-    messages: [{ role: "user", content: prompt }],
-    temperature: 0.9,
-    seed: callCount + Date.now(),
-  });
+  const res = await callLlmWithRetry(
+    () =>
+      groq!.chat.completions.create({
+        model: GROQ_MODEL,
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.9,
+        seed: callCount + Date.now(),
+      }),
+    3,
+    AGENT_ID,
+  );
   return res.choices[0].message.content ?? "";
 }
 

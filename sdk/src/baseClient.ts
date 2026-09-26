@@ -1,8 +1,15 @@
-import { Keypair, rpc, TransactionBuilder, BASE_FEE, xdr, Account } from "@stellar/stellar-sdk";
+import { Keypair, rpc, TransactionBuilder, BASE_FEE, xdr, Account, Memo } from "@stellar/stellar-sdk";
 import type { MarcConfig } from "./types.js";
 import type { Signer } from "./signer.js";
 import { toSigner } from "./signer.js";
 import { maskSecret } from "./format.js";
+import {
+  ContractError,
+  SimulationError,
+  TransactionTimeoutError,
+  extractContractErrorCode,
+  resolveContractErrorExplanation,
+} from "./errors.js";
 
 /**
  * Abstract base class for Soroban contract clients.
@@ -62,35 +69,86 @@ export abstract class BaseClient {
     op: xdr.Operation,
     decode: (scVal: xdr.ScVal) => T,
     txLabel: string,
+    options: { memo?: string } = {},
   ): Promise<T> {
     const walletSigner = toSigner(signer);
     const account = await this.server.getAccount(walletSigner.publicKey);
-    const tx = new TransactionBuilder(account, {
+    let builder = new TransactionBuilder(account, {
       fee: BASE_FEE,
       networkPassphrase: this.cfg.networkPassphrase,
-    })
-      .addOperation(op)
-      .setTimeout(30)
-      .build();
+    }).addOperation(op);
+    if (options.memo) {
+      builder = builder.addMemo(Memo.text(options.memo));
+    }
+    const tx = builder.setTimeout(30).build();
     const prepared = await this.server.prepareTransaction(tx);
     const signedXdr = await walletSigner.signTransaction(prepared.toXDR(), {
       networkPassphrase: this.cfg.networkPassphrase,
     });
     const signedTx = TransactionBuilder.fromXDR(signedXdr, this.cfg.networkPassphrase);
     const sent = await this.server.sendTransaction(signedTx);
-    if (sent.status === "ERROR") throw new Error(maskSecret(`submit failed: ${sent.errorResult}`));
+    const contractAddr =
+      txLabel === "identity" ? this.cfg.identityContract : this.cfg.commerceContract;
+
+    if (sent.status === "ERROR") {
+      const errStr = maskSecret(`submit failed: ${sent.errorResult}`);
+      const code = extractContractErrorCode(errStr);
+      if (code !== null) {
+        throw new ContractError(
+          code,
+          contractAddr,
+          resolveContractErrorExplanation(code, contractAddr, this.cfg.identityContract),
+        );
+      }
+      throw new Error(errStr);
+    }
+
+    const startTime = Date.now();
+    const timeoutMs = 30000;
     let getResp = await this.server.getTransaction(sent.hash);
     while (getResp.status === "NOT_FOUND") {
+      if (Date.now() - startTime >= timeoutMs) {
+        throw new TransactionTimeoutError(sent.hash, Date.now() - startTime);
+      }
       await new Promise((r) => setTimeout(r, 1000));
       getResp = await this.server.getTransaction(sent.hash);
     }
     if (getResp.status !== "SUCCESS") {
       const failed = getResp as rpc.Api.GetFailedTransactionResponse;
       const detail = failed.resultXdr?.result()?.switch()?.name ?? getResp.status;
-      throw new Error(maskSecret(`tx failed: ${detail}`));
+      const resultXdrStr = failed.resultXdr ? failed.resultXdr.toXDR("base64") : "";
+      const rawDetail = maskSecret(`tx failed: ${detail}`);
+      const code = extractContractErrorCode(rawDetail) ?? extractContractErrorCode(resultXdrStr);
+      if (code !== null) {
+        throw new ContractError(
+          code,
+          contractAddr,
+          resolveContractErrorExplanation(code, contractAddr, this.cfg.identityContract),
+        );
+      }
+      throw new Error(rawDetail);
     }
     this.cfg.onTx?.(sent.hash, txLabel);
     return decode(getResp.returnValue!);
+  }
+
+  /**
+   * Simulate one contract operation and return the RPC-estimated resource fee.
+   */
+  protected async estimateOperationFee(op: xdr.Operation): Promise<bigint> {
+    const ephemeral = Keypair.random();
+    const dummy = new Account(ephemeral.publicKey(), "0");
+    const tx = new TransactionBuilder(dummy, {
+      fee: BASE_FEE,
+      networkPassphrase: this.cfg.networkPassphrase,
+    })
+      .addOperation(op)
+      .setTimeout(30)
+      .build();
+    const sim = await this.server.simulateTransaction(tx);
+    if (rpc.Api.isSimulationError(sim)) throw new Error(maskSecret(sim.error));
+    const fee = (sim as rpc.Api.SimulateTransactionSuccessResponse).minResourceFee ?? BASE_FEE;
+    return BigInt(fee);
   }
 
   /**
@@ -117,11 +175,23 @@ export abstract class BaseClient {
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
         const sim = await this.server.simulateTransaction(tx);
-        if (rpc.Api.isSimulationError(sim)) throw new Error(maskSecret(sim.error));
+        if (rpc.Api.isSimulationError(sim)) {
+          const errMsg = maskSecret(sim.error);
+          const code = extractContractErrorCode(errMsg);
+          if (code !== null) {
+            throw new ContractError(
+              code,
+              this.cfg.commerceContract,
+              resolveContractErrorExplanation(code, this.cfg.commerceContract, this.cfg.identityContract),
+            );
+          }
+          throw new SimulationError(errMsg, sim, tx.toXDR());
+        }
         const result = (sim as rpc.Api.SimulateTransactionSuccessResponse).result;
-        if (!result) throw new Error("no simulation result");
+        if (!result) throw new SimulationError("no simulation result", sim, tx.toXDR());
         return decode(result.retval);
       } catch (err) {
+        if (err instanceof ContractError) throw err;
         if (attempt === 3) throw err;
         await new Promise((r) => setTimeout(r, 2000 * attempt));
       }
@@ -160,14 +230,26 @@ export abstract class BaseClient {
       try {
         const sim = await this.server.simulateTransaction(tx);
         // RPC-level error — throw so callers know the network/contract failed.
-        if (rpc.Api.isSimulationError(sim)) throw new Error(maskSecret(sim.error));
+        if (rpc.Api.isSimulationError(sim)) {
+          const errMsg = maskSecret(sim.error);
+          const code = extractContractErrorCode(errMsg);
+          if (code !== null) {
+            throw new ContractError(
+              code,
+              this.cfg.commerceContract,
+              resolveContractErrorExplanation(code, this.cfg.commerceContract, this.cfg.identityContract),
+            );
+          }
+          throw new SimulationError(errMsg, sim, tx.toXDR());
+        }
         const result = (sim as rpc.Api.SimulateTransactionSuccessResponse).result;
         // No result object means the RPC response was malformed — throw.
-        if (!result) throw new Error("no simulation result");
+        if (!result) throw new SimulationError("no simulation result", sim, tx.toXDR());
         // ScVal::Void is how Soroban encodes Option::None — genuine not-found.
         if (result.retval.switch() === xdr.ScValType.scvVoid()) return null;
         return decode(result.retval);
       } catch (err) {
+        if (err instanceof ContractError) throw err;
         if (attempt === 3) throw err;
         await new Promise((r) => setTimeout(r, 2000 * attempt));
       }

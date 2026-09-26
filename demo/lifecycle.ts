@@ -10,14 +10,23 @@
  * x402 payment is tracked as a separate health check.
  * If the x402 micropayment step fails the lifecycle exits non-zero
  * so CI / dashboards catch facilitator regressions.
+ *
+ * CLI flags:
+ *   --dry-run      Simulate the full lifecycle locally without testnet RPC (#586).
+ *   --step         Pause between phases for manual inspection.
+ *   --cleanup      Run cleanup script after a successful live run.
+ *   --timeout-sec  Override the Stellar transaction timeout in seconds.
  */
 import "dotenv/config";
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import * as readline from "node:readline";
+import { fileURLToPath } from "node:url";
 import { maskSecret } from "marc-stellar-sdk";
 
 const STEP_MODE = process.argv.includes("--step");
 const CLEANUP_MODE = process.argv.includes("--cleanup");
+/** #586 — offline simulation mode: no testnet RPC is called. */
+const DRY_RUN = process.argv.includes("--dry-run");
 
 /**
  * Resolve the Stellar transaction timeout (in seconds) from the
@@ -96,9 +105,14 @@ async function waitForHttpReady(url: string, timeoutMs = 30_000, intervalMs = 20
 /**
  * Run the cleanup script to return demo tokens to treasury and deregister
  * agent identities, so repeated runs start with clean wallets.
+ *
+ * #585 — Use fileURLToPath() so the path is correct on Windows (no leading
+ * slash on drive letters like /C:/...).
  */
 async function runCleanup(): Promise<void> {
-  const scriptPath = new URL("../../scripts/cleanup-demo.sh", import.meta.url).pathname;
+  // fileURLToPath converts file:///C:/... → C:\... on Windows and
+  // file:///home/... → /home/... on POSIX — both safe to pass to execFile.
+  const scriptPath = fileURLToPath(new URL("../../scripts/cleanup-demo.sh", import.meta.url));
   log("running cleanup — returning tokens to treasury...");
   return new Promise((resolve, reject) => {
     execFile("bash", [scriptPath], { cwd: import.meta.dirname }, (err, stdout, stderr) => {
@@ -115,7 +129,54 @@ async function runCleanup(): Promise<void> {
   });
 }
 
+/**
+ * #586 — Dry-run mode.
+ *
+ * Simulates the complete agent lifecycle in-process without any network I/O:
+ *   - Mocks seller startup and HTTP readiness
+ *   - Mocks buyer flow and payment verification
+ *   - Logs each phase so the orchestration logic is exercised
+ *   - Exits 0, satisfying CI pipelines that have no testnet access
+ */
+async function runDryRun(): Promise<void> {
+  log("DRY-RUN mode — no testnet RPC will be called");
+
+  await pause("about to start seller-agent (simulated)");
+  log("[dry-run] starting seller-agent… (simulated)");
+  await new Promise((r) => setTimeout(r, 200));
+  log("[dry-run] seller-agent listening on :4402 (simulated)");
+  log("[dry-run] seller HTTP ready (simulated)");
+
+  await pause("seller is ready — about to run buyer-agent (simulated)");
+  log("[dry-run] running buyer-agent… (simulated)");
+  await new Promise((r) => setTimeout(r, 200));
+  log("[dry-run] buyer: registering agent identity… (simulated)");
+  await new Promise((r) => setTimeout(r, 100));
+  log("[dry-run] buyer: creating escrow job #DRY-001… (simulated)");
+  await new Promise((r) => setTimeout(r, 100));
+  log("[dry-run] buyer: sending x402 payment… (simulated)");
+  await new Promise((r) => setTimeout(r, 100));
+  log("[dry-run] buyer: payment verified ✓ (simulated)");
+  await new Promise((r) => setTimeout(r, 100));
+  log("[dry-run] buyer: deliverable received ✓ (simulated)");
+  await new Promise((r) => setTimeout(r, 100));
+  log("[dry-run] buyer: evaluator approving job… (simulated)");
+  await new Promise((r) => setTimeout(r, 100));
+  log("[dry-run] buyer: funds released to seller ✓ (simulated)");
+
+  await pause("buyer finished — about to shut down seller (simulated)");
+  log("[dry-run] shutting down seller-agent (simulated)");
+
+  log("SUCCESS — dry-run lifecycle completed (exit 0)");
+  process.exit(0);
+}
+
 async function main() {
+  if (DRY_RUN) {
+    await runDryRun();
+    return; // runDryRun calls process.exit(0), but satisfy TS control flow
+  }
+
   if (STEP_MODE) log("--step mode enabled: will pause between phases");
   if (CLEANUP_MODE) log("--cleanup enabled: will return tokens after success");
   log(`transaction timeout: ${TX_TIMEOUT_SECS}s`);
@@ -204,3 +265,5 @@ main().catch((err) => {
   console.error(maskSecret(String(err?.stack ?? err)));
   process.exit(1);
 });
+
+

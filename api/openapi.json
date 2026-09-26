@@ -32,6 +32,10 @@
     {
       "url": "http://localhost:4504",
       "description": "Researcher Agent"
+    },
+    {
+      "url": "http://localhost:3000",
+      "description": "MARC Dashboard (localhost)"
     }
   ],
   "paths": {
@@ -307,7 +311,562 @@
           }
         }
       }
+    },
+    "/api/auth/challenge": {
+    "get": {
+      "tags": ["Dashboard Auth"],
+      "summary": "Create a wallet authentication challenge",
+      "description": "Creates a short-lived nonce and a Stellar manage-data transaction that the wallet must sign.",
+      "parameters": [
+        {
+          "name": "publicKey",
+          "in": "query",
+          "required": true,
+          "description": "Stellar Ed25519 public key to authenticate",
+          "schema": { "$ref": "#/components/schemas/StellarAddress" }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Authentication challenge",
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AuthChallenge" }
+            }
+          }
+        },
+        "400": {
+          "description": "Invalid public key or RPC error",
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+            }
+          }
+        }
+      }
     }
+  },
+  "/api/auth/verify": {
+    "post": {
+      "tags": ["Dashboard Auth"],
+      "summary": "Verify a signed authentication challenge",
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/AuthVerifyRequest" }
+          }
+        }
+      },
+      "responses": {
+        "200": {
+          "description": "Session token",
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AuthToken" }
+            }
+          }
+        },
+        "400": {
+          "description": "Invalid request payload",
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+            }
+          }
+        },
+        "401": {
+          "description": "Invalid signature or expired nonce"
+        }
+      }
+    }
+  },
+  "/api/auth/logout": {
+    "post": {
+      "tags": ["Dashboard Auth"],
+      "summary": "Invalidate a dashboard session",
+      "security": [{ "dashboardBearer": [] }],
+      "responses": {
+        "200": {
+          "description": "Session invalidated",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["success"],
+                "properties": {
+                  "success": { "type": "boolean", "example": true }
+                }
+              }
+            }
+          }
+        },
+        "500": { "$ref": "#/components/responses/InternalError" }
+      }
+    }
+  },
+  "/api/demo-mode": {
+    "get": {
+      "tags": ["Dashboard"],
+      "summary": "Read dashboard demo-mode configuration",
+      "responses": {
+        "200": {
+          "description": "Demo-mode status",
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/DemoMode" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "/api/stats": {
+    "get": {
+      "tags": ["Dashboard"],
+      "summary": "Get dashboard totals",
+      "responses": {
+        "200": {
+          "description": "Dashboard statistics",
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/DashboardStats" }
+            }
+          }
+        },
+        "500": { "$ref": "#/components/responses/InternalError" }
+      }
+    }
+  },
+  "/api/stream": {
+    "get": {
+      "tags": ["Dashboard"],
+      "summary": "Subscribe to invalidation events",
+      "description": "Server-sent events stream emitting hello, invalidate, and ping events.",
+      "responses": {
+        "200": {
+          "description": "SSE event stream",
+          "content": {
+            "text/event-stream": {
+              "schema": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "/api/wallets": {
+    "get": {
+      "tags": ["Dashboard Wallets"],
+      "summary": "Get demo buyer and seller wallet balances",
+      "responses": {
+        "200": {
+          "description": "Buyer and seller wallets",
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/WalletBalances" }
+            }
+          }
+        },
+        "500": { "$ref": "#/components/responses/InternalError" }
+      }
+    }
+  },
+  "/api/agents": {
+    "get": {
+      "tags": ["Dashboard Agents"],
+      "summary": "List registered agents",
+      "description": "Returns all agents when no paging parameters are supplied, or a page object when page or pageSize is supplied.",
+      "parameters": [
+        {
+          "name": "page",
+          "in": "query",
+          "description": "Positive page number when using paged mode",
+          "schema": { "type": "integer", "minimum": 1, "default": 1 }
+        },
+        {
+          "name": "pageSize",
+          "in": "query",
+          "description": "Number of agents per page, up to 100",
+          "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 24 }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Agent list or page",
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  { "type": "array", "items": { "$ref": "#/components/schemas/DashboardAgent" } },
+                  { "$ref": "#/components/schemas/AgentPage" }
+                ]
+              }
+            }
+          }
+        },
+        "500": { "$ref": "#/components/responses/InternalError" }
+      }
+    }
+  },
+  "/api/agents/register": {
+    "post": {
+      "tags": ["Dashboard Agents"],
+      "summary": "Register an agent",
+      "description": "Registers a demo agent directly or returns an unsigned transaction for a connected wallet.",
+      "security": [{ "dashboardBearer": [] }],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/RegisterAgentRequest" }
+          }
+        }
+      },
+      "responses": {
+        "200": {
+          "description": "Registration result or unsigned transaction",
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  { "$ref": "#/components/schemas/AgentIdResponse" },
+                  { "$ref": "#/components/schemas/UnsignedTransaction" }
+                ]
+              }
+            }
+          }
+        },
+        "400": { "$ref": "#/components/responses/BadRequest" },
+        "401": { "$ref": "#/components/responses/Unauthorized" },
+        "403": { "$ref": "#/components/responses/Forbidden" },
+        "500": { "$ref": "#/components/responses/InternalError" }
+      }
+    }
+  },
+  "/api/jobs": {
+    "get": {
+      "tags": ["Dashboard Jobs"],
+      "summary": "List commerce jobs",
+      "parameters": [
+        {
+          "name": "status",
+          "in": "query",
+          "description": "Filter by exact job status, or Active for Funded and Submitted jobs",
+          "schema": {
+            "type": "string",
+            "enum": ["Active", "Open", "Funded", "Submitted", "Completed", "Rejected", "Cancelled", "Disputed"]
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Job list",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": { "$ref": "#/components/schemas/DashboardJob" }
+              }
+            }
+          }
+        },
+        "400": { "$ref": "#/components/responses/BadRequest" },
+        "500": { "$ref": "#/components/responses/InternalError" }
+      }
+    }
+  },
+  "/api/jobs/create": {
+    "post": {
+      "tags": ["Dashboard Jobs"],
+      "summary": "Create and fund a job",
+      "security": [{ "dashboardBearer": [] }],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/CreateJobRequest" }
+          }
+        }
+      },
+      "responses": {
+        "200": {
+          "description": "Created job ID",
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/JobIdResponse" }
+            }
+          }
+        },
+        "400": { "$ref": "#/components/responses/BadRequest" },
+        "401": { "$ref": "#/components/responses/Unauthorized" },
+        "403": { "$ref": "#/components/responses/Forbidden" },
+        "500": { "$ref": "#/components/responses/InternalError" }
+      }
+    }
+  },
+  "/api/jobs/{id}/submit": {
+    "post": {
+      "tags": ["Dashboard Jobs"],
+      "summary": "Submit work for a funded job",
+      "security": [{ "dashboardBearer": [] }],
+      "parameters": [{ "$ref": "#/components/parameters/JobId" }],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/SubmitJobRequest" }
+          }
+        }
+      },
+      "responses": {
+        "200": { "$ref": "#/components/responses/Success" },
+        "400": { "$ref": "#/components/responses/BadRequest" },
+        "401": { "$ref": "#/components/responses/Unauthorized" },
+        "403": { "$ref": "#/components/responses/Forbidden" },
+        "500": { "$ref": "#/components/responses/InternalError" }
+      }
+    }
+  },
+  "/api/jobs/{id}/complete": {
+    "post": {
+      "tags": ["Dashboard Jobs"],
+      "summary": "Complete a submitted job and release escrow",
+      "security": [{ "dashboardBearer": [] }],
+      "parameters": [{ "$ref": "#/components/parameters/JobId" }],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/WalletActionRequest" }
+          }
+        }
+      },
+      "responses": {
+        "200": { "$ref": "#/components/responses/Success" },
+        "400": { "$ref": "#/components/responses/BadRequest" },
+        "401": { "$ref": "#/components/responses/Unauthorized" },
+        "403": { "$ref": "#/components/responses/Forbidden" },
+        "500": { "$ref": "#/components/responses/InternalError" }
+      }
+    }
+  },
+  "/api/jobs/{id}/cancel": {
+    "post": {
+      "tags": ["Dashboard Jobs"],
+      "summary": "Cancel a funded job and refund the client",
+      "security": [{ "dashboardBearer": [] }],
+      "parameters": [{ "$ref": "#/components/parameters/JobId" }],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/WalletActionRequest" }
+          }
+        }
+      },
+      "responses": {
+        "200": { "$ref": "#/components/responses/Success" },
+        "400": { "$ref": "#/components/responses/BadRequest" },
+        "401": { "$ref": "#/components/responses/Unauthorized" },
+        "403": { "$ref": "#/components/responses/Forbidden" },
+        "500": { "$ref": "#/components/responses/InternalError" }
+      }
+    }
+  },
+  "/api/jobs/{id}": {
+    "put": {
+      "tags": ["Dashboard Jobs"],
+      "summary": "Cancel a job using the legacy action endpoint",
+      "description": "Pass action=cancel with publicKey for an unsigned XDR response, or with a demo wallet for a direct transaction.",
+      "security": [{ "dashboardBearer": [] }],
+      "parameters": [{ "$ref": "#/components/parameters/JobId" }],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/LegacyCancelRequest" }
+          }
+        }
+      },
+      "responses": {
+        "200": {
+          "description": "Cancellation result or unsigned transaction",
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  { "$ref": "#/components/schemas/SuccessResponse" },
+                  { "$ref": "#/components/schemas/UnsignedTransaction" }
+                ]
+              }
+            }
+          }
+        },
+        "400": { "$ref": "#/components/responses/BadRequest" },
+        "401": { "$ref": "#/components/responses/Unauthorized" },
+        "403": { "$ref": "#/components/responses/Forbidden" },
+        "500": { "$ref": "#/components/responses/InternalError" }
+      }
+    }
+  },
+  "/api/build/register": {
+    "post": {
+      "tags": ["Dashboard Transactions"],
+      "summary": "Build an unsigned agent registration transaction",
+      "security": [{ "dashboardBearer": [] }],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/BuildRegisterRequest" }
+          }
+        }
+      },
+      "responses": {
+        "200": { "$ref": "#/components/responses/Unsigned" },
+        "400": { "$ref": "#/components/responses/BadRequest" },
+        "401": { "$ref": "#/components/responses/Unauthorized" },
+        "403": { "$ref": "#/components/responses/Forbidden" },
+        "500": { "$ref": "#/components/responses/InternalError" }
+      }
+    }
+  },
+  "/api/build/createJob": {
+    "post": {
+      "tags": ["Dashboard Transactions"],
+      "summary": "Build an unsigned create-job transaction",
+      "security": [{ "dashboardBearer": [] }],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/BuildCreateJobRequest" }
+          }
+        }
+      },
+      "responses": {
+        "200": { "$ref": "#/components/responses/Unsigned" },
+        "400": { "$ref": "#/components/responses/BadRequest" },
+        "401": { "$ref": "#/components/responses/Unauthorized" },
+        "403": { "$ref": "#/components/responses/Forbidden" },
+        "500": { "$ref": "#/components/responses/InternalError" }
+      }
+    }
+  },
+  "/api/build/submit": {
+    "post": {
+      "tags": ["Dashboard Transactions"],
+      "summary": "Build an unsigned job-submission transaction",
+      "security": [{ "dashboardBearer": [] }],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/BuildActionRequest" }
+          }
+        }
+      },
+      "responses": {
+        "200": { "$ref": "#/components/responses/Unsigned" },
+        "400": { "$ref": "#/components/responses/BadRequest" },
+        "401": { "$ref": "#/components/responses/Unauthorized" },
+        "403": { "$ref": "#/components/responses/Forbidden" },
+        "500": { "$ref": "#/components/responses/InternalError" }
+      }
+    }
+  },
+  "/api/build/complete": {
+    "post": {
+      "tags": ["Dashboard Transactions"],
+      "summary": "Build an unsigned job-completion transaction",
+      "security": [{ "dashboardBearer": [] }],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/BuildActionRequest" }
+          }
+        }
+      },
+      "responses": {
+        "200": { "$ref": "#/components/responses/Unsigned" },
+        "400": { "$ref": "#/components/responses/BadRequest" },
+        "401": { "$ref": "#/components/responses/Unauthorized" },
+        "403": { "$ref": "#/components/responses/Forbidden" },
+        "500": { "$ref": "#/components/responses/InternalError" }
+      }
+    }
+  },
+  "/api/build/cancel": {
+    "post": {
+      "tags": ["Dashboard Transactions"],
+      "summary": "Build an unsigned job-cancellation transaction",
+      "security": [{ "dashboardBearer": [] }],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/BuildActionRequest" }
+          }
+        }
+      },
+      "responses": {
+        "200": { "$ref": "#/components/responses/Unsigned" },
+        "400": { "$ref": "#/components/responses/BadRequest" },
+        "401": { "$ref": "#/components/responses/Unauthorized" },
+        "403": { "$ref": "#/components/responses/Forbidden" },
+        "500": { "$ref": "#/components/responses/InternalError" }
+      }
+    }
+  },
+  "/api/submit": {
+    "post": {
+      "tags": ["Dashboard Transactions"],
+      "summary": "Submit a wallet-signed transaction",
+      "security": [{ "dashboardBearer": [] }],
+      "requestBody": {
+        "required": true,
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/SubmitXdrRequest" }
+          }
+        }
+      },
+      "responses": {
+        "200": {
+          "description": "Submitted transaction",
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/SubmitResult" }
+            }
+          }
+        },
+        "400": { "$ref": "#/components/responses/BadRequest" },
+        "401": { "$ref": "#/components/responses/Unauthorized" },
+        "500": { "$ref": "#/components/responses/InternalError" }
+      }
+    }
+  },
+  "/api/balance/{pubkey}": {
+    "get": {
+      "tags": ["Dashboard Wallets"],
+      "summary": "Get XLM and MUSD balances for a public key",
+      "parameters": [{ "$ref": "#/components/parameters/PublicKeyPath" }],
+      "responses": {
+        "200": {
+          "description": "Account balances",
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/Balance" }
+            }
+          }
+        },
+        "400": { "$ref": "#/components/responses/BadRequest" },
+        "500": { "$ref": "#/components/responses/InternalError" }
+      }
+    }
+  }
   },
   "components": {
     "schemas": {
@@ -453,13 +1012,324 @@
             "default": "standard"
           }
         }
+      },
+      "StellarAddress": {
+        "type": "string",
+        "pattern": "^G[A-Z2-7]{55}$",
+        "description": "Stellar Ed25519 public key"
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": { "type": "string" },
+          "details": {
+            "type": "array",
+            "items": { "type": "object", "additionalProperties": true }
+          }
+        }
+      },
+      "AuthChallenge": {
+        "type": "object",
+        "required": ["nonce", "message", "xdr"],
+        "properties": {
+          "nonce": { "type": "string" },
+          "message": { "type": "string" },
+          "xdr": { "type": "string", "description": "Base64 Stellar transaction XDR to sign" }
+        }
+      },
+      "AuthVerifyRequest": {
+        "type": "object",
+        "required": ["publicKey", "nonce", "signedXdr"],
+        "properties": {
+          "publicKey": { "$ref": "#/components/schemas/StellarAddress" },
+          "nonce": { "type": "string", "minLength": 1 },
+          "signedXdr": { "type": "string", "minLength": 1 }
+        }
+      },
+      "AuthToken": {
+        "type": "object",
+        "required": ["token", "publicKey"],
+        "properties": {
+          "token": { "type": "string" },
+          "publicKey": { "$ref": "#/components/schemas/StellarAddress" }
+        }
+      },
+      "DemoMode": {
+        "type": "object",
+        "required": ["enabled"],
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "buyer": { "$ref": "#/components/schemas/StellarAddress" },
+          "seller": { "$ref": "#/components/schemas/StellarAddress" }
+        }
+      },
+      "DashboardStats": {
+        "type": "object",
+        "required": ["totalAgents", "totalJobs", "activeJobs", "feeBps"],
+        "properties": {
+          "totalAgents": { "type": "integer" },
+          "totalJobs": { "type": "integer" },
+          "activeJobs": { "type": "integer" },
+          "feeBps": { "type": "integer" }
+        }
+      },
+      "DashboardWallet": {
+        "type": "object",
+        "required": ["address", "xlm", "musd"],
+        "properties": {
+          "address": { "$ref": "#/components/schemas/StellarAddress" },
+          "xlm": { "type": "string" },
+          "musd": { "type": "string" }
+        }
+      },
+      "WalletBalances": {
+        "type": "object",
+        "required": ["buyer", "seller"],
+        "properties": {
+          "buyer": { "$ref": "#/components/schemas/DashboardWallet" },
+          "seller": { "$ref": "#/components/schemas/DashboardWallet" }
+        }
+      },
+      "DashboardAgent": {
+        "type": "object",
+        "required": ["id", "owner", "uri"],
+        "properties": {
+          "id": { "type": "string" },
+          "owner": { "$ref": "#/components/schemas/StellarAddress" },
+          "uri": { "type": "string" }
+        }
+      },
+      "AgentPage": {
+        "type": "object",
+        "required": ["items", "page", "pageSize", "total", "hasNext"],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/DashboardAgent" }
+          },
+          "page": { "type": "integer" },
+          "pageSize": { "type": "integer" },
+          "total": { "type": "integer" },
+          "hasNext": { "type": "boolean" }
+        }
+      },
+      "RegisterAgentRequest": {
+        "type": "object",
+        "required": ["wallet"],
+        "properties": {
+          "wallet": { "type": "string", "enum": ["buyer", "seller", "freighter"] },
+          "publicKey": { "$ref": "#/components/schemas/StellarAddress" },
+          "uri": { "type": "string", "minLength": 1 }
+        }
+      },
+      "AgentIdResponse": {
+        "type": "object",
+        "required": ["agentId"],
+        "properties": { "agentId": { "type": "string" } }
+      },
+      "UnsignedTransaction": {
+        "type": "object",
+        "required": ["xdr"],
+        "properties": { "xdr": { "type": "string" } }
+      },
+      "DashboardJob": {
+        "type": "object",
+        "required": ["id", "client", "provider", "evaluator", "token", "budget", "status", "description", "deliverable"],
+        "properties": {
+          "id": { "type": "string" },
+          "client": { "$ref": "#/components/schemas/StellarAddress" },
+          "provider": { "$ref": "#/components/schemas/StellarAddress" },
+          "evaluator": { "$ref": "#/components/schemas/StellarAddress" },
+          "token": { "type": "string" },
+          "budget": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": ["Open", "Funded", "Submitted", "Completed", "Rejected", "Cancelled", "Disputed"]
+          },
+          "description": { "type": "string" },
+          "deliverable": { "type": "string" },
+          "funded_at": { "type": "string" },
+          "created_at": { "type": "string" },
+          "updated_at": { "type": "string" }
+        }
+      },
+      "JobIdResponse": {
+        "type": "object",
+        "required": ["jobId"],
+        "properties": { "jobId": { "type": "string" } }
+      },
+      "CreateJobRequest": {
+        "type": "object",
+        "required": ["wallet"],
+        "properties": {
+          "wallet": { "$ref": "#/components/schemas/StellarAddress" },
+          "provider": { "$ref": "#/components/schemas/StellarAddress" },
+          "evaluator": { "$ref": "#/components/schemas/StellarAddress" },
+          "budget": { "oneOf": [{ "type": "string" }, { "type": "integer" }] },
+          "description": { "type": "string", "minLength": 1 }
+        }
+      },
+      "SubmitJobRequest": {
+        "type": "object",
+        "required": ["wallet"],
+        "properties": {
+          "wallet": { "$ref": "#/components/schemas/StellarAddress" },
+          "deliverable": { "type": "string", "minLength": 1 }
+        }
+      },
+      "WalletActionRequest": {
+        "type": "object",
+        "required": ["wallet"],
+        "properties": { "wallet": { "$ref": "#/components/schemas/StellarAddress" } }
+      },
+      "LegacyCancelRequest": {
+        "type": "object",
+        "required": ["action"],
+        "properties": {
+          "action": { "type": "string", "enum": ["cancel"] },
+          "publicKey": { "$ref": "#/components/schemas/StellarAddress" },
+          "wallet": { "type": "string", "enum": ["buyer", "seller"] }
+        }
+      },
+      "BuildRegisterRequest": {
+        "type": "object",
+        "required": ["publicKey"],
+        "properties": {
+          "publicKey": { "$ref": "#/components/schemas/StellarAddress" },
+          "uri": { "type": "string", "minLength": 1 }
+        }
+      },
+      "BuildCreateJobRequest": {
+        "type": "object",
+        "required": ["publicKey"],
+        "properties": {
+          "publicKey": { "$ref": "#/components/schemas/StellarAddress" },
+          "provider": { "$ref": "#/components/schemas/StellarAddress" },
+          "evaluator": { "$ref": "#/components/schemas/StellarAddress" },
+          "budget": { "oneOf": [{ "type": "string" }, { "type": "integer" }] },
+          "description": { "type": "string", "minLength": 1 }
+        }
+      },
+      "BuildActionRequest": {
+        "type": "object",
+        "required": ["publicKey", "jobId"],
+        "properties": {
+          "publicKey": { "$ref": "#/components/schemas/StellarAddress" },
+          "jobId": { "type": "string", "pattern": "^[0-9]+$" },
+          "deliverable": { "type": "string", "minLength": 1 }
+        }
+      },
+      "SubmitXdrRequest": {
+        "type": "object",
+        "required": ["signedXdr"],
+        "properties": { "signedXdr": { "type": "string", "minLength": 1 } }
+      },
+      "SubmitResult": {
+        "type": "object",
+        "required": ["hash", "returnValue"],
+        "properties": {
+          "hash": { "type": "string" },
+          "returnValue": { "type": "string" }
+        }
+      },
+      "Balance": {
+        "type": "object",
+        "required": ["address", "xlm", "musd"],
+        "properties": {
+          "address": { "$ref": "#/components/schemas/StellarAddress" },
+          "xlm": { "type": "string" },
+          "musd": { "type": "string" }
+        }
+      },
+      "SuccessResponse": {
+        "type": "object",
+        "required": ["success"],
+        "properties": { "success": { "type": "boolean" } }
+      }
+    },
+    "parameters": {
+      "JobId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "description": "Positive numeric job ID",
+        "schema": { "type": "string", "pattern": "^[0-9]+$" }
+      },
+      "PublicKeyPath": {
+        "name": "pubkey",
+        "in": "path",
+        "required": true,
+        "description": "Stellar Ed25519 public key",
+        "schema": { "$ref": "#/components/schemas/StellarAddress" }
+      }
+    },
+    "responses": {
+      "Success": {
+        "description": "Operation completed",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/SuccessResponse" }
+          }
+        }
+      },
+      "Unsigned": {
+        "description": "Unsigned Stellar transaction",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/UnsignedTransaction" }
+          }
+        }
+      },
+      "BadRequest": {
+        "description": "Invalid request",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "Authentication is required or the session is invalid",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "The session cannot act for the requested wallet",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "Internal server or RPC error",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+          }
+        }
       }
     },
     "securitySchemes": {
       "bearerAuth": {
         "type": "http",
         "scheme": "bearer",
-        "description": "Optional Bearer token for registry API key"
+        "description": "Optional Bearer token for registry services"
+      },
+      "registryApiKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key",
+        "description": "Registry API key"
+      },
+      "dashboardBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Dashboard session token from /api/auth/verify"
       }
     }
   },
@@ -471,6 +1341,30 @@
     {
       "name": "Agent",
       "description": "Task execution endpoints (ports 4501-4504)"
+    },
+    {
+      "name": "Dashboard",
+      "description": "Dashboard overview, discovery, and real-time events"
+    },
+    {
+      "name": "Dashboard Auth",
+      "description": "Wallet nonce authentication and dashboard sessions"
+    },
+    {
+      "name": "Dashboard Agents",
+      "description": "Agent identity operations exposed by the dashboard"
+    },
+    {
+      "name": "Dashboard Jobs",
+      "description": "Job escrow lifecycle operations exposed by the dashboard"
+    },
+    {
+      "name": "Dashboard Transactions",
+      "description": "Unsigned transaction builders and signed XDR submission"
+    },
+    {
+      "name": "Dashboard Wallets",
+      "description": "Dashboard wallet and account balance reads"
     }
   ]
 }

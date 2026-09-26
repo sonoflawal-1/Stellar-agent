@@ -58,12 +58,14 @@ async function generate(task: string, depth: ResearchDepth = "standard"): Promis
     return MOCK_DELIVERABLES.researcher;
   }
   const { sourceRange, detail } = DEPTH_CONFIG[depth];
-  const res = await groq!.chat.completions.create({
-    model: GROQ_MODEL,
-    messages: [
-      {
-        role: "user",
-        content: `You are a research analyst. Research the following topic and return ONLY valid JSON (no markdown, no code fences) with this exact schema:
+  const res = await callLlmWithRetry(
+    () =>
+      groq!.chat.completions.create({
+        model: GROQ_MODEL,
+        messages: [
+          {
+            role: "user",
+            content: `You are a research analyst. Research the following topic and return ONLY valid JSON (no markdown, no code fences) with this exact schema:
 {
   "summary": "research summary in markdown format",
   "sources": [
@@ -74,9 +76,12 @@ async function generate(task: string, depth: ResearchDepth = "standard"): Promis
 Research depth: ${depth}
 Include ${sourceRange} real, verifiable sources. Each source must have a real URL. The summary must cite sources by their index [1], [2], etc.
 ${detail}`,
-      },
-    ],
-  });
+          },
+        ],
+      }),
+    3,
+    AGENT_ID,
+  );
   const text = res.choices[0].message.content ?? "";
   return JSON.parse(text.replace(/```(?:json)?\s*/gi, "").trim()) as ResearchOutput;
 }

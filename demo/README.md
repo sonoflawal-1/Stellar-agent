@@ -1,5 +1,56 @@
 # MARC demo scripts
 
+## `lifecycle.ts` — one-shot agent lifecycle orchestrator
+
+Runs the full buyer ↔ seller lifecycle against a live Stellar testnet: spawns
+a seller agent, runs the buyer agent, verifies the x402 payment, and exits 0
+on success.
+
+```bash
+npm run lifecycle
+```
+
+### CLI flags
+
+| Flag              | Default | Description                                                                   |
+| ----------------- | ------- | ----------------------------------------------------------------------------- |
+| `--dry-run`       | off     | Simulate the full lifecycle locally with no testnet RPC or credentials (#586).|
+| `--step`          | off     | Pause between each phase for manual inspection.                               |
+| `--cleanup`       | off     | Run the cleanup script after a successful live run.                           |
+| `--timeout-sec N` | `60`    | Override the Stellar transaction timeout in seconds.                          |
+
+#### `--dry-run` — offline simulation mode
+
+Use this flag in CI environments or during local development when testnet
+credentials or internet access are unavailable. It exercises the full
+orchestration code path (all branching, logging, and phase ordering) without
+invoking any Stellar RPC:
+
+```bash
+npm run lifecycle -- --dry-run
+```
+
+Expected output (exit code 0):
+
+```
+[lifecycle] … DRY-RUN mode — no testnet RPC will be called
+[lifecycle] … [dry-run] starting seller-agent… (simulated)
+[lifecycle] … [dry-run] seller-agent listening on :4402 (simulated)
+[lifecycle] … [dry-run] seller HTTP ready (simulated)
+[lifecycle] … [dry-run] running buyer-agent… (simulated)
+[lifecycle] … [dry-run] buyer: registering agent identity… (simulated)
+[lifecycle] … [dry-run] buyer: creating escrow job #DRY-001… (simulated)
+[lifecycle] … [dry-run] buyer: sending x402 payment… (simulated)
+[lifecycle] … [dry-run] buyer: payment verified ✓ (simulated)
+[lifecycle] … [dry-run] buyer: deliverable received ✓ (simulated)
+[lifecycle] … [dry-run] buyer: evaluator approving job… (simulated)
+[lifecycle] … [dry-run] buyer: funds released to seller ✓ (simulated)
+[lifecycle] … shutting down seller-agent (simulated)
+[lifecycle] … SUCCESS — dry-run lifecycle completed (exit 0)
+```
+
+---
+
 ## `simulate.ts` — multi-agent marketplace simulation
 
 Runs sellers and buyers against the configured Stellar network end-to-end

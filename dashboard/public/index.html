@@ -149,6 +149,11 @@
           <span class="badge-dot"></span>
           Unknown Network
         </div>
+        <!-- SSE connection status pill (#581) — desktop sidebar -->
+        <div class="sse-status-pill sse-status-sidebar" id="sse-status-pill-desktop" aria-live="polite" aria-label="SSE connection status">
+          <span class="sse-dot" id="sse-dot-desktop"></span>
+          <span class="sse-label" id="sse-label-desktop">Connecting…</span>
+        </div>
       </div>
     </aside>
 
@@ -179,6 +184,11 @@
         </svg>
       </button>
       <span class="logo-text">Bear</span>
+      <!-- SSE connection status pill (#581) -->
+      <div class="sse-status-pill" id="sse-status-pill" aria-live="polite" aria-label="SSE connection status">
+        <span class="sse-dot" id="sse-dot"></span>
+        <span class="sse-label" id="sse-label">Connecting…</span>
+      </div>
     </header>
 
     <!-- Sidebar overlay backdrop (mobile) -->

@@ -28,12 +28,22 @@
     loading: { stats: false, wallets: false, agents: false, jobs: false },
     jobFilter: "Active",
     jobSearch: "",
-    agentSearch: "",
+    agentSearch: "",   // #583 — agent name/description/tag filter
     agentPage: 1,
     agentPageSize: 24,
     agentTotal: 0,
     txPending: false,
   };
+
+  // ── Debounce helper ──
+  function debounce(fn, ms) {
+    var timer;
+    return function () {
+      var args = arguments;
+      clearTimeout(timer);
+      timer = setTimeout(function () { fn.apply(null, args); }, ms);
+    };
+  }
 
   // ── Stellar Wallets Kit integration ──
   const wallet = {
@@ -174,19 +184,18 @@
 
   function updateWalletUI() {
     var connectedEl = document.getElementById("wallet-connected");
-    var addrText = document.getElementById("wallet-addr-text");
     var modeLabel = document.getElementById("wallet-mode-label");
     var btnWrapper = document.getElementById("swk-button-wrapper");
     if (wallet.connected && wallet.publicKey) {
       if (connectedEl) connectedEl.style.display = "flex";
-      if (addrText) {
-        addrText.textContent = wallet.publicKey.slice(0, 6) + "..." + wallet.publicKey.slice(-4);
-        // Make address clickable to copy
-        var addrDisplay = document.getElementById("wallet-addr-display");
-        if (addrDisplay)
-          addrDisplay.onclick = function () {
-            copyToClipboard(wallet.publicKey);
-          };
+      var addrDisplay = document.getElementById("wallet-addr-display");
+      if (addrDisplay) {
+        addrDisplay.title = wallet.publicKey;
+        addrDisplay.innerHTML =
+          '<span id="wallet-addr-text">' +
+          escapeHtml(truncAddr(wallet.publicKey)) +
+          "</span>" +
+          copyBtn(wallet.publicKey, "wallet public key");
       }
       if (modeLabel) {
         const netLabel =
@@ -269,6 +278,24 @@
   // Expose wallet functions globally
   window.__disconnectWallet = disconnectWallet;
 
+  /**
+   * Returns a display label for the currently connected wallet.
+   * Prefers the wallet name exposed by Stellar Wallets Kit; falls back to
+   * "Freighter" when only the legacy freighterApi is present, and "Wallet"
+   * as a generic catch-all.  Closes #584 (hardcoded "(Freighter)" label).
+   */
+  function connectedWalletLabel() {
+    if (swkReady && StellarWalletsKit && typeof StellarWalletsKit.getWalletName === "function") {
+      try {
+        var name = StellarWalletsKit.getWalletName();
+        if (name && name.length > 0) return name;
+      } catch (e) {}
+    }
+    var freighter = window.freighterApi || window.freighter;
+    if (freighter && typeof freighter.getPublicKey === "function") return "Freighter";
+    return "Wallet";
+  }
+
   // ── API Client ──
   async function api(path, opts = {}) {
     const headers = opts.body ? { "Content-Type": "application/json" } : {};
@@ -281,18 +308,41 @@
         body: opts.body ? JSON.stringify(opts.body) : undefined,
       });
     } catch (networkErr) {
-      // Network-level failure (offline, DNS, etc.)
       var networkMsg = "Network error — could not reach the server";
-      if (!opts._silent) toast(networkMsg, "error");
-      throw new Error(networkMsg);
+      var networkError = new Error(networkMsg);
+      if (!opts._silent) notifyError(networkError);
+      throw networkError;
     }
-    const data = await res.json();
+    var responseText = "";
+    try {
+      responseText = await res.text();
+    } catch (readError) {
+      var readErrorMessage = "The server response could not be read.";
+      var readResponseError = new Error(readErrorMessage);
+      readResponseError.technicalDetails = res.status + " " + res.statusText;
+      if (!opts._silent) notifyError(readResponseError);
+      throw readResponseError;
+    }
+    var data;
+    if (responseText) {
+      try {
+        data = JSON.parse(responseText);
+      } catch (parseError) {
+        var responseMsg = "The server returned an invalid response.";
+        var responseError = new Error(responseMsg);
+        responseError.technicalDetails = res.status + " " + res.statusText + (responseText ? "\n" + responseText : "");
+        if (!opts._silent) notifyError(responseError);
+        throw responseError;
+      }
+    }
     if (!res.ok) {
-      var errMsg = data.error || "Request failed (" + res.status + ")";
-      if (!opts._silent) toast(errMsg, "error");
-      throw new Error(errMsg);
+      var rawError = data && data.error ? data.error : responseText || "Request failed (" + res.status + ")";
+      var apiError = new Error(formatSorobanError(rawError));
+      apiError.technicalDetails = responseText || getTechnicalDetails(rawError);
+      if (!opts._silent) notifyError(apiError);
+      throw apiError;
     }
-    return data;
+    return data == null ? {} : data;
   }
 
   var authPromise = null;
@@ -351,6 +401,12 @@
     const div = document.createElement("div");
     div.textContent = str;
     return div.innerHTML;
+  }
+
+  function escapeAttr(str) {
+    return escapeHtml(String(str == null ? "" : str))
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
   }
 
   function formatMusd(raw) {
@@ -428,7 +484,11 @@
       + '</svg>';
     return '<div class="agent-avatar agent-avatar-svg" title="' + escapeHtml(pubkey) + '">' + svg + '</div>';
   }
-  function toast(msg, type = "success", duration = null) {
+  // ── Toast container — resolved from DOM once on first call ──
+  var container = document.getElementById("toasts");
+
+  function toast(msg, type = "success", duration = null, details = "") {
+    if (!container) container = document.getElementById("toasts");
     const el = document.createElement("div");
     el.className = "toast " + type;
     el.setAttribute("role", "alert");
@@ -437,6 +497,18 @@
     var msgSpan = document.createElement("span");
     msgSpan.textContent = msg;
     el.appendChild(msgSpan);
+
+    if (details) {
+      var detailsEl = document.createElement("details");
+      detailsEl.className = "toast-details";
+      var detailsSummary = document.createElement("summary");
+      detailsSummary.textContent = "View Technical Details";
+      var detailsText = document.createElement("pre");
+      detailsText.textContent = details;
+      detailsEl.appendChild(detailsSummary);
+      detailsEl.appendChild(detailsText);
+      el.appendChild(detailsEl);
+    }
 
     var closeBtn = document.createElement("span");
     closeBtn.className = "toast-close";
@@ -451,12 +523,82 @@
     closeBtn.addEventListener("click", dismiss);
 
     container.appendChild(el);
-    var autoDismiss = duration || 4000;
+    var autoDismiss = duration == null ? 4000 : duration;
     setTimeout(dismiss, autoDismiss);
+  }
+
+  function errorText(error) {
+    if (error == null) return "";
+    if (typeof error === "string") return error;
+    if (error instanceof Error) return error.message;
+    if (typeof error === "object") {
+      if (typeof error.error === "string") return error.error;
+      if (typeof error.message === "string") return error.message;
+      try {
+        return JSON.stringify(error);
+      } catch (e) {
+        return String(error);
+      }
+    }
+    return String(error);
+  }
+
+  function extractSorobanCode(text) {
+    var match = text.match(/(?:HostError|Error)\s*\(?\s*Contract\s*,\s*#?\s*(\d+)/i);
+    if (match) return Number(match[1]);
+    match = text.match(/contract(?:[_ ]error)?\s*(?:code)?\s*[:#]\s*(\d+)/i);
+    if (match) return Number(match[1]);
+    return null;
+  }
+
+  function formatSorobanError(error) {
+    var text = errorText(error);
+    if (!text) return "Transaction failed. Try again or view technical details.";
+    var code = extractSorobanCode(text);
+    var messages = {
+      1: "The client and provider must be different accounts.",
+      2: "The provider and evaluator must be different accounts.",
+      3: "The contract is paused. Please try again later.",
+      4: "This job is not in a valid status for this action.",
+      5: "The requested job could not be found.",
+    };
+    if (code != null && messages[code]) return messages[code];
+    if (/self[\s_-]*escrow/i.test(text)) return messages[1];
+    if (/invalid[\s_-]*(parties|addresses?|participants?)/i.test(text)) return messages[2];
+    if (/\bcontract[\s_-]*paused\b|\bpaused\b/i.test(text)) return messages[3];
+    if (/invalid[\s_-]*status/i.test(text)) return messages[4];
+    if (/job[\s_-]*not[\s_-]*found|unknown[\s_-]*job/i.test(text)) return messages[5];
+    if (/(tx failed|submit failed|simulation error|hosterror|host error|contract error|xdr)/i.test(text)) {
+      return "Transaction failed. Try again or view technical details.";
+    }
+    return text;
+  }
+
+  function getTechnicalDetails(error) {
+    if (error && typeof error.technicalDetails === "string") return error.technicalDetails;
+    if (error && typeof error.raw === "string") return error.raw;
+    if (error && error.details != null) {
+      try {
+        return JSON.stringify(error.details, null, 2);
+      } catch (e) {}
+    }
+    if (error && error.data != null) {
+      try {
+        return JSON.stringify(error.data, null, 2);
+      } catch (e) {}
+    }
+    return errorText(error);
+  }
+
+  function notifyError(error) {
+    if (error && error.__dashboardNotified) return;
+    toast(formatSorobanError(error), "error", null, getTechnicalDetails(error));
+    if (error && typeof error === "object") error.__dashboardNotified = true;
   }
 
   // Public alias required by the issue spec
   window.showToast = toast;
+  window.__formatSorobanError = formatSorobanError;
 
   // ── Transaction Overlay ──
   function showTxOverlay(text) {
@@ -473,19 +615,119 @@
   }
 
   // ── Copy to clipboard ──
-  async function copyToClipboard(text) {
+  async function copyToClipboard(text, source) {
+    var value = String(text == null ? "" : text);
+    if (!value) return false;
+    var copied = false;
     try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      const ta = document.createElement("textarea");
-      ta.value = text;
+      if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+        await navigator.clipboard.writeText(value);
+        copied = true;
+      }
+    } catch (e) {}
+    if (!copied) {
+      var ta = document.createElement("textarea");
+      ta.value = value;
       ta.style.cssText = "position:fixed;opacity:0";
       document.body.appendChild(ta);
       ta.select();
-      document.execCommand("copy");
+      try {
+        copied = document.execCommand("copy");
+      } catch (e) {}
       ta.remove();
     }
-    toast("Copied to clipboard");
+    if (!copied) {
+      toast("Could not copy to clipboard", "error");
+      return false;
+    }
+    if (source) {
+      if (!source.__copyIcon) {
+        source.__copyIcon = source.innerHTML;
+        source.__copyLabel = source.getAttribute("aria-label") || "Copy to clipboard";
+        source.__copyTitle = source.title;
+      }
+      source.classList.add("copied");
+      source.setAttribute("aria-label", "Copied!");
+      source.title = "Copied!";
+      source.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12l4 4L19 6"/></svg>';
+      clearTimeout(source.__copyResetTimer);
+      source.__copyResetTimer = setTimeout(function () {
+        source.classList.remove("copied");
+        source.setAttribute("aria-label", source.__copyLabel);
+        source.title = source.__copyTitle;
+        source.innerHTML = source.__copyIcon;
+      }, 2000);
+    }
+    toast("Copied!", "success", 2000);
+    return true;
+  }
+
+  function copyBtn(value, label) {
+    if (value == null || String(value) === "") return "";
+    var safe = escapeAttr(String(value));
+    var safeLabel = escapeAttr(label || "value");
+    return (
+      '<button type="button" class="copy-btn" data-copy-value="' +
+      safe +
+      '" aria-label="Copy ' +
+      safeLabel +
+      '" title="Copy ' +
+      safeLabel +
+      '" onclick="event.stopPropagation()">' +
+      '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
+      '<rect x="9" y="9" width="13" height="13" rx="2"/>' +
+      '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>' +
+      "</svg></button>"
+    );
+  }
+
+  function copyable(value, label, display) {
+    if (value == null || String(value) === "") return "";
+    var text = String(value);
+    var visible = display == null ? truncAddr(text) : String(display);
+    return (
+      '<span class="copyable-value" title="' +
+      escapeAttr(text) +
+      '">' +
+      escapeHtml(visible) +
+      "</span>" +
+      copyBtn(text, label)
+    );
+  }
+
+  document.addEventListener("click", function (event) {
+    var target = event.target && event.target.closest ? event.target.closest("[data-copy-value]") : null;
+    if (!target) return;
+    event.preventDefault();
+    event.stopPropagation();
+    copyToClipboard(target.getAttribute("data-copy-value"), target);
+  }, true);
+
+
+  /**
+   * Returns a human-readable relative time string (e.g. "2 hours ago") for a
+   * Unix timestamp (seconds).  Falls back to an absolute ISO date string when
+   * the Intl.RelativeTimeFormat API is unavailable.
+   * Closes #584 (missing helper that caused ReferenceError on render).
+   */
+  function formatRelativeTime(unixSeconds) {
+    if (!unixSeconds) return "—";
+    var ts = Number(unixSeconds) * 1000;
+    if (!Number.isFinite(ts)) return "—";
+    var diffMs = Date.now() - ts;
+    var diffSec = Math.round(diffMs / 1000);
+    var diffMin = Math.round(diffSec / 60);
+    var diffHr  = Math.round(diffMin / 60);
+    var diffDay = Math.round(diffHr  / 24);
+
+    if (typeof Intl !== "undefined" && Intl.RelativeTimeFormat) {
+      var rtf = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
+      if (Math.abs(diffSec) < 60)  return rtf.format(-diffSec, "second");
+      if (Math.abs(diffMin) < 60)  return rtf.format(-diffMin, "minute");
+      if (Math.abs(diffHr)  < 24)  return rtf.format(-diffHr,  "hour");
+      if (Math.abs(diffDay) < 30)  return rtf.format(-diffDay, "day");
+    }
+    return new Date(ts).toLocaleDateString();
   }
 
   // ── Modal ──
@@ -503,7 +745,7 @@
     return overlay;
   }
 
-  // ── Skeleton Loaders ──
+  // ── Skeleton Loaders (#582) ──
   function skeletonCards(n) {
     let html = '<div class="stat-grid">';
     for (let i = 0; i < (n || 4); i++) {
@@ -516,9 +758,28 @@
     let html = "";
     for (let i = 0; i < (n || 3); i++) {
       html +=
-        '<div class="skeleton-card" style="height:64px;margin-bottom:8px"><div class="skeleton skeleton-line w80"></div></div>';
+        '<div class="skeleton-card skeleton-job-row">' +
+        '<div class="skeleton skeleton-line w40" style="margin-bottom:8px"></div>' +
+        '<div class="skeleton skeleton-line w80"></div>' +
+        '</div>';
     }
     return html;
+  }
+  // Skeleton grid for agent cards (#582)
+  function skeletonAgentCards(n) {
+    let html = '<div class="agent-grid">';
+    for (let i = 0; i < (n || 4); i++) {
+      html +=
+        '<div class="skeleton-card skeleton-agent-card">' +
+        '<div style="display:flex;align-items:center;gap:14px;margin-bottom:16px">' +
+        '<div class="skeleton" style="width:40px;height:40px;border-radius:10px;flex-shrink:0"></div>' +
+        '<div class="skeleton skeleton-line w60" style="margin:0"></div>' +
+        '</div>' +
+        '<div class="skeleton skeleton-line w80"></div>' +
+        '<div class="skeleton skeleton-line w60"></div>' +
+        '</div>';
+    }
+    return html + "</div>";
   }
 
   // ── Safe DOM render helper ──
@@ -526,6 +787,89 @@
     // All HTML is constructed from trusted sources (our API responses contain
     // only Stellar addresses and contract state, not user-generated content)
     document.getElementById("page").innerHTML = html;
+  }
+
+  // ── Deliverable Preview (#580) ──
+  // Detects deliverable type and renders a safe, interactive preview.
+  // All user-supplied strings are run through escapeHtml before insertion.
+  function renderDeliverable(raw) {
+    if (!raw) return "";
+    var str = String(raw).trim();
+
+    // Detect URL (IPFS or HTTP/HTTPS)
+    var isUrl = /^(https?:\/\/|ipfs:\/\/)/i.test(str);
+    if (isUrl) {
+      var safeUrl = escapeHtml(str);
+      // Only allow http/https/ipfs in href — strip anything else
+      var hrefSafe = /^(https?:|ipfs:)/i.test(str) ? safeUrl : "#";
+      return (
+        '<div class="deliverable-preview deliverable-url">' +
+        '<div class="deliverable-label">Deliverable Link</div>' +
+        '<a class="deliverable-link" href="' + hrefSafe + '" target="_blank" rel="noopener noreferrer">' +
+        '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>' +
+        escapeHtml(str.length > 80 ? str.slice(0, 80) + "…" : str) +
+        '</a>' +
+        '</div>'
+      );
+    }
+
+    // Detect Markdown (starts with #, **, -, >, ```, or contains \n##)
+    var isMarkdown = /^#{1,6}\s|^\*\*|^[-*+]\s|^>\s|^```|(\n#{1,6}\s)/.test(str);
+    if (isMarkdown) {
+      // Safe markdown-to-HTML: only handle headings, bold, italic, code, line breaks
+      // Every raw string segment is escaped before any HTML is emitted
+      var mdHtml = str
+        .split("\n")
+        .map(function (line) {
+          var l = escapeHtml(line);
+          // ### Heading
+          l = l.replace(/^(#{1,6})\s(.+)$/, function (_, hashes, content) {
+            var level = Math.min(hashes.length + 2, 6); // h3–h6
+            return "<h" + level + " class='md-heading'>" + content + "</h" + level + ">";
+          });
+          // **bold**
+          l = l.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+          // *italic*
+          l = l.replace(/\*(.+?)\*/g, "<em>$1</em>");
+          // `inline code`
+          l = l.replace(/`([^`]+)`/g, "<code class='md-code'>$1</code>");
+          // List items
+          l = l.replace(/^[-*+]\s(.+)$/, "<li>$1</li>");
+          // Blockquote
+          l = l.replace(/^&gt;\s(.+)$/, "<blockquote class='md-blockquote'>$1</blockquote>");
+          return l || "<br>";
+        })
+        .join("\n");
+      return (
+        '<div class="deliverable-preview deliverable-markdown">' +
+        '<div class="deliverable-label">Markdown Preview</div>' +
+        '<div class="deliverable-md-body">' + mdHtml + '</div>' +
+        '</div>'
+      );
+    }
+
+    // JSON detection
+    var isJson = false;
+    var prettyJson = null;
+    if ((str.startsWith("{") || str.startsWith("[")) && str.length < 50000) {
+      try {
+        prettyJson = JSON.stringify(JSON.parse(str), null, 2);
+        isJson = true;
+      } catch (e) {}
+    }
+
+    // Plain text / JSON — render as code block with copy button
+    var codeContent = isJson ? prettyJson : str;
+    var uid = "dlv-copy-" + Date.now();
+    return (
+      '<div class="deliverable-preview deliverable-code">' +
+      '<div class="deliverable-label-row">' +
+      '<div class="deliverable-label">' + (isJson ? "JSON Deliverable" : "Deliverable") + '</div>' +
+      copyBtn(codeContent, "deliverable") +
+      '</div>' +
+      '<pre class="deliverable-pre"><code>' + escapeHtml(codeContent) + '</code></pre>' +
+      '</div>'
+    );
   }
 
   // ── Data Fetchers ──
@@ -640,15 +984,17 @@
       for (const j of recentJobs) {
         activityHtml +=
           '<div class="activity-row">' +
-          '<div class="activity-id">#' +
+          '<div class="activity-id-with-copy"><span class="activity-id">#' +
           escapeHtml(String(j.id)) +
+          "</span>" +
+          copyBtn(j.id, "job ID") +
           "</div>" +
           '<div class="activity-info">' +
           '<div class="activity-desc">' +
           escapeHtml(j.description || "\u2014") +
           "</div>" +
           '<div class="activity-meta">Client: ' +
-          truncAddr(j.client) +
+          copyable(j.client, "wallet public key") +
           "</div>" +
           "</div>" +
           '<div class="activity-right">' +
@@ -742,15 +1088,16 @@
         escapeHtml(role) +
         "</div>" +
         "</div>" +
-        '<div class="wallet-card-body">' +
-        '<div class="wallet-addr" onclick="window.__copy(\'' +
-        data.address +
-        "')\">" +
-        "<code>" +
-        escapeHtml(data.address) +
-        "</code>" +
-        '<span class="copy-hint">Click to copy</span>' +
-        "</div>" +
+         '<div class="wallet-card-body">' +
+         '<div class="wallet-addr">' +
+         '<code class="copyable-value" title="' +
+         escapeHtml(data.address) +
+         '">' +
+         escapeHtml(truncAddr(data.address)) +
+         "</code>" +
+         copyBtn(data.address, "wallet public key") +
+         '<span class="copy-hint">Copy</span>' +
+         "</div>" +
         '<div class="balance-row"><span class="balance-label xlm">XLM</span>' +
         '<span class="balance-value">' +
         parseFloat(data.xlm).toFixed(2) +
@@ -908,21 +1255,23 @@
             '<div class="detail-item" style="grid-column:1/-1">' +
             '<div class="detail-label">Deliverable</div>' +
             '<div class="detail-value">' +
-            escapeHtml(j.deliverable) +
+            renderDeliverable(j.deliverable) +
             "</div></div>";
         }
 
-        content +=
-          '<div class="job-row" id="job-' +
-          j.id +
-          '">' +
-          '<div class="job-summary" onclick="window.__toggleJob(\'' +
-          j.id +
-          "')\">" +
-          '<div class="job-id">#' +
-          escapeHtml(String(j.id)) +
-          "</div>" +
-          statusBadge(j.status) +
+         content +=
+           '<div class="job-row" id="job-' +
+           j.id +
+           '">' +
+           '<div class="job-summary" data-job-id="' +
+           escapeHtml(String(j.id)) +
+           '" onclick="window.__toggleJob(event.currentTarget.dataset.jobId)">' +
+           '<div class="job-id-with-copy"><span class="job-id">#' +
+           escapeHtml(String(j.id)) +
+           "</span>" +
+           copyBtn(j.id, "job ID") +
+           "</div>" +
+           statusBadge(j.status) +
           '<div class="job-desc">' +
           escapeHtml(j.description || "\u2014") +
           "</div>" +
@@ -933,26 +1282,22 @@
           "</div>" +
           '<div class="job-detail">' +
           '<div class="detail-grid">' +
-          '<div class="detail-item"><div class="detail-label">Client</div>' +
-          '<div class="detail-value addr-with-copy">' +
-          '<span style="cursor:pointer" onclick="window.__copy(\'' + j.client + '\')">' + truncAddr(j.client) + '</span>' +
-          copyBtn(j.client) +
-          "</div></div>" +
-          '<div class="detail-item"><div class="detail-label">Provider</div>' +
-          '<div class="detail-value addr-with-copy">' +
-          '<span style="cursor:pointer" onclick="window.__copy(\'' + j.provider + '\')">' + truncAddr(j.provider) + '</span>' +
-          copyBtn(j.provider) +
-          "</div></div>" +
-          '<div class="detail-item"><div class="detail-label">Evaluator</div>' +
-          '<div class="detail-value addr-with-copy">' +
-          '<span style="cursor:pointer" onclick="window.__copy(\'' + j.evaluator + '\')">' + truncAddr(j.evaluator) + '</span>' +
-          copyBtn(j.evaluator) +
-          "</div></div>" +
-          '<div class="detail-item"><div class="detail-label">Token</div>' +
-          '<div class="detail-value addr-with-copy">' +
-          '<span style="cursor:pointer" onclick="window.__copy(\'' + j.token + '\')">' + truncAddr(j.token) + '</span>' +
-          copyBtn(j.token) +
-          "</div></div>" +
+           '<div class="detail-item"><div class="detail-label">Client</div>' +
+           '<div class="detail-value addr-with-copy">' +
+           copyable(j.client, "wallet public key") +
+           "</div></div>" +
+           '<div class="detail-item"><div class="detail-label">Provider</div>' +
+           '<div class="detail-value addr-with-copy">' +
+           copyable(j.provider, "wallet public key") +
+           "</div></div>" +
+           '<div class="detail-item"><div class="detail-label">Evaluator</div>' +
+           '<div class="detail-value addr-with-copy">' +
+           copyable(j.evaluator, "wallet public key") +
+           "</div></div>" +
+           '<div class="detail-item"><div class="detail-label">Token</div>' +
+           '<div class="detail-value addr-with-copy">' +
+           copyable(j.token, "token contract address") +
+           "</div></div>" +
           (j.created_at
             ? '<div class="detail-item"><div class="detail-label">Created</div>' +
               '<div class="detail-value" title="' + escapeHtml(new Date(Number(j.created_at) * 1000).toISOString()) + '">' +
@@ -979,19 +1324,11 @@
   }
 
   // 4. Agents
-  function matchAgent(a, query) {
-    if (!query) return true;
-    const q = query.toLowerCase().trim();
-    if (!q) return true;
-
-    const nameMatch = Boolean(a.name && String(a.name).toLowerCase().includes(q));
-    const descMatch = Boolean(a.description && String(a.description).toLowerCase().includes(q));
-    const tagsMatch = Boolean(
-      Array.isArray(a.tags)
-        ? a.tags.some(function (t) {
-            return String(t).toLowerCase().includes(q);
-          })
-        : typeof a.tags === "string" && a.tags.toLowerCase().includes(q),
+  async function renderAgents() {
+    setPage(
+      '<div class="section-header"><div><div class="section-title">Agents</div><div class="page-subtitle" style="margin-top:2px">On-chain identity registry for AI agents</div></div>' +
+        '<button class="btn btn-primary" onclick="window.__showRegisterAgent()">+ Register Agent</button></div>' +
+        skeletonAgentCards(4),
     );
     const skillsMatch = Boolean(
       Array.isArray(a.skills)
@@ -1025,78 +1362,65 @@
         })
       : agents;
 
+    // #583 — apply agent search filter
+    var agentQuery = (state.agentSearch || "").toLowerCase().trim();
+    var filtered = agents;
+    if (agentQuery) {
+      filtered = agents.filter(function (a) {
+        return (
+          (a.owner || "").toLowerCase().includes(agentQuery) ||
+          (a.uri || "").toLowerCase().includes(agentQuery) ||
+          String(a.id).includes(agentQuery) ||
+          (Array.isArray(a.tags) && a.tags.some(function (t) {
+            return t.toLowerCase().includes(agentQuery);
+          })) ||
+          (a.description || "").toLowerCase().includes(agentQuery) ||
+          (a.name || "").toLowerCase().includes(agentQuery)
+        );
+      });
+    }
+
+    // #583 — search bar with 200ms debounce
+    var searchBar =
+      '<div class="agent-search-wrap" style="margin-bottom:16px">' +
+      '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
+      '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>' +
+      '<input class="agent-search-input" id="agent-search" type="search" ' +
+      'placeholder="Search agents by name, skill, or tag…" ' +
+      'value="' + escapeHtml(state.agentSearch) + '" ' +
+      'oninput="window.__searchAgentsDebounced(this.value)" ' +
+      'aria-label="Search agents">' +
+      '</div>';
+
     let cards = "";
     if (filtered.length === 0) {
-      if (searchTerm) {
-        cards =
-          '<div class="empty-state">' +
+      var emptyMsg = agentQuery
+        ? '<div class="empty-state">' +
           '<div class="empty-icon"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg></div>' +
-          '<div class="empty-title">No agents found matching \'' +
-          escapeHtml(searchTerm) +
-          "'</div>" +
-          '<div class="empty-desc">Try a different search query or clear the filter.</div></div>';
-      } else {
-        cards =
-          '<div class="empty-state">' +
+          '<div class="empty-title">No agents found matching &ldquo;' + escapeHtml(agentQuery) + '&rdquo;</div>' +
+          '<div class="empty-desc">Try a different search term.</div></div>'
+        : '<div class="empty-state">' +
           '<div class="empty-icon"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg></div>' +
           '<div class="empty-title">No agents registered</div>' +
           '<div class="empty-desc">Register your first agent to get started.</div></div>';
-      }
+      cards = emptyMsg;
     } else {
       cards = '<div class="agent-grid">';
       for (const a of filtered) {
-        let tagsHtml = "";
-        if (Array.isArray(a.tags) && a.tags.length > 0) {
-          tagsHtml =
-            '<div class="agent-field"><div class="agent-field-label">Tags</div><div class="agent-tags">' +
-            a.tags
-              .map(function (t) {
-                return '<span class="agent-tag">' + escapeHtml(String(t)) + "</span>";
-              })
-              .join("") +
-            "</div></div>";
-        }
-        let descHtml = "";
-        if (a.description) {
-          descHtml =
-            '<div class="agent-field"><div class="agent-field-label">Description</div>' +
-            '<div class="agent-field-value" style="font-family:var(--font);font-size:13px;word-break:normal">' +
-            escapeHtml(a.description) +
-            "</div></div>";
-        }
-        let nameHtml = "";
-        if (a.name) {
-          nameHtml =
-            '<div class="agent-field"><div class="agent-field-label">Name</div>' +
-            '<div class="agent-field-value" style="font-family:var(--font);font-weight:600;color:var(--text)">' +
-            escapeHtml(a.name) +
-            "</div></div>";
-        }
         cards +=
           '<div class="agent-card">' +
-          '<div class="agent-card-top">' +
-          agentIdenticon(a.owner) +
-          '<div class="agent-id">' +
-          (a.name
-            ? escapeHtml(a.name) +
-              ' <span style="font-size:12px;color:var(--text-dim)">(#' +
-              escapeHtml(String(a.id)) +
-              ")</span>"
-            : "Agent <span>#" + escapeHtml(String(a.id)) + "</span>") +
-          "</div>" +
-          "</div>" +
-          nameHtml +
-          descHtml +
-          tagsHtml +
-          '<div class="agent-field"><div class="agent-field-label">Owner</div>' +
-          '<div class="agent-field-value addr-with-copy">' +
-          '<span style="cursor:pointer" onclick="window.__copy(\'' +
-          a.owner +
-          "')\">" +
-          truncAddr(a.owner) +
-          "</span>" +
-          copyBtn(a.owner) +
-          "</div></div>" +
+           '<div class="agent-card-top">' +
+           agentIdenticon(a.owner) +
+           '<div class="agent-id">Agent <span>#' +
+           escapeHtml(String(a.id)) +
+           "</span>" +
+           copyBtn(a.id, "agent ID") +
+           "</div>" +
+           "</div>" +
+           '<div class="agent-field"><div class="agent-field-label">Owner</div>' +
+           '<div class="agent-field-value addr-with-copy">' +
+           copyable(a.owner, "wallet public key") +
+           "</div></div>" +
           '<div class="agent-field"><div class="agent-field-label">Metadata URI</div>' +
           '<div class="agent-field-value">' +
           escapeHtml(a.uri) +
@@ -1106,10 +1430,9 @@
       cards += "</div>";
     }
 
-    const totalPages = Math.max(1, Math.ceil((searchTerm ? filtered.length : state.agentTotal) / state.agentPageSize));
-    let paginationHtml = "";
-    if (totalPages > 1 && !searchTerm) {
-      paginationHtml =
+    const totalPages = Math.max(1, Math.ceil(state.agentTotal / state.agentPageSize));
+    if (totalPages > 1 && !agentQuery) {
+      cards +=
         '<div class="filter-tabs" style="margin-top:20px">' +
         '<button class="filter-tab" ' +
         (state.agentPage === 1 ? "disabled" : "") +
@@ -1155,10 +1478,16 @@
         '<div class="stat-icon orange"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>' +
         '</div><div class="stat-value" style="font-size:14px;font-weight:600;color:var(--text-muted);font-family:var(--mono)">ERC-8004</div></div>' +
         "</div>" +
-        searchToolbar +
-        cards +
-        paginationHtml,
+        searchBar +
+        cards,
     );
+
+    // Restore focus to search input after re-render
+    var inp = document.getElementById("agent-search");
+    if (inp && agentQuery) {
+      inp.focus();
+      inp.setSelectionRange(inp.value.length, inp.value.length);
+    }
   }
 
   // 5. Transaction History
@@ -1249,19 +1578,19 @@
               escapeHtml(ev.deliverable) +
               '" target="_blank" rel="noopener" style="color:var(--accent);font-weight:500">View Deliverable ↗</a>'
             : "";
-          meta =
-            "Client: " +
-            truncAddr(ev.actor) +
-            " &nbsp;·&nbsp; " +
-            formatMusd(ev.budget) +
-            " USDC" +
-            deliverablePart;
+           meta =
+             "Client: " +
+             copyable(ev.actor, "wallet public key") +
+             " &nbsp;·&nbsp; " +
+             formatMusd(ev.budget) +
+             " USDC" +
+             deliverablePart;
           badge = statusBadge(ev.status);
         } else {
           icon =
             '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>';
           label = "Agent registered";
-          meta = "Owner: " + truncAddr(ev.actor) + " &nbsp;·&nbsp; " + escapeHtml(ev.uri || "");
+           meta = "Owner: " + copyable(ev.actor, "wallet public key") + " &nbsp;·&nbsp; " + escapeHtml(ev.uri || "");
           badge =
             '<span class="status-badge status-Completed"><span class="dot"></span>Registered</span>';
         }
@@ -1280,11 +1609,13 @@
           meta +
           "</div>" +
           "</div>" +
-          '<div class="history-right">' +
-          '<div class="history-id">#' +
-          escapeHtml(String(ev.id)) +
-          "</div>" +
-          badge +
+           '<div class="history-right">' +
+           '<div class="history-id-with-copy"><span class="history-id">#' +
+           escapeHtml(String(ev.id)) +
+           "</span>" +
+           copyBtn(ev.id, ev.kind === "job" ? "job ID" : "agent ID") +
+           "</div>" +
+           badge +
           "</div>" +
           "</div>";
       }
@@ -1356,7 +1687,7 @@
     loadJobs(filter === "All" ? undefined : filter)
       .then(renderJobList)
       .catch(function (e) {
-        toast(e.message, "error");
+        notifyError(e);
       });
   };
 
@@ -1442,35 +1773,19 @@
     renderAgents();
   };
 
-  // Live agent search with 200ms debounce
-  let agentSearchDebounceTimer = null;
-  window.__searchAgents = function (value) {
-    clearTimeout(agentSearchDebounceTimer);
-    agentSearchDebounceTimer = setTimeout(function () {
-      state.agentSearch = value;
-      renderAgents();
-      var input = document.getElementById("agent-search");
-      if (input) {
-        input.focus();
-        var len = input.value.length;
-        input.setSelectionRange(len, len);
-      }
-    }, 200);
+  // #583 — debounced agent search handler
+  var _searchAgentsImmediate = function (value) {
+    state.agentSearch = value;
+    renderAgents();
   };
-
-  // Attach input listener for agent-search
-  document.addEventListener("input", function (e) {
-    if (e.target && e.target.id === "agent-search") {
-      window.__searchAgents(e.target.value);
-    }
-  });
+  window.__searchAgentsDebounced = debounce(_searchAgentsImmediate, 200);
 
   window.__showCreateJob = function () {
     var walletField = wallet.connected
       ? '<div class="form-group"><label class="form-label">Signing Wallet</label>' +
-        '<div class="form-input" style="color:var(--accent);cursor:default">' +
-        truncAddr(wallet.publicKey) +
-        " (Freighter)</div></div>"
+         '<div class="form-input signing-wallet-display" style="color:var(--accent);cursor:default">' +
+         copyable(wallet.publicKey, "wallet public key") +
+        " (" + connectedWalletLabel() + ")</div></div>"
       : '<div class="form-group"><label class="form-label">Signing Wallet</label>' +
         '<select class="form-select" id="cj-wallet"><option value="buyer">Buyer (Client)</option><option value="seller">Seller</option></select></div>';
     showModal(
@@ -1518,7 +1833,7 @@
       renderJobList();
     } catch (e) {
       hideTxOverlay();
-      toast(e.message, "error");
+      notifyError(e);
     } finally {
       state.txPending = false;
     }
@@ -1546,7 +1861,7 @@
       renderJobList();
     } catch (e) {
       hideTxOverlay();
-      toast(e.message, "error");
+      notifyError(e);
     } finally {
       state.txPending = false;
     }
@@ -1568,7 +1883,7 @@
       renderJobList();
     } catch (e) {
       hideTxOverlay();
-      toast(e.message, "error");
+      notifyError(e);
     } finally {
       state.txPending = false;
     }
@@ -1593,7 +1908,7 @@
       renderJobList();
     } catch (e) {
       hideTxOverlay();
-      toast(e.message, "error");
+      notifyError(e);
     } finally {
       state.txPending = false;
     }
@@ -1602,9 +1917,9 @@
   window.__showRegisterAgent = function () {
     var walletField = wallet.connected
       ? '<div class="form-group"><label class="form-label">Signing Wallet</label>' +
-        '<div class="form-input" style="color:var(--accent);cursor:default">' +
-        truncAddr(wallet.publicKey) +
-        " (Freighter)</div></div>"
+         '<div class="form-input signing-wallet-display" style="color:var(--accent);cursor:default">' +
+         copyable(wallet.publicKey, "wallet public key") +
+        " (" + connectedWalletLabel() + ")</div></div>"
       : '<div class="form-group"><label class="form-label">Signing Wallet</label>' +
         '<select class="form-select" id="ra-wallet"><option value="buyer">Buyer</option><option value="seller">Seller</option></select></div>';
     showModal(
@@ -1630,7 +1945,9 @@
     try {
       let agentId = null;
       if (wallet.connected) {
-        const res = await signAndSubmit("/agents/register", { wallet: "freighter", uri: uri });
+        // Pass 'connected' so the server uses the caller's public key regardless
+        // of which wallet adapter (Freighter, Albedo, xBull…) is active. (#584)
+        const res = await signAndSubmit("/agents/register", { wallet: "connected", uri: uri });
         hideTxOverlay();
         toast("Agent registered! tx: " + (res.hash || "").slice(0, 8) + "...");
       } else {
@@ -1661,7 +1978,7 @@
       renderAgents();
     } catch (e) {
       hideTxOverlay();
-      toast(e.message, "error");
+      notifyError(e);
     } finally {
       state.txPending = false;
     }
@@ -1847,17 +2164,51 @@
   if (typeof EventSource !== "undefined") {
     try {
       const es = new EventSource("/api/stream");
+
+      // #581 — SSE connection status helpers
+      function setSseStatus(state) {
+        // state: 'connecting' | 'live' | 'reconnecting'
+        var dots = [
+          document.getElementById("sse-dot"),
+          document.getElementById("sse-dot-desktop"),
+        ];
+        var labels = [
+          document.getElementById("sse-label"),
+          document.getElementById("sse-label-desktop"),
+        ];
+        var pills = [
+          document.getElementById("sse-status-pill"),
+          document.getElementById("sse-status-pill-desktop"),
+        ];
+        var text = state === "live" ? "Live" : state === "reconnecting" ? "Reconnecting…" : "Connecting…";
+        dots.forEach(function (d) {
+          if (!d) return;
+          d.className = "sse-dot sse-dot-" + state;
+        });
+        labels.forEach(function (l) { if (l) l.textContent = text; });
+        pills.forEach(function (p) {
+          if (!p) return;
+          p.className = "sse-status-pill sse-" + state + (p.classList.contains("sse-status-sidebar") ? " sse-status-sidebar" : "");
+        });
+      }
+
+      es.onopen = function () {
+        setSseStatus("live");
+      };
       es.addEventListener("invalidate", function (e) {
+        setSseStatus("live");
         try {
-          const payload = JSON.parse(e.data);
-          // On any invalidation, run a quick poll to refresh current view
+          JSON.parse(e.data);
           poll();
         } catch (err) {
           poll();
         }
       });
-      es.addEventListener("ping", function () {});
+      es.addEventListener("ping", function () {
+        setSseStatus("live");
+      });
       es.onerror = function () {
+        setSseStatus("reconnecting");
         // Close noisy stream errors; polling remains as a fallback
         try {
           es.close();

@@ -57,7 +57,7 @@ export class IdentityClient extends BaseClient {
    * submits via `sendTransaction`, and polls until finalized. The caller does
    * not need to build or sign anything manually.
    *
-   * @param owner - The owner's Keypair. Used as both the on-chain `owner`
+   * @param owner - The owner's Signer. Used as both the on-chain `owner`
    *                address and the transaction signer.
    * @param uri - Metadata URI for the agent (e.g. a DID document URL or IPFS CID).
    *              Must be `https://` or `ipfs://`; see {@link isValidMetadataUri}.
@@ -73,7 +73,7 @@ export class IdentityClient extends BaseClient {
    * // agentId is e.g. 42n
    * ```
    */
-  async register(owner: Keypair, uri: string): Promise<bigint> {
+  async register(owner: Signer, uri: string): Promise<bigint> {
     if (!isValidMetadataUri(uri)) {
       throw new Error(`invalid metadata uri: ${uri}`);
     }
@@ -290,6 +290,11 @@ export class IdentityClient extends BaseClient {
       agents.push(agent);
     }
     return agents;
+  }
+
+  async registeredCount(): Promise<number> {
+    const op = this.contract.call("registered_count");
+    return await this.simulate(op, (v) => Number(scValToNative(v)));
   }
 
   /**

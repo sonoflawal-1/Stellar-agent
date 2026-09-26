@@ -288,6 +288,76 @@ export async function retryWithBackoff<T>(
   throw new Error("unreachable");
 }
 
+/**
+ * Wraps an LLM API call with exponential backoff and jitter, retrying on
+ * transient HTTP 429 (Rate Limit) and 5xx (Server Error) responses.
+ *
+ * - Respects the `Retry-After` header when present (Groq / OpenAI return it
+ *   on 429 responses).
+ * - Falls back to exponential backoff with jitter when no header is present.
+ * - Logs a warning on every retry attempt so operators can spot saturation.
+ * - Only surfaces the error to the caller after all retries are exhausted.
+ *
+ * @param fn        Async factory that performs one LLM API call.
+ * @param maxRetries Maximum number of additional attempts after the first failure (default 3).
+ * @param label     Optional agent/context label for log prefixes.
+ *
+ * Closes #587.
+ */
+export async function callLlmWithRetry<T>(
+  fn: () => Promise<T>,
+  maxRetries = 3,
+  label = "",
+): Promise<T> {
+  const prefix = label ? `[${label}] ` : "";
+  const maxAttempts = maxRetries + 1;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err: unknown) {
+      if (attempt === maxAttempts) throw err;
+
+      // Determine whether this is a retryable error.
+      // Groq SDK and raw fetch both surface status codes differently.
+      const status = (err as { status?: number; statusCode?: number }).status
+        ?? (err as { status?: number; statusCode?: number }).statusCode
+        ?? 0;
+      const message = (err as Error).message ?? "";
+      const isRateLimited = status === 429 || /rate.?limit/i.test(message);
+      const isServerError = status >= 500 || /overloaded|service.?unavailable/i.test(message);
+
+      if (!isRateLimited && !isServerError) {
+        // Non-transient error — fail immediately, do not retry.
+        throw err;
+      }
+
+      // Honour Retry-After header if the SDK surfaces it.
+      const retryAfterSec = (err as { headers?: Record<string, string> }).headers?.["retry-after"];
+      const retryAfterMs = retryAfterSec ? parseFloat(retryAfterSec) * 1000 : NaN;
+      const backoffMs = baseDelayFromAttempt(attempt);
+      const delayMs = Number.isFinite(retryAfterMs) && retryAfterMs > 0
+        ? retryAfterMs
+        : backoffMs;
+
+      console.warn(
+        `${prefix}LLM attempt ${attempt}/${maxAttempts} failed (HTTP ${status || "?"}): ` +
+        `${message.slice(0, 120)} — retrying in ${Math.round(delayMs)}ms`,
+      );
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  throw new Error("unreachable");
+}
+
+/** Exponential backoff with full jitter: delay = rand(0, base * 2^(attempt-1)), capped at 30s. */
+function baseDelayFromAttempt(attempt: number): number {
+  const cap = 30_000;
+  const base = 1_000;
+  const ceiling = Math.min(cap, base * Math.pow(2, attempt - 1));
+  return Math.random() * ceiling;
+}
+
 export async function startHeartbeat(
   agentId: string,
   registryUrl: string,
