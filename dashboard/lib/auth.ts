@@ -6,15 +6,18 @@ const nonceStore = new Map<string, { nonce: string; timestamp: number }>();
 const NONCE_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes
 const MAX_CLOCK_SKEW_SECONDS = 300; // Allow 5 minutes clock skew for signature timestamps
 
-export function generateNonce(publicKey: string): string {
-  const nonce = crypto.randomBytes(32).toString("hex");
-  nonceStore.set(publicKey, { nonce, timestamp: Date.now() });
-  // Clean up expired nonces
+function cleanupExpiredNonces(now = Date.now()): void {
   for (const [key, value] of nonceStore.entries()) {
-    if (Date.now() - value.timestamp > NONCE_EXPIRY_MS) {
+    if (now - value.timestamp > NONCE_EXPIRY_MS) {
       nonceStore.delete(key);
     }
   }
+}
+
+export function generateNonce(publicKey: string): string {
+  const nonce = crypto.randomBytes(32).toString("hex");
+  nonceStore.set(publicKey, { nonce, timestamp: Date.now() });
+  cleanupExpiredNonces();
   return nonce;
 }
 
@@ -107,10 +110,19 @@ interface AuthSession {
 const SESSION_DURATION_MS = 30 * 60 * 1000; // 30 minutes
 const sessionStore = new Map<string, AuthSession>();
 
+function cleanupExpiredSessions(now = Date.now()): void {
+  for (const [token, session] of sessionStore.entries()) {
+    if (now > session.expiresAt) {
+      sessionStore.delete(token);
+    }
+  }
+}
+
 /**
  * Create an authenticated session after successful wallet verification.
  */
 export function createSession(publicKey: string): string {
+  cleanupExpiredSessions();
   const token = crypto.randomBytes(32).toString("hex");
   sessionStore.set(token, {
     publicKey,
@@ -142,6 +154,13 @@ export function verifySession(token: string): string | null {
  */
 export function invalidateSession(token: string): void {
   sessionStore.delete(token);
+}
+
+export function refreshSession(token: string): string | null {
+  const publicKey = verifySession(token);
+  if (!publicKey) return null;
+  sessionStore.delete(token);
+  return createSession(publicKey);
 }
 
 /**

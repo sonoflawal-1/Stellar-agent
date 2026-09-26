@@ -36,6 +36,7 @@ import {
   generateNonce,
   verifyNonceSignature,
   createSession,
+  refreshSession,
   verifySession,
   invalidateSession,
   requireAuth,
@@ -86,6 +87,7 @@ const allowedOrigins = [
   "http://localhost:3000",
   "http://localhost:5173",
   process.env.ALLOWED_ORIGIN,
+  ...(process.env.ALLOWED_ORIGINS ?? "").split(",").map((origin) => origin.trim()),
 ].filter(Boolean) as string[];
 
 const mutatingBuckets = new Map<string, { count: number; resetAt: number }>();
@@ -351,6 +353,24 @@ app.post("/api/auth/logout", (req, res) => {
       invalidateSession(token);
     }
     res.json({ success: true });
+  } catch (err: unknown) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/auth/refresh", (req, res) => {
+  try {
+    const token = req.headers.authorization?.replace("Bearer ", "");
+    if (!token) {
+      res.status(401).json({ error: "Missing authentication token" });
+      return;
+    }
+    const refreshed = refreshSession(token);
+    if (!refreshed) {
+      res.status(401).json({ error: "Invalid or expired token" });
+      return;
+    }
+    res.json({ token: refreshed });
   } catch (err: unknown) {
     res.status(500).json({ error: (err as Error).message });
   }
