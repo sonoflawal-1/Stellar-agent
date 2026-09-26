@@ -4,10 +4,19 @@
 // backend API (Stellar addresses, contract state). No untrusted user input.
 
 (() => {
-  // ── Theme (dark/light) ── #461
+  // ── Theme (dark/light) ── #461, #578
   (function initTheme() {
-    var saved = localStorage.getItem("bear-theme") || "dark";
-    document.documentElement.setAttribute("data-theme", saved);
+    var saved = localStorage.getItem("bear-theme");
+    var theme = saved;
+    if (!theme) {
+      // Respect OS system preference (#578)
+      if (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) {
+        theme = "light";
+      } else {
+        theme = "dark";
+      }
+    }
+    document.documentElement.setAttribute("data-theme", theme);
     var btn = document.getElementById("theme-toggle-btn");
     if (btn) {
       btn.addEventListener("click", function () {
@@ -116,6 +125,7 @@
       wallet.connected = true;
       wallet.publicKey = pk;
       wallet.network = net;
+      previousPublicKey = pk; // Track for change detection (#575)
       updateWalletUI();
       if (typeof api.onNetworkChanged === "function") {
         api.onNetworkChanged(function (n) {
@@ -147,10 +157,48 @@
   }
   retryDetectFreighter(3);
 
+  // Track previous public key for account change detection (#575)
+  var previousPublicKey = null;
+
+  // Periodic poll for account changes (#575)
+  async function checkAccountChange() {
+    if (!wallet.connected) return;
+    try {
+      const api = window.freighterApi || window.freighter;
+      if (!api || typeof api.getPublicKey !== "function") return;
+      const currentPk = await api.getPublicKey();
+      if (!currentPk || currentPk.length <= 10) return;
+
+      // Account changed detected
+      if (previousPublicKey && previousPublicKey !== currentPk) {
+        toast("Account changed to " + truncAddr(currentPk), "info");
+        // Clear session token
+        var token = window.__sessionToken;
+        if (token) {
+          fetch("/api/auth/logout", {
+            method: "POST",
+            headers: { Authorization: "Bearer " + token },
+          }).catch(function () {});
+          window.__sessionToken = null;
+        }
+        // Update wallet state
+        wallet.publicKey = currentPk;
+        updateWalletUI();
+      }
+      previousPublicKey = currentPk;
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  // Poll for account changes every 3 seconds
+  setInterval(checkAccountChange, 3000);
+
   function disconnectWallet() {
     wallet.connected = false;
     wallet.publicKey = null;
     wallet.network = null;
+    previousPublicKey = null; // Clear account change tracking (#575)
     // Clear all cached state so the next session starts fresh
     state.stats = null;
     state.wallets = null;
@@ -1174,8 +1222,19 @@
       });
     }
 
+    // Count jobs by status for badges (#579)
+    var counts = {
+      "All": jobs.length,
+      "Active": jobs.filter(function (j) { return j.status === "Funded" || j.status === "Submitted"; }).length,
+      "Funded": jobs.filter(function (j) { return j.status === "Funded"; }).length,
+      "Submitted": jobs.filter(function (j) { return j.status === "Submitted"; }).length,
+      "Completed": jobs.filter(function (j) { return j.status === "Completed"; }).length,
+      "Cancelled": jobs.filter(function (j) { return j.status === "Cancelled"; }).length,
+    };
+
     let tabs = '<div class="filter-tabs">';
     for (const f of filters) {
+      var count = counts[f] || 0;
       tabs +=
         '<button class="filter-tab ' +
         (f === state.jobFilter ? "active" : "") +
@@ -1183,6 +1242,7 @@
         f +
         "')\">" +
         f +
+        (count > 0 ? ' <span class="filter-badge">' + count + '</span>' : '') +
         "</button>";
     }
     tabs += "</div>";
