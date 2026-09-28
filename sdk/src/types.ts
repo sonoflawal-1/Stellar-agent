@@ -263,5 +263,72 @@ function resolveDeploymentValues(network: "testnet" | "mainnet") {
  *
  * @example
  * // .env — per-network override (takes priority over STELL
+ */
+function resolveRpcUrl(
+  network: "testnet" | "mainnet",
+  defaultRpcUrl: string,
+): string {
+  const networkKey = network === "testnet" ? "STELLAR_TESTNET_RPC_URL" : "STELLAR_MAINNET_RPC_URL";
+  return process.env[networkKey] ?? process.env.STELLAR_RPC_URL ?? defaultRpcUrl;
+}
 
-/* … truncated 6530 chars — edit only what you need near the top … */
+/**
+ * Pre-built config for Stellar Testnet.
+ *
+ * Uses SDF's public Soroban RPC and the known testnet contract addresses.
+ * Override any field via environment variables.
+ */
+export const TESTNET: MarcConfig = {
+  rpcUrl: resolveRpcUrl("testnet", "https://soroban-testnet.stellar.org"),
+  networkPassphrase: "Test SDF Network ; September 2015",
+  identityContract: "CAMPXYFZJTIPEVOPOAZPRG5OHXKNBDPGTPRCOIO4LVPGEM4TONPY65A5" as Address,
+  commerceContract: "CD2KWU7IE74Z2QKVP3FQ67J46XHNMGIDTNKXVWE7ZNVRC7T6UH46GQXE" as Address,
+  usdcToken: "CBIELTK6YBZJU5UP2WWQEUCYKLPU6AUNZ2BQ4WWFEIE3USCIHMXQDAMA" as Address,
+};
+
+/**
+ * Pre-built config for Stellar Mainnet (public network).
+ */
+export const MAINNET: MarcConfig = {
+  rpcUrl: resolveRpcUrl("mainnet", "https://soroban-rpc.mainnet.stellar.org"),
+  networkPassphrase: "Public Global Stellar Network ; September 2015",
+  identityContract: "" as Address,
+  commerceContract: "" as Address,
+  usdcToken: "" as Address,
+};
+
+/**
+ * Load SDK configuration from environment variables or a deployment config file.
+ */
+export function loadConfig(network: "testnet" | "mainnet" = "testnet"): MarcConfig {
+  const values = resolveDeploymentValues(network);
+  return {
+    rpcUrl: resolveRpcUrl(network, network === "testnet"
+      ? "https://soroban-testnet.stellar.org"
+      : "https://soroban-rpc.mainnet.stellar.org"),
+    networkPassphrase: network === "testnet"
+      ? "Test SDF Network ; September 2015"
+      : "Public Global Stellar Network ; September 2015",
+    identityContract: values.identityContract,
+    commerceContract: values.commerceContract,
+    usdcToken: values.usdcToken,
+  };
+}
+
+/**
+ * Returns true if the given job status is a terminal state (no further
+ * transitions are possible).
+ */
+export function isJobTerminal(status: JobStatus): boolean {
+  return (
+    status === JobStatus.Completed ||
+    status === JobStatus.Cancelled
+  );
+}
+
+/**
+ * Returns true if the given job status is an active (non-terminal) state.
+ */
+export function isJobActive(status: JobStatus): boolean {
+  return !isJobTerminal(status);
+}

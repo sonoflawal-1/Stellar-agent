@@ -195,6 +195,17 @@ pub struct JobCompleted {
     pub timestamp: u64,
 }
 
+/// Emitted when a provider claims payout after evaluator timeout (claim_expired).
+#[contractevent]
+pub struct JobExpired {
+    #[topic]
+    pub provider: Address,
+    pub job_id: u64,
+    pub payout: i128,
+    pub fee: i128,
+    pub timestamp: u64,
+}
+
 /// Emitted when a buyer claims a refund after provider timeout.
 #[contractevent]
 pub struct JobRefunded {
@@ -312,22 +323,34 @@ impl AgenticCommerceContract {
         }
     }
 
-    /// Compute the platform fee for a given budget using safe arithmetic (#28).
+    /// Compute the platform fee for a given budget using safe arithmetic (#28, #539).
     ///
-    /// The naive `budget * fee_bps / BPS_DENOM` risks overflowing i128 for
-    /// very large budgets (e.g. 10^30 atomic units × 500 bps). We divide
-    /// first to keep the intermediate value small, then multiply.  A small
-    /// amount of precision is lost (at most `fee_bps - 1` stroops, i.e. < 500)
-    /// which is acceptable for a platform fee calculation.
+    /// We multiply first (`budget * fee_bps`) before dividing by `BPS_DENOM`
+    /// so that micro-budgets smaller than 10,000 atomic units still produce a
+    /// non-zero fee when one is due.  For example, a budget of 5,000 with
+    /// `fee_bps = 100` (1%) gives `5_000 * 100 / 10_000 = 50`, whereas the
+    /// old divide-first approach returned 0.
     ///
-    /// We still use `checked_mul` after the division as a defence-in-depth
-    /// guard — in practice the result of `budget / BPS_DENOM` is at most
-    /// i128::MAX / BPS_DENOM which multiplied by MAX_FEE_BPS (500) is still
-    /// well within i128 range.
+    /// Overflow safety: `budget * fee_bps` uses `checked_mul`.  The maximum
+    /// safe budget before overflow is `i128::MAX / MAX_FEE_BPS (500)` ≈
+    /// 6.8 × 10^35, which is far beyond any realistic token amount on Stellar
+    /// (total XLM supply is ~50 × 10^9 with 7 decimal places, i.e. ~5 × 10^16
+    /// stroops). `checked_mul` panics with "fee overflow" if this is ever hit.
+    ///
+    /// Minimum fee floor: if `budget > 0` and `fee_bps > 0` but the integer
+    /// division still rounds down to 0 (i.e. `budget * fee_bps < BPS_DENOM`),
+    /// we return 1 so micro-jobs never get a completely free ride.
     fn compute_fee(budget: i128, fee_bps: u32) -> i128 {
-        (budget / BPS_DENOM)
+        if budget <= 0 || fee_bps == 0 {
+            return 0;
+        }
+        let numerator = budget
             .checked_mul(fee_bps as i128)
-            .expect("fee overflow")
+            .expect("fee overflow");
+        let fee = numerator / BPS_DENOM;
+        // Minimum 1-unit floor: if the proportional fee rounded to zero,
+        // charge at least 1 atomic unit so there is no unintentional free ride.
+        if fee == 0 { 1 } else { fee }
     }
 
     fn voucher_message(env: &Env, voucher: &ChannelVoucher) -> soroban_sdk::Bytes {
@@ -734,8 +757,11 @@ impl AgenticCommerceContract {
     /// Evaluator approves the deliverable. Splits budget between provider and
     /// treasury according to the current `fee_bps` setting.
     ///
-    /// Fee is computed as `(budget / BPS_DENOM) * fee_bps` (divide-first order)
-    /// to avoid i128 overflow for extremely large budgets (#28).
+    /// Fee is computed with a multiply-first approach (`budget * fee_bps /
+    /// BPS_DENOM`) so that micro-budgets smaller than 10,000 atomic units
+    /// still produce a non-zero fee. A minimum 1-unit floor is applied when
+    /// the proportional fee rounds to zero but both `budget` and `fee_bps`
+    /// are positive (#539).
     pub fn complete(env: Env, caller: Address, id: u64) {
         Self::require_not_paused(&env); // #29
         caller.require_auth();
@@ -1008,14 +1034,13 @@ impl AgenticCommerceContract {
 
     /// Read-only helper: estimate the platform fee for a given budget and fee rate.
     ///
-    /// Returns `(budget / 10_000) * fee_bps`. No state is read or written.
-    /// Intended for frontends that want to display the estimated fee before
-    /// calling `create_job`.
+    /// Uses the same multiply-first logic as `compute_fee` (#539) so that
+    /// micro-budgets below 10,000 atomic units return an accurate non-zero
+    /// estimate instead of the misleading 0 that the old divide-first formula
+    /// produced. No state is read or written; intended for frontends that want
+    /// to display the estimated fee before calling `create_job`.
     pub fn simulate_job_fee(_env: Env, budget: i128, fee_bps: u32) -> i128 {
-        // #28 — divide-first to avoid overflow on very large budgets.
-        (budget / BPS_DENOM)
-            .checked_mul(fee_bps as i128)
-            .unwrap_or(0)
+        Self::compute_fee(budget, fee_bps)
     }
 
     /// Fetch a job by id.
