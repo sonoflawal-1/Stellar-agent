@@ -1,5 +1,8 @@
 #![no_std]
-use soroban_sdk::{contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, token, Address, Env, String, Vec};
+use soroban_sdk::{
+    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, token,
+    Address, Env, IntoVal, String, Vec,
+};
 
 /// Contract-level error codes for agentic-commerce (#323, #541).
 #[contracterror]
@@ -28,6 +31,10 @@ pub enum Error {
     /// #706 — the evaluator-asserted deliverable content hash does not match
     /// the hash committed by the provider at submission time.
     HashMismatch = 11,
+    /// The requested batch is empty or exceeds the supported size.
+    BatchTooLarge = 12,
+    /// A path-payment router exceeded the client's maximum input amount.
+    SlippageExceeded = 13,
 }
 
 /// Lifecycle states for a job escrow.
@@ -232,6 +239,8 @@ const MAX_METADATA_URI_LEN: u32 = 1024;
 const MAX_EVALUATORS: u32 = 5;
 const DEFAULT_MULTI_EVAL_THRESHOLD: i128 = i128::MAX;
 const CHANNEL_DISPUTE_WINDOW_SECS: u64 = 24 * 60 * 60;
+const SECS_PER_HOUR: u64 = 60 * 60;
+const MAX_SLA_PENALTY_BPS: u32 = 5_000;
 /// #698 — maximum number of jobs that may be created in a single atomic batch.
 const MAX_BATCH_SIZE: u32 = 10;
 
@@ -337,17 +346,6 @@ pub struct JobDisputed {
     #[topic]
     pub client: Address,
     pub job_id: u64,
-    pub timestamp: u64,
-}
-
-/// Emitted when a provider claims payment after the evaluator timeout has passed (#18).
-#[contractevent]
-pub struct JobExpired {
-    #[topic]
-    pub provider: Address,
-    pub job_id: u64,
-    pub payout: i128,
-    pub fee: i128,
     pub timestamp: u64,
 }
 
@@ -985,10 +983,14 @@ impl AgenticCommerceContract {
                 status: JobStatus::Funded,
                 description: req.description,
                 deliverable: String::from_str(&env, ""),
+                deliverable_hash: soroban_sdk::BytesN::from_array(&env, &[0u8; 32]),
                 funded_at: now,
                 created_at: now,
                 updated_at: now,
                 fee_bps: snapshotted_fee_bps, // #23
+                sla_deadline: 0,
+                penalty_bps_per_hour: 0,
+                submitted_at: 0,
             };
             env.storage().persistent().set(&DataKey::Job(id), &job);
             job_ids.push_back(id);
@@ -1270,10 +1272,14 @@ impl AgenticCommerceContract {
             status: JobStatus::Funded,
             description,
             deliverable: String::from_str(&env, ""),
+            deliverable_hash: soroban_sdk::BytesN::from_array(&env, &[0u8; 32]),
             funded_at: now,
             created_at: now,
             updated_at: now,
             fee_bps,
+            sla_deadline: 0,
+            penalty_bps_per_hour: 0,
+            submitted_at: 0,
         };
         env.storage().persistent().set(&DataKey::Job(next), &job);
         env.storage().persistent().set(
@@ -1411,6 +1417,8 @@ impl AgenticCommerceContract {
                 panic_with_error!(&env, Error::HashMismatch);
             }
         }
+        let (overdue_hours, penalty_bps, penalty) = Self::compute_sla_penalty(&job);
+        let penalized_budget = job.budget - penalty;
         // #23 — use the fee_bps snapshotted at job creation time so admin
         // changes to the global rate don't retroactively alter this job.
         let fee: i128 = Self::compute_fee(penalized_budget, job.fee_bps);

@@ -96,6 +96,12 @@
                 },
                 {
                   "string": "job"
+                },
+                {
+                  "u64": "0"
+                },
+                {
+                  "u32": 0
                 }
               ]
             }
@@ -151,6 +157,12 @@
                 },
                 {
                   "string": "job"
+                },
+                {
+                  "u64": "0"
+                },
+                {
+                  "u32": 0
                 }
               ]
             }
@@ -206,6 +218,12 @@
                 },
                 {
                   "string": "job"
+                },
+                {
+                  "u64": "0"
+                },
+                {
+                  "u32": 0
                 }
               ]
             }
@@ -382,6 +400,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "deliverable_hash"
+                    },
+                    "val": {
+                      "bytes": "0000000000000000000000000000000000000000000000000000000000000000"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "description"
                     },
                     "val": {
@@ -422,6 +448,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "penalty_bps_per_hour"
+                    },
+                    "val": {
+                      "u32": 0
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "provider"
                     },
                     "val": {
@@ -438,6 +472,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "sla_deadline"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "status"
                     },
                     "val": {
@@ -446,6 +488,14 @@
                           "symbol": "Funded"
                         }
                       ]
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "submitted_at"
+                    },
+                    "val": {
+                      "u64": "0"
                     }
                   },
                   {
@@ -526,6 +576,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "deliverable_hash"
+                    },
+                    "val": {
+                      "bytes": "0000000000000000000000000000000000000000000000000000000000000000"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "description"
                     },
                     "val": {
@@ -566,6 +624,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "penalty_bps_per_hour"
+                    },
+                    "val": {
+                      "u32": 0
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "provider"
                     },
                     "val": {
@@ -582,6 +648,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "sla_deadline"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "status"
                     },
                     "val": {
@@ -590,6 +664,14 @@
                           "symbol": "Funded"
                         }
                       ]
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "submitted_at"
+                    },
+                    "val": {
+                      "u64": "0"
                     }
                   },
                   {
@@ -670,6 +752,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "deliverable_hash"
+                    },
+                    "val": {
+                      "bytes": "0000000000000000000000000000000000000000000000000000000000000000"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "description"
                     },
                     "val": {
@@ -710,6 +800,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "penalty_bps_per_hour"
+                    },
+                    "val": {
+                      "u32": 0
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "provider"
                     },
                     "val": {
@@ -726,6 +824,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "sla_deadline"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "status"
                     },
                     "val": {
@@ -734,6 +840,14 @@
                           "symbol": "Funded"
                         }
                       ]
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "submitted_at"
+                    },
+                    "val": {
+                      "u64": "0"
                     }
                   },
                   {
@@ -797,6 +911,30 @@
                       },
                       "val": {
                         "u32": 100
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "MultiEvalThreshold"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "i128": "170141183460469231731687303715884105727"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "NextChannelId"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u64": "1"
                       }
                     },
                     {

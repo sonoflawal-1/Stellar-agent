@@ -206,6 +206,30 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "MultiEvalThreshold"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "i128": "170141183460469231731687303715884105727"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "NextChannelId"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u64": "1"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "NextId"
                           }
                         ]
