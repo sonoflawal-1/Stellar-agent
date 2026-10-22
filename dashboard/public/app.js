@@ -655,6 +655,21 @@
     navigate();
   }
 
+  // Reflect the active network in the sidebar badge. When no wallet is
+  // connected we fall back to the network the dashboard targets by default.
+  function renderNetworkBadge() {
+    var nb = document.getElementById("network-badge");
+    if (!nb) return;
+    var net = (wallet && wallet.connected && wallet.network) || TARGET_NETWORK;
+    var label =
+      net === "mainnet"
+        ? "Stellar Mainnet"
+        : net === "testnet"
+          ? "Stellar Testnet"
+          : "Unknown Network";
+    nb.innerHTML = '<span class="badge-dot"></span>' + label;
+  }
+
   function updateWalletUI() {
     var connectedEl = document.getElementById("wallet-connected");
     var modeLabel = document.getElementById("wallet-mode-label");
@@ -1925,6 +1940,10 @@
   window.__simulateTransaction = simulateTransaction;
   window.__showSimulationModal = showSimulationModal;
 
+  // Expose the virtualized list renderer for unit testing (#762)
+  window.__VirtualList = VirtualList;
+  window.__VIRTUALIZE_THRESHOLD = VIRTUALIZE_THRESHOLD;
+
   // ── Skeleton Loaders (#582) ──
   function skeletonCards(n) {
     let html = '<div class="stat-grid">';
@@ -1967,6 +1986,251 @@
     // All HTML is constructed from trusted sources (our API responses contain
     // only Stellar addresses and contract state, not user-generated content)
     document.getElementById("page").innerHTML = html;
+  }
+
+  // ── Virtualized list renderer (#762) ──
+  // Renders only the rows within the viewport plus a small buffer, keeping the
+  // number of live DOM nodes bounded (below 100) regardless of list length.
+  // Row heights are measured after mount and cached, so both fixed- and
+  // variable-height rows lay out correctly. The viewport is absolutely
+  // positioned inside a spacer whose height equals the total content height, so
+  // the native scrollbar and scroll position stay accurate.
+  var VIRTUAL_OVERSCAN = 5; // buffer rows above + below the viewport
+  var VIRTUAL_MIN_WINDOW = 40; // fallback viewport height (px) when not yet laid out
+
+  function VirtualList(options) {
+    var opts = options || {};
+    var container = opts.container; // scroll container element (must exist)
+    if (!container) throw new Error("VirtualList: container is required");
+    var getItems = opts.getItems || function () { return []; };
+    var renderRow = opts.renderRow; // function(item, index) -> HTML string
+    if (typeof renderRow !== "function") {
+      throw new Error("VirtualList: renderRow is required");
+    }
+    var overscan = opts.overscan != null ? opts.overscan : VIRTUAL_OVERSCAN;
+    var estimate = opts.estimatedRowHeight || 64;
+
+    // The container becomes the scroll surface, so give it the virtual-list
+    // class (bounded height + overflow) and remember the prior state for dispose.
+    var hadVirtualClass = container.classList.contains("virtual-list");
+    container.classList.add("virtual-list");
+    // The list's own flex/gap layout is replaced by absolute positioning.
+    var prevDisplay = container.style.display;
+    var prevGap = container.style.gap;
+    container.style.display = "block";
+    container.style.gap = "0";
+
+    // Spacer holds the full scroll height; viewport is translated to the window.
+    var spacer = document.createElement("div");
+    spacer.className = "virtual-spacer";
+    var viewport = document.createElement("div");
+    viewport.className = "virtual-viewport";
+    spacer.appendChild(viewport);
+    container.appendChild(spacer);
+
+    // Pool of reusable row nodes, keyed by slot position within the window.
+    var pool = [];
+    var heights = []; // measured height per item index
+    var offsets = []; // prefix-sum offsets for variable heights
+    var totalHeight = 0;
+    var windowStart = -1;
+    var windowCount = 0;
+    var rafId = null;
+    var disposed = false;
+
+    function itemsCount() {
+      var items = getItems();
+      return items ? items.length : 0;
+    }
+
+    // Rebuild prefix-sum offsets. Uses measured heights where available and the
+    // estimate elsewhere, so the scroll height is correct from the first pass.
+    function recomputeOffsets() {
+      var count = itemsCount();
+      heights.length = count;
+      offsets = new Array(count + 1);
+      offsets[0] = 0;
+      for (var i = 0; i < count; i++) {
+        var h = heights[i] != null ? heights[i] : estimate;
+        offsets[i + 1] = offsets[i] + h;
+      }
+      totalHeight = offsets[count];
+      spacer.style.height = totalHeight + "px";
+    }
+
+    // Binary search: first index whose cumulative offset is >= y.
+    function findStartIndex(y) {
+      var lo = 0;
+      var hi = offsets.length - 1;
+      while (lo < hi) {
+        var mid = (lo + hi) >> 1;
+        if (offsets[mid] < y) lo = mid + 1;
+        else hi = mid;
+      }
+      return Math.max(0, lo - 1);
+    }
+
+    function measureRow(node, index) {
+      var measured = node.offsetHeight;
+      if (measured > 0 && heights[index] !== measured) {
+        heights[index] = measured;
+        return true;
+      }
+      return false;
+    }
+
+    function render() {
+      if (disposed) return;
+      var items = getItems() || [];
+      var count = items.length;
+      var viewportHeight = container.clientHeight || VIRTUAL_MIN_WINDOW;
+      var scrollTop = container.scrollTop || 0;
+
+      var start = findStartIndex(scrollTop);
+      start = Math.max(0, start - overscan);
+      var end = findStartIndex(scrollTop + viewportHeight);
+      end = Math.min(count, end + overscan + 1);
+      // Guarantee at least one full screen worth of rows in the window.
+      end = Math.max(end, Math.min(count, start + overscan * 2 + 1));
+      var visibleCount = Math.max(0, end - start);
+
+      // Grow the pool to cover the window.
+      while (pool.length < visibleCount) {
+        var node = document.createElement("div");
+        node.className = "virtual-row";
+        viewport.appendChild(node);
+        pool.push(node);
+      }
+
+      var changed = false;
+      for (var i = 0; i < visibleCount; i++) {
+        var index = start + i;
+        var node2 = pool[i];
+        var html = renderRow(items[index], index);
+        // Only rewrite the DOM when the content actually differs (avoids layout
+        // thrash on scroll and preserves inline expansion state).
+        if (node2.__index !== index || node2.__html !== html) {
+          node2.innerHTML = html;
+          node2.__index = index;
+          node2.__html = html;
+        }
+        node2.style.display = "";
+        if (measureRow(node2, index)) changed = true;
+      }
+      // Hide surplus pooled nodes instead of destroying them (recycling).
+      for (var j = visibleCount; j < pool.length; j++) {
+        if (pool[j].style.display !== "none") {
+          pool[j].style.display = "none";
+          pool[j].__index = -1;
+          pool[j].__html = undefined;
+        }
+      }
+
+      // If measurement changed the layout, refresh offsets and re-render once.
+      if (changed) {
+        recomputeOffsets();
+        return render();
+      }
+
+      viewport.style.transform = "translateY(" + offsets[start] + "px)";
+      windowStart = start;
+      windowCount = visibleCount;
+    }
+
+    function schedule() {
+      if (disposed || rafId != null) return;
+      var raf =
+        typeof requestAnimationFrame === "function"
+          ? requestAnimationFrame
+          : function (cb) { return setTimeout(cb, 16); };
+      rafId = raf(function () {
+        rafId = null;
+        render();
+      });
+    }
+
+    function onScroll() {
+      schedule();
+    }
+
+    container.addEventListener("scroll", onScroll, { passive: true });
+
+    // Public-ish introspection used by tests and perf instrumentation.
+    function stats() {
+      return {
+        total: itemsCount(),
+        rendered: windowCount,
+        liveNodes: pool.filter(function (n) { return n.style.display !== "none"; }).length,
+        pooledNodes: pool.length,
+        windowStart: windowStart,
+        totalHeight: totalHeight,
+      };
+    }
+
+    function update() {
+      recomputeOffsets();
+      render();
+    }
+
+    function dispose() {
+      disposed = true;
+      container.removeEventListener("scroll", onScroll);
+      if (rafId != null) {
+        var caf =
+          typeof cancelAnimationFrame === "function" ? cancelAnimationFrame : clearTimeout;
+        caf(rafId);
+        rafId = null;
+      }
+      if (spacer.parentNode) spacer.parentNode.removeChild(spacer);
+      container.style.display = prevDisplay;
+      container.style.gap = prevGap;
+      if (!hadVirtualClass) container.classList.remove("virtual-list");
+      pool.length = 0;
+    }
+
+    return {
+      update: update,
+      render: render,
+      scheduleRender: schedule,
+      stats: stats,
+      dispose: dispose,
+      container: container,
+      spacer: spacer,
+      viewport: viewport,
+    };
+  }
+
+  // Only virtualize once a list is large enough that the DOM cost matters.
+  // Below the threshold the overhead of measurement is not worth it.
+  var VIRTUALIZE_THRESHOLD = 30;
+
+  // Registry of active virtual lists keyed by container id, so re-rendering a
+  // view can dispose the previous instance instead of stacking scroll listeners.
+  var virtualLists = {};
+
+  function destroyVirtualList(key) {
+    var vl = virtualLists[key];
+    if (vl) {
+      vl.dispose();
+      delete virtualLists[key];
+    }
+  }
+
+  function destroyAllVirtualLists() {
+    for (var key in virtualLists) {
+      if (Object.prototype.hasOwnProperty.call(virtualLists, key)) destroyVirtualList(key);
+    }
+  }
+
+  // Load the job-event timeline for each job row currently mounted in the DOM.
+  // With virtualization only a handful of rows exist at once, so this stays
+  // cheap even when the underlying list holds thousands of jobs (#762).
+  function loadVisibleJobTimelines() {
+    var rows = document.querySelectorAll(".job-timeline[id^='job-timeline-']");
+    for (var i = 0; i < rows.length; i++) {
+      var id = rows[i].id.replace("job-timeline-", "");
+      loadJobTimeline(id);
+    }
   }
 
   // ── Deliverable Preview (#580) ──
@@ -2578,122 +2842,7 @@
           '<div class="empty-desc">Create your first job to see it here.</div></div>';
       content = noMatchMsg;
     } else {
-      content = '<div class="job-list">';
-      for (const j of filtered) {
-        let actions = "";
-        if (j.status === "Funded") {
-          actions =
-            '<button class="btn btn-primary btn-sm" onclick="window.__submitJob(\'' +
-            j.id +
-            "')\">Submit Work</button>" +
-            '<button class="btn btn-danger btn-sm" onclick="window.__cancelJob(\'' +
-            j.id +
-            "')\">Cancel</button>";
-        } else if (j.status === "Submitted") {
-          if (j.evaluatorProgress) {
-            if (j.evaluatorProgress.approvals < j.evaluatorProgress.threshold) {
-              actions =
-                '<button class="btn btn-primary btn-sm" onclick="window.__approveJob(\'' +
-                j.id +
-                "')\">Approve quorum</button>";
-            }
-          } else {
-            actions +=
-              '<button class="btn btn-primary btn-sm" onclick="window.__completeJob(\'' +
-              j.id +
-              "')\">Complete (Release Funds)</button>";
-          }
-        } else {
-          actions =
-            '<span style="font-size:13px;color:var(--text-dim)">Job is ' +
-            escapeHtml(j.status.toLowerCase()) +
-            ". No actions available.</span>";
-        }
-
-        let deliverableHtml = "";
-        if (j.deliverable) {
-          deliverableHtml =
-            '<div class="detail-item" style="grid-column:1/-1">' +
-            '<div class="detail-label">Deliverable</div>' +
-            '<div class="detail-value">' +
-            renderDeliverable(j.deliverable) +
-            "</div></div>";
-        }
-
-        let evaluatorProgressHtml = "";
-        if (j.evaluatorProgress) {
-          const progress = j.evaluatorProgress;
-          const percent = Math.min(100, Math.round((progress.approvals / progress.threshold) * 100));
-          evaluatorProgressHtml =
-            '<div class="detail-item evaluator-progress-item" style="grid-column:1/-1">' +
-            '<div class="evaluator-progress-heading"><div class="detail-label">Evaluator approvals</div>' +
-            '<div class="evaluator-progress-count">' + progress.approvals + ' / ' + progress.threshold + '</div></div>' +
-            '<div class="evaluator-progress-track" role="progressbar" aria-label="Evaluator approvals" aria-valuemin="0" aria-valuemax="' +
-            progress.threshold + '" aria-valuenow="' + progress.approvals + '"><span style="width:' + percent + '%"></span></div>' +
-            '</div>';
-        }
-
-         content +=
-           '<div class="job-row" id="job-' +
-           j.id +
-           '">' +
-           '<div class="job-summary" data-job-id="' +
-           escapeHtml(String(j.id)) +
-           '" onclick="window.__toggleJob(event.currentTarget.dataset.jobId)">' +
-           '<div class="job-id-with-copy"><span class="job-id">#' +
-           escapeHtml(String(j.id)) +
-           "</span>" +
-           copyBtn(j.id, "job ID") +
-           "</div>" +
-           statusBadge(j.status) +
-          '<div class="job-desc">' +
-          escapeHtml(j.description || "\u2014") +
-          "</div>" +
-          '<div class="job-budget">' +
-          formatMusd(j.budget) +
-          ' <span class="unit">MUSD</span></div>' +
-          '<svg class="job-expand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>' +
-          "</div>" +
-          '<div class="job-detail">' +
-          '<div class="detail-grid">' +
-           '<div class="detail-item"><div class="detail-label">Client</div>' +
-           '<div class="detail-value addr-with-copy">' +
-           copyable(j.client, "wallet public key") +
-           "</div></div>" +
-           '<div class="detail-item"><div class="detail-label">Provider</div>' +
-           '<div class="detail-value addr-with-copy">' +
-           copyable(j.provider, "wallet public key") +
-           "</div></div>" +
-           '<div class="detail-item"><div class="detail-label">Evaluator</div>' +
-           '<div class="detail-value addr-with-copy">' +
-           copyable(j.evaluator, "wallet public key") +
-           "</div></div>" +
-           '<div class="detail-item"><div class="detail-label">Token</div>' +
-           '<div class="detail-value addr-with-copy">' +
-           copyable(j.token, "token contract address") +
-           "</div></div>" +
-          (j.created_at
-            ? '<div class="detail-item"><div class="detail-label">Created</div>' +
-              '<div class="detail-value" title="' + escapeHtml(new Date(Number(j.created_at) * 1000).toISOString()) + '">' +
-              escapeHtml(formatRelativeTime(j.created_at)) +
-              "</div></div>"
-            : "") +
-          evaluatorProgressHtml +
-          deliverableHtml +
-          '<div class="detail-item" style="grid-column:1/-1">' +
-          '<div class="detail-label">Timeline</div>' +
-          '<div class="job-timeline" role="list" id="job-timeline-' +
-          escapeAttr(String(j.id)) +
-          '"><div class="job-timeline-empty" role="listitem">Loading events…</div></div>' +
-          "</div>" +
-          "</div>" +
-          renderLifecycleStepper(j) +
-          '<div class="job-actions">' +
-          actions +
-          "</div>" +
-          "</div></div>";
-      }
-      content += "</div>";
+      content = '<div class="job-list" id="job-list"></div>';
     }
 
     const pagination =
@@ -2716,29 +2865,179 @@
         content +
         pagination,
     );
+
+    // Render the rows: fully when the list is short, virtualized when it is not
+    // (#762). Virtualization keeps live DOM nodes bounded (viewport + buffer) so
+    // large job histories stay smooth.
+    var listEl = document.getElementById("job-list");
+    if (listEl && filtered.length > 0) {
+      if (filtered.length > VIRTUALIZE_THRESHOLD) {
+        destroyVirtualList("job-list");
+        var vl = VirtualList({
+          container: listEl,
+          getItems: function () { return filtered; },
+          renderRow: jobRowHtml,
+          estimatedRowHeight: 64,
+        });
+        vl.update();
+        virtualLists["job-list"] = vl;
+      } else {
+        var html = "";
+        for (var idx = 0; idx < filtered.length; idx++) {
+          html += '<div class="virtual-row">' + jobRowHtml(filtered[idx], idx) + "</div>";
+        }
+        listEl.innerHTML = html;
+      }
+      loadVisibleJobTimelines();
+    }
   }
 
-  // 4. Agents
-  async function renderAgents() {
-    setPage(
-      '<div class="section-header"><div><div class="section-title">Agents</div><div class="page-subtitle" style="margin-top:2px">On-chain identity registry for AI agents</div></div>' +
-        '<button class="btn btn-primary" onclick="window.__showRegisterAgent()">+ Register Agent</button></div>' +
-        skeletonAgentCards(4),
+  // Build the HTML for a single job row. Split out from renderJobList so the
+  // virtualized renderer can produce rows on demand (#762).
+  function jobRowHtml(j) {
+    let actions = "";
+    if (j.status === "Funded") {
+      actions =
+        '<button class="btn btn-primary btn-sm" onclick="window.__submitJob(\'' +
+        j.id +
+        "')\">Submit Work</button>" +
+        '<button class="btn btn-danger btn-sm" onclick="window.__cancelJob(\'' +
+        j.id +
+        "')\">Cancel</button>";
+    } else if (j.status === "Submitted") {
+      if (j.evaluatorProgress) {
+        if (j.evaluatorProgress.approvals < j.evaluatorProgress.threshold) {
+          actions =
+            '<button class="btn btn-primary btn-sm" onclick="window.__approveJob(\'' +
+            j.id +
+            "')\">Approve quorum</button>";
+        }
+      } else {
+        actions +=
+          '<button class="btn btn-primary btn-sm" onclick="window.__completeJob(\'' +
+          j.id +
+          "')\">Complete (Release Funds)</button>";
+      }
+    } else {
+      actions =
+        '<span style="font-size:13px;color:var(--text-dim)">Job is ' +
+        escapeHtml(j.status.toLowerCase()) +
+        ". No actions available.</span>";
+    }
+
+    let deliverableHtml = "";
+    if (j.deliverable) {
+      deliverableHtml =
+        '<div class="detail-item" style="grid-column:1/-1">' +
+        '<div class="detail-label">Deliverable</div>' +
+        '<div class="detail-value">' +
+        renderDeliverable(j.deliverable) +
+        "</div></div>";
+    }
+
+    let evaluatorProgressHtml = "";
+    if (j.evaluatorProgress) {
+      const progress = j.evaluatorProgress;
+      const percent = Math.min(100, Math.round((progress.approvals / progress.threshold) * 100));
+      evaluatorProgressHtml =
+        '<div class="detail-item evaluator-progress-item" style="grid-column:1/-1">' +
+        '<div class="evaluator-progress-heading"><div class="detail-label">Evaluator approvals</div>' +
+        '<div class="evaluator-progress-count">' + progress.approvals + ' / ' + progress.threshold + '</div></div>' +
+        '<div class="evaluator-progress-track" role="progressbar" aria-label="Evaluator approvals" aria-valuemin="0" aria-valuemax="' +
+        progress.threshold + '" aria-valuenow="' + progress.approvals + '"><span style="width:' + percent + '%"></span></div>' +
+        '</div>';
+    }
+
+    return (
+      '<div class="job-row" id="job-' +
+      j.id +
+      '">' +
+      '<div class="job-summary" data-job-id="' +
+      escapeHtml(String(j.id)) +
+      '" onclick="window.__toggleJob(event.currentTarget.dataset.jobId)">' +
+      '<div class="job-id-with-copy"><span class="job-id">#' +
+      escapeHtml(String(j.id)) +
+      "</span>" +
+      copyBtn(j.id, "job ID") +
+      "</div>" +
+      statusBadge(j.status) +
+      '<div class="job-desc">' +
+      escapeHtml(j.description || "\u2014") +
+      "</div>" +
+      '<div class="job-budget">' +
+      formatMusd(j.budget) +
+      ' <span class="unit">MUSD</span></div>' +
+      '<svg class="job-expand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>' +
+      "</div>" +
+      '<div class="job-detail">' +
+      '<div class="detail-grid">' +
+      '<div class="detail-item"><div class="detail-label">Client</div>' +
+      '<div class="detail-value addr-with-copy">' +
+      copyable(j.client, "wallet public key") +
+      "</div></div>" +
+      '<div class="detail-item"><div class="detail-label">Provider</div>' +
+      '<div class="detail-value addr-with-copy">' +
+      copyable(j.provider, "wallet public key") +
+      "</div></div>" +
+      '<div class="detail-item"><div class="detail-label">Evaluator</div>' +
+      '<div class="detail-value addr-with-copy">' +
+      copyable(j.evaluator, "wallet public key") +
+      "</div></div>" +
+      '<div class="detail-item"><div class="detail-label">Token</div>' +
+      '<div class="detail-value addr-with-copy">' +
+      copyable(j.token, "token contract address") +
+      "</div></div>" +
+      (j.created_at
+        ? '<div class="detail-item"><div class="detail-label">Created</div>' +
+          '<div class="detail-value" title="' + escapeHtml(new Date(Number(j.created_at) * 1000).toISOString()) + '">' +
+          escapeHtml(formatRelativeTime(j.created_at)) +
+          "</div></div>"
+        : "") +
+      evaluatorProgressHtml +
+      deliverableHtml +
+      '<div class="detail-item" style="grid-column:1/-1">' +
+      '<div class="detail-label">Timeline</div>' +
+      '<div class="job-timeline" role="list" id="job-timeline-' +
+      escapeAttr(String(j.id)) +
+      '"><div class="job-timeline-empty" role="listitem">Loading events…</div></div>' +
+      "</div>" +
+      "</div>" +
+      renderLifecycleStepper(j) +
+      '<div class="job-actions">' +
+      actions +
+      "</div>" +
+      "</div></div>"
+    );
+  }
+
+  // Returns true when an agent matches the search query (case-insensitive).
+  function matchAgent(a, q) {
+    var query = String(q || "").toLowerCase().trim();
+    if (!query) return true;
+    const nameMatch = Boolean(a.name && a.name.toLowerCase().includes(query));
+    const descMatch = Boolean(a.description && a.description.toLowerCase().includes(query));
+    const tagsMatch = Boolean(
+      Array.isArray(a.tags)
+        ? a.tags.some(function (t) {
+            return String(t).toLowerCase().includes(query);
+          })
+        : typeof a.tag === "string" && a.tag.toLowerCase().includes(query),
     );
     const skillsMatch = Boolean(
       Array.isArray(a.skills)
         ? a.skills.some(function (s) {
-            return String(s).toLowerCase().includes(q);
+            return String(s).toLowerCase().includes(query);
           })
-        : typeof a.skill === "string" && a.skill.toLowerCase().includes(q),
+        : typeof a.skill === "string" && a.skill.toLowerCase().includes(query),
     );
-    const uriMatch = Boolean(a.uri && String(a.uri).toLowerCase().includes(q));
-    const ownerMatch = Boolean(a.owner && String(a.owner).toLowerCase().includes(q));
-    const idMatch = Boolean(a.id !== undefined && String(a.id).toLowerCase().includes(q));
+    const uriMatch = Boolean(a.uri && String(a.uri).toLowerCase().includes(query));
+    const ownerMatch = Boolean(a.owner && String(a.owner).toLowerCase().includes(query));
+    const idMatch = Boolean(a.id !== undefined && String(a.id).toLowerCase().includes(query));
 
     return nameMatch || descMatch || tagsMatch || skillsMatch || uriMatch || ownerMatch || idMatch;
   }
 
+  // 4. Agents
   async function renderAgents() {
     if (!state.agents) {
       setPage(
@@ -2751,7 +3050,7 @@
 
     const agents = state.agents || [];
     const searchTerm = (state.agentSearch || "").trim();
-    const filtered = searchTerm
+    let filtered = searchTerm
       ? agents.filter(function (a) {
           return matchAgent(a, searchTerm);
         })
@@ -2759,7 +3058,6 @@
 
     // #583 — apply agent search filter
     var agentQuery = (state.agentSearch || "").toLowerCase().trim();
-    var filtered = agents;
     if (agentQuery) {
       filtered = agents.filter(function (a) {
         return (
@@ -2955,66 +3253,13 @@
     }
     tabs += "</div>";
 
-    var rows = '<div class="history-list">';
+    var rows = '<div class="history-list" id="history-list">';
     if (filteredEvents.length === 0) {
       rows +=
         '<div class="empty-state" style="margin-top:24px">' +
         '<div class="empty-icon"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg></div>' +
         '<div class="empty-title">No matching records</div>' +
         '<div class="empty-desc">Try a different filter.</div></div>';
-    } else {
-      for (var ev of filteredEvents) {
-        var icon, label, meta, badge;
-        if (ev.kind === "job") {
-          icon =
-            '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>';
-          label = escapeHtml(ev.desc);
-          var deliverablePart = ev.deliverable
-            ? ' &nbsp;·&nbsp; <a href="' +
-              escapeHtml(ev.deliverable) +
-              '" target="_blank" rel="noopener" style="color:var(--accent);font-weight:500">View Deliverable ↗</a>'
-            : "";
-           meta =
-             "Client: " +
-             copyable(ev.actor, "wallet public key") +
-             " &nbsp;·&nbsp; " +
-             formatMusd(ev.budget) +
-             " USDC" +
-             deliverablePart;
-          badge = statusBadge(ev.status);
-        } else {
-          icon =
-            '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>';
-          label = "Agent registered";
-           meta = "Owner: " + copyable(ev.actor, "wallet public key") + " &nbsp;·&nbsp; " + escapeHtml(ev.uri || "");
-          badge =
-            '<span class="status-badge status-Completed"><span class="dot"></span>Registered</span>';
-        }
-        rows +=
-          '<div class="history-row">' +
-          '<div class="history-icon ' +
-          (ev.kind === "job" ? "hist-job" : "hist-agent") +
-          '">' +
-          icon +
-          "</div>" +
-          '<div class="history-body">' +
-          '<div class="history-label">' +
-          label +
-          "</div>" +
-          '<div class="history-meta">' +
-          meta +
-          "</div>" +
-          "</div>" +
-           '<div class="history-right">' +
-           '<div class="history-id-with-copy"><span class="history-id">#' +
-           escapeHtml(String(ev.id)) +
-           "</span>" +
-           copyBtn(ev.id, ev.kind === "job" ? "job ID" : "agent ID") +
-           "</div>" +
-           badge +
-          "</div>" +
-          "</div>";
-      }
     }
     rows += "</div>";
 
@@ -3060,6 +3305,83 @@
         summary +
         tabs +
         rows,
+    );
+
+    // Render history rows, virtualized once the list is large (#762).
+    var histListEl = document.getElementById("history-list");
+    if (histListEl && filteredEvents.length > 0) {
+      if (filteredEvents.length > VIRTUALIZE_THRESHOLD) {
+        destroyVirtualList("history-list");
+        var hvl = VirtualList({
+          container: histListEl,
+          getItems: function () { return filteredEvents; },
+          renderRow: historyRowHtml,
+          estimatedRowHeight: 64,
+        });
+        hvl.update();
+        virtualLists["history-list"] = hvl;
+      } else {
+        var histHtml = "";
+        for (var hi = 0; hi < filteredEvents.length; hi++) {
+          histHtml += '<div class="virtual-row">' + historyRowHtml(filteredEvents[hi], hi) + "</div>";
+        }
+        histListEl.innerHTML = histHtml;
+      }
+    }
+  }
+
+  // Build the HTML for a single history row (#762).
+  function historyRowHtml(ev) {
+    var icon, label, meta, badge;
+    if (ev.kind === "job") {
+      icon =
+        '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>';
+      label = escapeHtml(ev.desc);
+      var deliverablePart = ev.deliverable
+        ? ' &nbsp;·&nbsp; <a href="' +
+          escapeHtml(ev.deliverable) +
+          '" target="_blank" rel="noopener" style="color:var(--accent);font-weight:500">View Deliverable ↗</a>'
+        : "";
+      meta =
+        "Client: " +
+        copyable(ev.actor, "wallet public key") +
+        " &nbsp;·&nbsp; " +
+        formatMusd(ev.budget) +
+        " USDC" +
+        deliverablePart;
+      badge = statusBadge(ev.status);
+    } else {
+      icon =
+        '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>';
+      label = "Agent registered";
+      meta = "Owner: " + copyable(ev.actor, "wallet public key") + " &nbsp;·&nbsp; " + escapeHtml(ev.uri || "");
+      badge =
+        '<span class="status-badge status-Completed"><span class="dot"></span>Registered</span>';
+    }
+    return (
+      '<div class="history-row">' +
+      '<div class="history-icon ' +
+      (ev.kind === "job" ? "hist-job" : "hist-agent") +
+      '">' +
+      icon +
+      "</div>" +
+      '<div class="history-body">' +
+      '<div class="history-label">' +
+      label +
+      "</div>" +
+      '<div class="history-meta">' +
+      meta +
+      "</div>" +
+      "</div>" +
+      '<div class="history-right">' +
+      '<div class="history-id-with-copy"><span class="history-id">#' +
+      escapeHtml(String(ev.id)) +
+      "</span>" +
+      copyBtn(ev.id, ev.kind === "job" ? "job ID" : "agent ID") +
+      "</div>" +
+      badge +
+      "</div>" +
+      "</div>"
     );
   }
 
@@ -3750,6 +4072,10 @@
   function navigate() {
     const route = getRoute();
     const parsed = parseRoute(route);
+
+    // Tear down any virtualized lists from the previous view so their scroll
+    // listeners and DOM nodes don't leak across navigations (#762).
+    destroyAllVirtualLists();
 
     // Update active nav
     document.querySelectorAll(".nav-item").forEach(function (el) {

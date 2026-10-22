@@ -3523,3 +3523,34 @@ textarea:focus-visible,
   height: 12px;
   border-width: 2px;
 }
+
+/* ── Virtualized list (#762) ──
+   A virtualized list keeps only the rows near the viewport in the DOM. The
+   container scrolls; a spacer supplies the full scroll height; the viewport is
+   translated to the current window of rows. */
+.virtual-list {
+  position: relative;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.virtual-spacer {
+  position: relative;
+  width: 100%;
+}
+.virtual-viewport {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  will-change: transform;
+}
+.virtual-row {
+  /* Rows keep their own styling; this only participates in the flow. */
+  box-sizing: border-box;
+}
+/* The jobs list virtualizes by adding a bounded scroll height so the viewport
+   stays a fixed window into a potentially very long list. */
+#job-list.virtual-list,
+#history-list.virtual-list {
+  max-height: 70vh;
+}
