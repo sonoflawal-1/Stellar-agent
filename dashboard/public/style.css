@@ -1678,6 +1678,38 @@ textarea:focus-visible,
 .history-row:hover {
   border-color: var(--border-hover);
 }
+
+/* Virtualized history feed (#762): fixed-height rows keep the scrollbar
+   stable while only the visible window is rendered into the DOM. */
+.history-list.virtual-list {
+  display: block;
+  position: relative;
+  height: min(70vh, 720px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  gap: 0;
+}
+.virtual-list-spacer {
+  position: relative;
+  width: 100%;
+}
+.virtual-list-window {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+}
+.virtual-list-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  padding-bottom: 8px;
+  box-sizing: border-box;
+}
+.virtual-list-row > .history-row {
+  height: 100%;
+  box-sizing: border-box;
+}
 .history-icon {
   width: 36px;
   height: 36px;

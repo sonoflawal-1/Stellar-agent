@@ -110,6 +110,73 @@
     };
   }
 
+  // ── Virtual scrolling (#762) ──
+  // Long history feeds render only the rows inside the viewport (plus a small
+  // overscan) so DOM size stays bounded no matter how many events are loaded.
+  // Jobs are server-paginated (24/page) and stay on normal rendering; the
+  // history feed is the unbounded one.
+  var VIRTUALIZE_THRESHOLD = 60;
+  var VIRTUAL_ROW_HEIGHT = 84;
+  var VIRTUAL_OVERSCAN = 4;
+
+  var computeVirtualWindow = window.computeVirtualWindow;
+
+  function createVirtualList(opts) {
+    var viewport = opts.viewport;
+    var items = opts.items || [];
+    var rowHeight = opts.rowHeight || VIRTUAL_ROW_HEIGHT;
+    var overscan = opts.overscan == null ? VIRTUAL_OVERSCAN : opts.overscan;
+    var renderRow = opts.renderRow;
+    var frame = null;
+
+    var spacer = document.createElement("div");
+    spacer.className = "virtual-list-spacer";
+    spacer.style.height = items.length * rowHeight + "px";
+
+    var win = document.createElement("div");
+    win.className = "virtual-list-window";
+    spacer.appendChild(win);
+    viewport.innerHTML = "";
+    viewport.appendChild(spacer);
+
+    function paint() {
+      frame = null;
+      var range = computeVirtualWindow(
+        items.length,
+        viewport.scrollTop,
+        viewport.clientHeight,
+        rowHeight,
+        overscan,
+      );
+      var html = "";
+      for (var i = range.start; i < range.end; i++) {
+        html +=
+          '<div class="virtual-list-row" style="top:' +
+          i * rowHeight +
+          "px;height:" +
+          rowHeight +
+          'px">' +
+          renderRow(items[i], i) +
+          "</div>";
+      }
+      win.innerHTML = html;
+    }
+
+    function onScroll() {
+      if (frame === null) frame = requestAnimationFrame(paint);
+    }
+
+    viewport.addEventListener("scroll", onScroll, { passive: true });
+    paint();
+    return {
+      refresh: paint,
+      destroy: function () {
+        viewport.removeEventListener("scroll", onScroll);
+        if (frame !== null) cancelAnimationFrame(frame);
+      },
+    };
+  }
+
   // ── Web Notifications (#754) ──
   // Opt-in desktop notifications for background job status changes.
   // Permission is requested at most once; a denial is remembered and never
@@ -2719,23 +2786,30 @@
   }
 
   // 4. Agents
-  async function renderAgents() {
-    setPage(
-      '<div class="section-header"><div><div class="section-title">Agents</div><div class="page-subtitle" style="margin-top:2px">On-chain identity registry for AI agents</div></div>' +
-        '<button class="btn btn-primary" onclick="window.__showRegisterAgent()">+ Register Agent</button></div>' +
-        skeletonAgentCards(4),
+  // #583 — case-insensitive agent search across name, description, tags,
+  // skills, URI, and owner.
+  function matchAgent(a, query) {
+    var q = String(query || "").toLowerCase().trim();
+    if (!q) return true;
+    var nameMatch = Boolean(a.name && String(a.name).toLowerCase().includes(q));
+    var descMatch = Boolean(a.description && String(a.description).toLowerCase().includes(q));
+    var tagsMatch = Boolean(
+      Array.isArray(a.tags)
+        ? a.tags.some(function (t) {
+            return String(t).toLowerCase().includes(q);
+          })
+        : typeof a.tag === "string" && a.tag.toLowerCase().includes(q),
     );
-    const skillsMatch = Boolean(
+    var skillsMatch = Boolean(
       Array.isArray(a.skills)
         ? a.skills.some(function (s) {
             return String(s).toLowerCase().includes(q);
           })
         : typeof a.skill === "string" && a.skill.toLowerCase().includes(q),
     );
-    const uriMatch = Boolean(a.uri && String(a.uri).toLowerCase().includes(q));
-    const ownerMatch = Boolean(a.owner && String(a.owner).toLowerCase().includes(q));
-    const idMatch = Boolean(a.id !== undefined && String(a.id).toLowerCase().includes(q));
-
+    var uriMatch = Boolean(a.uri && String(a.uri).toLowerCase().includes(q));
+    var ownerMatch = Boolean(a.owner && String(a.owner).toLowerCase().includes(q));
+    var idMatch = Boolean(a.id !== undefined && String(a.id).toLowerCase().includes(q));
     return nameMatch || descMatch || tagsMatch || skillsMatch || uriMatch || ownerMatch || idMatch;
   }
 
@@ -2750,12 +2824,6 @@
     }
 
     const agents = state.agents || [];
-    const searchTerm = (state.agentSearch || "").trim();
-    const filtered = searchTerm
-      ? agents.filter(function (a) {
-          return matchAgent(a, searchTerm);
-        })
-      : agents;
 
     // #583 — apply agent search filter
     var agentQuery = (state.agentSearch || "").toLowerCase().trim();
@@ -2886,6 +2954,60 @@
     }
   }
 
+  function historyRowHtml(ev) {
+    var icon, label, meta, badge;
+    if (ev.kind === "job") {
+      icon =
+        '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>';
+      label = escapeHtml(ev.desc);
+      var deliverablePart = ev.deliverable
+        ? ' &nbsp;·&nbsp; <a href="' +
+          escapeHtml(ev.deliverable) +
+          '" target="_blank" rel="noopener" style="color:var(--accent);font-weight:500">View Deliverable ↗</a>'
+        : "";
+      meta =
+        "Client: " +
+        copyable(ev.actor, "wallet public key") +
+        " &nbsp;·&nbsp; " +
+        formatMusd(ev.budget) +
+        " USDC" +
+        deliverablePart;
+      badge = statusBadge(ev.status);
+    } else {
+      icon =
+        '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>';
+      label = "Agent registered";
+      meta = "Owner: " + copyable(ev.actor, "wallet public key") + " &nbsp;·&nbsp; " + escapeHtml(ev.uri || "");
+      badge =
+        '<span class="status-badge status-Completed"><span class="dot"></span>Registered</span>';
+    }
+    return (
+      '<div class="history-row">' +
+      '<div class="history-icon ' +
+      (ev.kind === "job" ? "hist-job" : "hist-agent") +
+      '">' +
+      icon +
+      "</div>" +
+      '<div class="history-body">' +
+      '<div class="history-label">' +
+      label +
+      "</div>" +
+      '<div class="history-meta">' +
+      meta +
+      "</div>" +
+      "</div>" +
+      '<div class="history-right">' +
+      '<div class="history-id-with-copy"><span class="history-id">#' +
+      escapeHtml(String(ev.id)) +
+      "</span>" +
+      copyBtn(ev.id, ev.kind === "job" ? "job ID" : "agent ID") +
+      "</div>" +
+      badge +
+      "</div>" +
+      "</div>"
+    );
+  }
+
   // 5. Transaction History
   async function renderHistory() {
     setPage(
@@ -2955,68 +3077,23 @@
     }
     tabs += "</div>";
 
-    var rows = '<div class="history-list">';
+    var useVirtualList = filteredEvents.length > VIRTUALIZE_THRESHOLD;
+    var rows;
     if (filteredEvents.length === 0) {
-      rows +=
+      rows =
+        '<div class="history-list">' +
         '<div class="empty-state" style="margin-top:24px">' +
         '<div class="empty-icon"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg></div>' +
         '<div class="empty-title">No matching records</div>' +
-        '<div class="empty-desc">Try a different filter.</div></div>';
+        '<div class="empty-desc">Try a different filter.</div></div>' +
+        "</div>";
+    } else if (useVirtualList) {
+      rows = '<div class="history-list virtual-list" id="history-virtual"></div>';
     } else {
-      for (var ev of filteredEvents) {
-        var icon, label, meta, badge;
-        if (ev.kind === "job") {
-          icon =
-            '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>';
-          label = escapeHtml(ev.desc);
-          var deliverablePart = ev.deliverable
-            ? ' &nbsp;·&nbsp; <a href="' +
-              escapeHtml(ev.deliverable) +
-              '" target="_blank" rel="noopener" style="color:var(--accent);font-weight:500">View Deliverable ↗</a>'
-            : "";
-           meta =
-             "Client: " +
-             copyable(ev.actor, "wallet public key") +
-             " &nbsp;·&nbsp; " +
-             formatMusd(ev.budget) +
-             " USDC" +
-             deliverablePart;
-          badge = statusBadge(ev.status);
-        } else {
-          icon =
-            '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>';
-          label = "Agent registered";
-           meta = "Owner: " + copyable(ev.actor, "wallet public key") + " &nbsp;·&nbsp; " + escapeHtml(ev.uri || "");
-          badge =
-            '<span class="status-badge status-Completed"><span class="dot"></span>Registered</span>';
-        }
-        rows +=
-          '<div class="history-row">' +
-          '<div class="history-icon ' +
-          (ev.kind === "job" ? "hist-job" : "hist-agent") +
-          '">' +
-          icon +
-          "</div>" +
-          '<div class="history-body">' +
-          '<div class="history-label">' +
-          label +
-          "</div>" +
-          '<div class="history-meta">' +
-          meta +
-          "</div>" +
-          "</div>" +
-           '<div class="history-right">' +
-           '<div class="history-id-with-copy"><span class="history-id">#' +
-           escapeHtml(String(ev.id)) +
-           "</span>" +
-           copyBtn(ev.id, ev.kind === "job" ? "job ID" : "agent ID") +
-           "</div>" +
-           badge +
-          "</div>" +
-          "</div>";
-      }
+      rows = '<div class="history-list">';
+      for (var ev of filteredEvents) rows += historyRowHtml(ev);
+      rows += "</div>";
     }
-    rows += "</div>";
 
     var completedCount = jobs.filter(function (j) {
       return j.status === "Completed";
@@ -3061,6 +3138,18 @@
         tabs +
         rows,
     );
+
+    if (useVirtualList) {
+      var viewport = document.getElementById("history-virtual");
+      if (viewport) {
+        createVirtualList({
+          viewport: viewport,
+          items: filteredEvents,
+          rowHeight: VIRTUAL_ROW_HEIGHT,
+          renderRow: historyRowHtml,
+        });
+      }
+    }
   }
 
   window.__filterHistory = function (filter) {
