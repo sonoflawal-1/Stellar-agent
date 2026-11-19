@@ -1146,4 +1146,1100 @@ textarea:focus-visible,
   display: block;
 }
 .detail-grid {
+
+/* ────────────────────────────────────────────
+   #761 — Network Switcher
+   ──────────────────────────────────────────── */
+.network-switcher {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.network-switcher-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  transition: all 0.2s var(--ease);
+  white-space: nowrap;
+}
+.network-switcher-btn:hover {
+  border-color: var(--border-hover);
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.network-switcher-btn:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.network-switcher-btn .network-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  flex-shrink: 0;
+}
+.network-switcher-btn .network-chevron {
+  color: var(--text-dim);
+  transition: transform 0.2s var(--ease);
+}
+.network-switcher.open .network-switcher-btn .network-chevron {
+  transform: rotate(180deg);
+}
+/* Network-specific accents */
+.network-switcher[data-network="testnet"] .network-dot {
+  background: var(--status-funded);
+  box-shadow: 0 0 6px rgba(96, 165, 250, 0.5);
+}
+.network-switcher[data-network="futurenet"] .network-dot {
+  background: var(--status-submitted);
+  box-shadow: 0 0 6px rgba(251, 191, 36, 0.5);
+}
+.network-switcher[data-network="mainnet"] .network-dot {
+  background: var(--status-completed);
+  box-shadow: 0 0 6px rgba(52, 211, 153, 0.5);
+}
+.network-switcher[data-network="mainnet"] .network-switcher-btn {
+  border-color: rgba(52, 211, 153, 0.3);
+  color: var(--status-completed);
+}
+/* Dropdown menu */
+.network-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 240px;
+  padding: 6px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+  z-index: 120;
+  display: none;
+  flex-direction: column;
+  gap: 2px;
+  animation: page-fade 0.15s ease-out;
+}
+.network-switcher.open .network-menu {
+  display: flex;
+}
+.network-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  text-align: left;
+  transition: background 0.15s;
+}
+.network-option:hover {
+  background: var(--bg-hover);
+}
+.network-option:focus-visible {
+  outline: none;
+  background: var(--bg-hover);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.network-option .network-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-top: 5px;
+  flex-shrink: 0;
+  background: var(--text-dim);
+}
+.network-option[data-network="testnet"] .network-dot {
+  background: var(--status-funded);
+}
+.network-option[data-network="futurenet"] .network-dot {
+  background: var(--status-submitted);
+}
+.network-option[data-network="mainnet"] .network-dot {
+  background: var(--status-completed);
+}
+.network-option-body {
+  flex: 1;
+  min-width: 0;
+}
+.network-option-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.network-option-desc {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 1px;
+}
+.network-option-check {
+  color: var(--accent);
+  flex-shrink: 0;
+  margin-top: 2px;
+  opacity: 0;
+}
+.network-option.active .network-option-check {
+  opacity: 1;
+}
+.network-option.active .network-option-name {
+  color: var(--accent);
+}
+
+/* Mainnet warning banner */
+.network-warning-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  margin-bottom: 20px;
+  border-radius: var(--radius-sm);
+  background: rgba(248, 113, 113, 0.08);
+  border: 1px solid rgba(248, 113, 113, 0.25);
+  color: var(--status-cancelled);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.network-warning-banner svg {
+  flex-shrink: 0;
+}
+.network-warning-banner .network-warning-text {
+  flex: 1;
+  min-width: 0;
+}
+.network-warning-banner .network-warning-dismiss {
+  flex-shrink: 0;
+  color: var(--status-cancelled);
+  opacity: 0.6;
+  transition: opacity 0.15s;
+}
+.network-warning-banner .network-warning-dismiss:hover {
+  opacity: 1;
+}
+/* Wallet/network mismatch warning */
+.network-mismatch-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  margin-bottom: 20px;
+  border-radius: var(--radius-sm);
+  background: rgba(251, 191, 36, 0.08);
+  border: 1px solid rgba(251, 191, 36, 0.25);
+  color: var(--status-submitted);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+/* ────────────────────────────────────────────
+   #759 — Keyboard Shortcuts
+   ──────────────────────────────────────────── */
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 5px;
+  border: 1px solid var(--border-hover);
+  border-bottom-width: 2px;
+  background: var(--bg-surface);
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+.shortcut-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.shortcut-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 4px;
+  border-bottom: 1px solid var(--border);
+}
+.shortcut-row:last-child {
+  border-bottom: none;
+}
+.shortcut-desc {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.shortcut-keys {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.shortcut-keys .kbd-sep {
+  font-size: 10px;
+  color: var(--text-dim);
+}
+.shortcut-section-title {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+  margin: 16px 0 4px;
+}
+.shortcut-section-title:first-child {
+  margin-top: 0;
+}
+.shortcut-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 16px;
+  text-align: center;
+}
+.modal.modal-wide {
+  max-width: 560px;
+}
+
+/* ────────────────────────────────────────────
+   #760 — Agent Public Profile Page
+   ──────────────────────────────────────────── */
+.agent-profile {
+  max-width: 960px;
+  margin: 0 auto;
+}
+.agent-profile-banner {
+  position: relative;
+  height: 160px;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  background:
+    radial-gradient(ellipse 70% 120% at 20% 0%, var(--accent-glow) 0%, transparent 70%),
+    linear-gradient(135deg, var(--bg-surface), var(--bg-elevated));
+  border: 1px solid var(--border);
+  border-bottom: none;
+  overflow: hidden;
+}
+.agent-profile-header {
+  position: relative;
+  padding: 0 28px 24px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-top: none;
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+  margin-bottom: 20px;
+}
+.agent-profile-avatar {
+  width: 88px;
+  height: 88px;
+  border-radius: 20px;
+  margin-top: -44px;
+  background: linear-gradient(135deg, var(--accent-soft), rgba(251, 191, 36, 0.08));
+  border: 3px solid var(--bg-elevated);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 32px;
+  font-weight: 800;
+  color: var(--accent);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.agent-profile-avatar.agent-avatar-svg {
+  background: var(--bg-surface);
+}
+.agent-profile-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+.agent-profile-name {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+.agent-profile-id {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+.agent-profile-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.agent-profile-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 14px;
+}
+.verified-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(52, 211, 153, 0.08);
+  border: 1px solid rgba(52, 211, 153, 0.22);
+  color: var(--status-completed);
+}
+.verified-badge svg {
+  flex-shrink: 0;
+}
+.verified-badge.unverified {
+  background: rgba(134, 142, 150, 0.08);
+  border-color: var(--border);
+  color: var(--text-dim);
+}
+.agent-profile-bio {
+  margin-top: 16px;
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--text-muted);
+  max-width: 680px;
+}
+.agent-profile-grid {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: 20px;
+  align-items: start;
+}
+.agent-profile-panel {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  margin-bottom: 20px;
+}
+.agent-profile-panel:last-child {
+  margin-bottom: 0;
+}
+.agent-profile-panel-header {
+  padding: 16px 22px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+.agent-profile-panel-body {
+  padding: 18px 22px;
+}
+/* Rating breakdown */
+.rating-summary {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.rating-score {
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1;
+}
+.rating-stars {
+  display: inline-flex;
+  gap: 2px;
+  color: var(--logo-yellow);
+}
+.rating-count {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+.rating-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.rating-bar-row {
+  display: grid;
+  grid-template-columns: 28px 1fr 34px;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.rating-bar-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-hover);
+  overflow: hidden;
+}
+.rating-bar-track span {
+  display: block;
+  height: 100%;
+  background: var(--logo-yellow);
+  transition: width 0.25s var(--ease);
+}
+/* Pricing schedule */
+.pricing-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+}
+.pricing-row:last-child {
+  border-bottom: none;
+}
+.pricing-label {
+  color: var(--text-muted);
+}
+.pricing-value {
+  font-family: var(--mono);
+  font-weight: 600;
+  color: var(--text);
+}
+.pricing-value .unit {
+  font-size: 10px;
+  color: var(--text-dim);
+  font-weight: 400;
+  margin-left: 3px;
+}
+/* Capabilities */
+.capability-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.capability-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+/* Recent job history */
+.agent-history-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+.agent-history-row:last-child {
+  border-bottom: none;
+}
+.agent-history-body {
+  flex: 1;
+  min-width: 0;
+}
+.agent-history-title {
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-history-meta {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  margin-top: 2px;
+}
+.agent-history-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  flex-shrink: 0;
+}
+.agent-history-amount {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+/* Hire CTA */
+.agent-hire-cta {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.agent-hire-cta .btn {
+  justify-content: center;
+  width: 100%;
+}
+.agent-hire-note {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-align: center;
+}
+/* Copy share link */
+.agent-share-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.agent-share-row .agent-share-url {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-share-row .copy-btn {
+  width: 24px;
+  height: 24px;
+}
+
+/* ────────────────────────────────────────────
+   #581 — SSE Connection Status Pill
+   ──────────────────────────────────────────── */
+.sse-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-dim);
+  transition: background 0.3s, border-color 0.3s, color 0.3s;
+  white-space: nowrap;
+  user-select: none;
+}
+/* Desktop sidebar variant sits below the testnet badge */
+.sse-status-sidebar {
+  margin-top: 8px;
+  width: 100%;
+  justify-content: center;
+}
+/* Mobile: pill pushed to the right in the header */
+.mobile-header .sse-status-pill {
+  margin-left: auto;
+}
+/* State: live (green) */
+.sse-status-pill.sse-live {
+  background: rgba(52, 211, 153, 0.06);
+  border-color: rgba(52, 211, 153, 0.2);
+  color: var(--status-completed);
+}
+/* State: reconnecting (amber) */
+.sse-status-pill.sse-reconnecting {
+  background: rgba(251, 191, 36, 0.06);
+  border-color: rgba(251, 191, 36, 0.2);
+  color: var(--status-submitted);
+}
+/* State: connecting (dim) */
+.sse-status-pill.sse-connecting {
+  color: var(--text-dim);
+}
+/* SSE dot */
+.sse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+  transition: background 0.3s;
+}
+/* Pulse animation for live state */
+.sse-dot.sse-dot-live {
+  background: var(--status-completed);
+  animation: sse-pulse 2s ease-in-out infinite;
+}
+.sse-dot.sse-dot-reconnecting {
+  background: var(--status-submitted);
+  animation: sse-blink 1s step-end infinite;
+}
+.sse-dot.sse-dot-connecting {
+  background: var(--text-dim);
+}
+@keyframes sse-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.5); }
+  50%       { opacity: 0.7; box-shadow: 0 0 0 4px rgba(52, 211, 153, 0); }
+}
+@keyframes sse-blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.2; }
+}
+
+/* ────────────────────────────────────────────
+   #583 — Agent Search Input
+   ──────────────────────────────────────────── */
+.agent-search-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin-bottom: 16px;
+}
+.agent-search-wrap svg {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-dim);
+  pointer-events: none;
+}
+.agent-search-input {
+  width: 100%;
+  padding: 9px 14px 9px 38px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 13px;
+  font-family: var(--font);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.agent-search-input::placeholder {
+  color: var(--text-dim);
+}
+.agent-search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* ────────────────────────────────────────────
+   #582 — Shimmer Skeleton for Agent Cards & Job Rows
+   ──────────────────────────────────────────── */
+.skeleton-job-row {
+  height: auto;
+  padding: 16px 20px;
+  margin-bottom: 6px;
+}
+.skeleton-agent-card {
+  height: auto;
+  padding: 22px 24px;
+  min-height: 130px;
+}
+
+/* ────────────────────────────────────────────
+   #580 — Deliverable Preview Box
+   ──────────────────────────────────────────── */
+.deliverable-preview {
+  margin-top: 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  overflow: hidden;
+}
+.deliverable-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+  padding: 8px 12px 4px;
+}
+.deliverable-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px 4px;
+}
+.deliverable-label-row .deliverable-label {
+  padding: 0;
+}
+/* URL variant */
+.deliverable-url .deliverable-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px 10px;
+  font-size: 12px;
+  font-family: var(--mono);
+  color: var(--accent);
+  word-break: break-all;
+  transition: opacity 0.15s;
+}
+.deliverable-url .deliverable-link:hover {
+  opacity: 0.8;
+  text-decoration: underline;
+}
+.deliverable-url .deliverable-link svg {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+/* Markdown variant */
+.deliverable-md-body {
+  padding: 8px 12px 12px;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--text-muted);
+  overflow-x: auto;
+}
+.deliverable-md-body .md-heading {
+  font-weight: 700;
+  color: var(--text);
+  margin: 8px 0 4px;
+  font-size: 13px;
+}
+.deliverable-md-body .md-code {
+  background: var(--bg-hover);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+.deliverable-md-body .md-blockquote {
+  border-left: 3px solid var(--accent);
+  padding-left: 10px;
+  color: var(--text-dim);
+  margin: 4px 0;
+}
+.deliverable-md-body li {
+  margin-left: 16px;
+  list-style: disc;
+}
+/* Code / JSON variant */
+.deliverable-pre {
+  margin: 0;
+  padding: 8px 12px 12px;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 220px;
+}
+
+/* ────────────────────────────────────────────
+   #754 — Notification Preferences Toggle
+   ──────────────────────────────────────────── */
+.notif-pref-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 4px;
+}
+.notif-pref-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.notif-pref-label svg {
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+.notif-toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 38px;
+  height: 22px;
+  flex-shrink: 0;
+  border-radius: var(--radius-full);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 0.2s var(--ease), border-color 0.2s var(--ease);
+}
+.notif-toggle::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  transition: transform 0.2s var(--ease), background 0.2s var(--ease);
+}
+.notif-toggle:hover {
+  border-color: var(--border-hover);
+}
+.notif-toggle[aria-checked="true"],
+.notif-toggle.active {
+  background: var(--accent-soft);
+  border-color: var(--border-accent);
+}
+.notif-toggle[aria-checked="true"]::after,
+.notif-toggle.active::after {
+  transform: translateX(16px);
+  background: var(--accent);
+}
+.notif-toggle:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.notif-toggle:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ────────────────────────────────────────────
+   #755 — Agent Filter Pills, Sort & Empty State
+   ──────────────────────────────────────────── */
+.agent-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.agent-filter-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+.filter-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 12px;
+  border-radius: var(--radius-full);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all 0.15s var(--ease);
+}
+.filter-pill:hover {
+  border-color: var(--border-hover);
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.filter-pill.active {
+  background: var(--accent-soft);
+  border-color: var(--border-accent);
+  color: var(--accent);
+}
+.filter-pill .pill-count {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-dim);
+}
+.filter-pill.active .pill-count {
+  color: var(--accent);
+}
+.filter-pill-clear {
+  color: var(--text-dim);
+  border-style: dashed;
+}
+.filter-pill-clear:hover {
+  color: var(--status-cancelled);
+  border-color: rgba(248, 113, 113, 0.35);
+}
+.agent-sort-select {
+  appearance: none;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-family: var(--font);
+  font-weight: 500;
+  padding: 7px 30px 7px 12px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: border-color 0.15s, background 0.15s;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23868E96' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+}
+.agent-sort-select:hover {
+  border-color: var(--border-hover);
+  background-color: var(--bg-hover);
+}
+.agent-sort-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.agent-sort-select option {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+.empty-state .empty-clear-btn {
+  margin-top: 16px;
+}
+
+/* ────────────────────────────────────────────
+   #756 — Wallet Balance Widget & Faucet Button
+   ──────────────────────────────────────────── */
+.wallet-balance-widget {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 8px;
+}
+.wallet-balance-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+}
+.wallet-balance-asset {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  text-transform: uppercase;
+}
+.wallet-balance-asset::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-dim);
+}
+.wallet-balance-asset.xlm::before {
+  background: var(--status-funded);
+}
+.wallet-balance-asset.usdc::before {
+  background: var(--status-submitted);
+}
+.wallet-balance-amount {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+.wallet-balance-amount.loading {
+  color: var(--text-dim);
+}
+.skeleton.skeleton-balance {
+  display: inline-block;
+  width: 48px;
+  height: 12px;
+  vertical-align: middle;
+  background-image: linear-gradient(
+    90deg,
+    var(--bg-hover) 25%,
+    var(--bg-elevated) 50%,
+    var(--bg-hover) 75%
+  );
+}
+.faucet-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--border-accent);
+  transition: all 0.15s var(--ease);
+}
+.faucet-btn:hover:not(:disabled) {
+  background: var(--accent-glow);
+  border-color: var(--accent);
+}
+.faucet-btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+.faucet-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.faucet-btn .spinner {
+  width: 12px;
+  height: 12px;
+  border-width: 2px;
+  margin: 0;
+}
+
+/* ────────────────────────────────────────────
+   #757 — CSV Export Button & Shared Spinner
+   ──────────────────────────────────────────── */
+.export-csv-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+  transition: all 0.15s var(--ease);
+}
+.export-csv-btn:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--border-hover);
+  background: var(--bg-hover);
+}
+.export-csv-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+.export-csv-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.export-csv-btn svg {
+  flex-shrink: 0;
+  opacity: 0.8;
+}
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border-hover);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+.spinner.spinner-sm {
+  width: 12px;
+  height: 12px;
+  border-width: 2px;
+}
   display:

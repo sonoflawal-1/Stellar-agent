@@ -594,6 +594,20 @@ const agentMatchSchema = z.object({
   topK: z.coerce.number().int().positive().max(100).default(10),
 });
 
+// ── #973: Job creation fee simulation ────────────────────────────────────────
+// The dashboard calls this before signing so the user sees the exact budget,
+// fee, and net payout the contract will charge. The budget is validated with the
+// same constraints the create_job contract enforces (positive, fits in i128).
+const I128_MAX = (1n << 127n) - 1n;
+
+const simulateFeeSchema = z.object({
+  budget: z
+    .union([z.string().regex(/^[0-9]+$/, "budget must be a non-negative integer"), z.number().int().nonnegative()])
+    .transform((value) => (typeof value === "number" ? BigInt(value) : BigInt(value)))
+    .refine((value) => value > 0n, { message: "budget must be greater than zero" })
+    .refine((value) => value <= I128_MAX, { message: "budget exceeds i128 range" }),
+});
+
 function parseBudget(value: string | number | undefined, defaultValue = 10_000_000n): bigint {
   if (value === undefined || value === null) return defaultValue;
   return typeof value === "number" ? BigInt(value) : BigInt(value);
