@@ -15,6 +15,14 @@ export {
   PaymentRejectedError,
   InsufficientFundsError,
 } from "./errors.js";
+// #967 — structured API error format `{ error: { code, message, requestId } }`
+export {
+  MarcApiError,
+  isMarcApiError,
+  parseApiError,
+  type ApiErrorBody,
+  type ApiErrorCode,
+} from "./errors.js";
 export { formatAmount, parseAmount, isValidMetadataUri } from "./format.js";
 // #952 — multi-token amount helpers using on-chain decimals
 export { toBaseUnits, fromBaseUnits, TokenRegistry } from "./format.js";

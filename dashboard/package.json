@@ -14,7 +14,10 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx --test",
     "test:contract": "tsx --test test/contract/**/*.test.ts",
-    "test:all": "tsx --test && tsx --test test/contract/**/*.test.ts"
+    "test:embeddings": "tsx --test test/embeddings/**/*.test.ts",
+    "test:audit": "tsx --test test/audit/**/*.test.ts",
+    "test:audit-bench": "tsx test/audit/bench-100k.ts",
+    "test:all": "tsx --test && tsx --test test/contract/**/*.test.ts && tsx --test test/embeddings/**/*.test.ts && tsx --test test/audit/**/*.test.ts"
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.0",

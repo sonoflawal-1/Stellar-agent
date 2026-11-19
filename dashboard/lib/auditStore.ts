@@ -17,6 +17,32 @@ export interface AuditStoreOptions {
   retentionIntervalMs?: number;
 }
 
+export interface AuditQueryOptions {
+  actor?: string;
+  action?: string;
+  /** Inclusive lower bound on timestamp (ISO 8601). */
+  from?: string;
+  /** Inclusive upper bound on timestamp (ISO 8601). */
+  to?: string;
+  /** @deprecated use `from` */
+  since?: string;
+  /** @deprecated use `to` */
+  until?: string;
+  limit?: number;
+  offset?: number;
+  /** Cursor for keyset pagination: return rows strictly older than this id. */
+  cursor?: number;
+}
+
+export interface AuditQueryResult {
+  entries: AuditEntry[];
+  total: number;
+  limit: number;
+  offset: number;
+  /** Cursor to pass as `cursor` for the next page, or null if exhausted. */
+  nextCursor: number | null;
+}
+
 const DEFAULT_RETENTION_DAYS = 30;
 const DEFAULT_RETENTION_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
@@ -59,6 +85,8 @@ export class AuditStore {
       CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor);
       CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action);
       CREATE INDEX IF NOT EXISTS idx_audit_payload ON audit_log(payload);
+      CREATE INDEX IF NOT EXISTS idx_audit_actor_timestamp ON audit_log(actor, timestamp);
+      CREATE INDEX IF NOT EXISTS idx_audit_action_timestamp ON audit_log(action, timestamp);
       CREATE TABLE IF NOT EXISTS audit_meta (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -161,14 +189,10 @@ export class AuditStore {
     return Number(result.lastInsertRowid);
   }
 
-  query(options: {
-    actor?: string;
-    action?: string;
-    since?: string;
-    until?: string;
-    limit?: number;
-    offset?: number;
-  } = {}): AuditEntry[] {
+  private buildFilter(options: AuditQueryOptions): {
+    where: string;
+    params: unknown[];
+  } {
     const clauses: string[] = [];
     const params: unknown[] = [];
     if (options.actor) {
@@ -179,23 +203,65 @@ export class AuditStore {
       clauses.push('action = ?');
       params.push(options.action);
     }
-    if (options.since) {
+    const from = options.from ?? options.since;
+    const to = options.to ?? options.until;
+    if (from) {
       clauses.push('timestamp >= ?');
-      params.push(options.since);
+      params.push(from);
     }
-    if (options.until) {
+    if (to) {
       clauses.push('timestamp <= ?');
-      params.push(options.until);
+      params.push(to);
     }
     const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    return { where, params };
+  }
+
+  query(options: AuditQueryOptions = {}): AuditEntry[] {
+    const { where, params } = this.buildFilter(options);
     const limit = options.limit ?? 100;
     const offset = options.offset ?? 0;
-    params.push(limit, offset);
+
+    if (typeof options.cursor === 'number') {
+      // Keyset pagination: rows strictly older than the cursor id.
+      const cursorClause = where ? `${where} AND id < ?` : 'WHERE id < ?';
+      return this.db
+        .prepare(
+          `SELECT id, timestamp, actor, action, payload FROM audit_log ${cursorClause} ORDER BY id DESC LIMIT ?`
+        )
+        .all(...params, options.cursor, limit) as AuditEntry[];
+    }
+
     return this.db
       .prepare(
         `SELECT id, timestamp, actor, action, payload FROM audit_log ${where} ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?`
       )
-      .all(...params) as AuditEntry[];
+      .all(...params, limit, offset) as AuditEntry[];
+  }
+
+  /**
+   * Filtered, paginated query returning entries plus total count and a
+   * next-page cursor. Backed by the actor/action/timestamp indexes so it
+   * stays fast over large (100k+) tables.
+   */
+  queryPage(options: AuditQueryOptions = {}): AuditQueryResult {
+    const { where, params } = this.buildFilter(options);
+    const limit = options.limit ?? 100;
+    const offset = options.offset ?? 0;
+
+    const total = (
+      this.db
+        .prepare(`SELECT COUNT(*) AS c FROM audit_log ${where}`)
+        .get(...params) as { c: number }
+    ).c;
+
+    const entries = this.query(options);
+    const nextCursor =
+      entries.length === limit && entries.length > 0
+        ? entries[entries.length - 1].id ?? null
+        : null;
+
+    return { entries, total, limit, offset, nextCursor };
   }
 
   /**

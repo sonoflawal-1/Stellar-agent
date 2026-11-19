@@ -1021,15 +1021,23 @@
   }
 
   // Renders an actionable "Something went wrong" view in place of the page.
-  function renderErrorView(message, retryFn) {
+  function renderErrorView(message, retryFn, err) {
     var page = document.getElementById("page");
     if (!page) return;
     var safeMsg = escapeHtml(message || "An unexpected error occurred.");
+    // #967 — surface structured error code / requestId when available.
+    var detail = err && (err.code || err.requestId) ? apiErrorDetail(err) : "";
+    var detailHtml = detail
+      ? '<p class="error-detail" style="color:var(--text-muted);font-size:12px;margin:0 0 20px;font-family:monospace">' +
+        escapeHtml(detail.trim()) +
+        "</p>"
+      : "";
     page.innerHTML =
       '<div class="error-view" role="alert" style="max-width:560px;margin:64px auto;text-align:center;padding:32px">' +
       '<div style="font-size:40px;margin-bottom:12px">⚠️</div>' +
       '<h2 style="margin:0 0 8px;font-size:20px">Something went wrong</h2>' +
       '<p style="color:var(--text-muted);margin:0 0 20px;line-height:1.5">' + safeMsg + "</p>" +
+      detailHtml +
       '<button type="button" class="btn btn-primary" id="error-retry-btn">Retry</button>' +
       "</div>";
     reliability.errorView = message || true;
@@ -1041,7 +1049,7 @@
           try {
             retryFn();
           } catch (e) {
-            renderErrorView(errorText(e), retryFn);
+            renderErrorView(errorText(e), retryFn, e);
           }
         } else {
           navigate();
@@ -1128,10 +1136,57 @@
     if (/network error|failed to fetch|load failed/i.test(String(msg))) return;
     renderErrorView(msg || "An unexpected error occurred.", function () {
       navigate();
-    });
+    }, reason);
   });
 
   // ── API Client ──
+  // #967 — normalizes every /api error response into { code, message, requestId }.
+  // Accepts the structured envelope, legacy string errors and plain text bodies.
+  function parseApiError(data, responseText, res) {
+    var fallbackMessage = "Request failed (" + (res && res.status ? res.status : "unknown") + ")";
+    var code = null;
+    var message = null;
+    var requestId = null;
+    var err = data && typeof data === "object" ? data.error : null;
+    if (err && typeof err === "object") {
+      code = typeof err.code === "string" ? err.code : null;
+      message = typeof err.message === "string" ? err.message : null;
+      requestId = typeof err.requestId === "string" ? err.requestId : null;
+    } else if (typeof err === "string") {
+      // Legacy: { error: "message" }
+      message = err;
+    } else if (data && typeof data === "object" && typeof data.message === "string") {
+      // Legacy: { message: "..." }
+      message = data.message;
+      if (typeof data.code === "string") code = data.code;
+    }
+    if (!message && responseText && typeof responseText === "string") {
+      // Only surface raw text when it is not JSON (avoid dumping objects).
+      if (responseText.charAt(0) !== "{" && responseText.charAt(0) !== "[") {
+        message = responseText;
+      }
+    }
+    if (!requestId && res && res.headers && typeof res.headers.get === "function") {
+      try {
+        requestId = res.headers.get("x-request-id") || res.headers.get("x-bear-request-id") || null;
+      } catch (e) {}
+    }
+    return {
+      code: code,
+      message: message || fallbackMessage,
+      requestId: requestId,
+    };
+  }
+
+  // Human-readable suffix shown in error UI for structured API errors.
+  function apiErrorDetail(err) {
+    if (!err) return "";
+    var parts = [];
+    if (err.code) parts.push("code: " + err.code);
+    if (err.requestId) parts.push("requestId: " + err.requestId);
+    return parts.length ? " (" + parts.join(", ") + ")" : "";
+  }
+
   async function api(path, opts = {}) {
     const headers = opts.body ? { "Content-Type": "application/json" } : {};
     if (window.__sessionToken) headers.Authorization = "Bearer " + window.__sessionToken;
@@ -1173,8 +1228,17 @@
       }
     }
     if (!res.ok) {
-      var rawError = data && data.error ? data.error : responseText || "Request failed (" + res.status + ")";
-      var apiError = new Error(formatSorobanError(rawError));
+      // #967 — structured error envelope: { error: { code, message, requestId } }.
+      // Fall back to legacy shapes (plain string error, { message }, raw text).
+      var parsedError = parseApiError(data, responseText, res);
+      var apiError = new Error(formatSorobanError(parsedError.message));
+      apiError.code = parsedError.code;
+      apiError.requestId = parsedError.requestId;
+      apiError.status = res.status;
+      apiError.technicalDetails =
+        "HTTP " + res.status + " " + res.statusText +
+        (parsedError.code ? "\ncode: " + parsedError.code : "") +
+        (parsedError.requestId ? "\nrequestId: " + parsedError.requestId : "");
       apiError.technicalDetails = responseText || getTechnicalDetails(rawError);
       if (!opts._silent) notifyError(apiError);
       throw apiError;

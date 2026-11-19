@@ -173,6 +173,29 @@ export function getConfigForNetwork(networkId?: string | null): MarcConfig {
 
 export const DEMO_MODE = process.env.DEMO_MODE === "true";
 
+// Embedding model (Xenova/all-MiniLM-L6-v2) tuning for /api/agents/match.
+// - EMBEDDINGS_ENABLED: enable semantic agent matching (default: true).
+// - EMBEDDING_CACHE_MAX: maximum number of cached agent embeddings keyed by
+//   metadata hash; bounds memory of the vector search (default: 1000).
+// - EMBEDDING_LOAD_TIMEOUT_MS: max time to wait for the lazy model load before
+//   reporting the model as unavailable (default: 30000).
+export const embeddingsEnabled = process.env.EMBEDDINGS_ENABLED !== "false";
+export const embeddingCacheMax = Math.max(
+  0,
+  Number(process.env.EMBEDDING_CACHE_MAX ?? 1000) || 0,
+);
+export const embeddingLoadTimeoutMs = Math.max(
+  1,
+  Number(process.env.EMBEDDING_LOAD_TIMEOUT_MS ?? 30_000) || 30_000,
+);
+
+// Readiness (/readyz) dependency check timeout in milliseconds. Each check
+// (RPC, indexer DB, embedding model) is bounded by this budget (default: 5000).
+export const readyzTimeoutMs = Math.max(
+  1,
+  Number(process.env.READYZ_TIMEOUT_MS ?? 5_000) || 5_000,
+);
+
 // Audit log storage (SQLite, WAL mode) with retention and JSONL migration.
 // - AUDIT_DB_PATH: path to the SQLite database file (default: data/audit.sqlite).
 // - AUDIT_RETENTION_DAYS: entries older than this many days are pruned by the

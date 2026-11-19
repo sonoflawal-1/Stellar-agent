@@ -7,6 +7,32 @@ import { parse as parseYaml } from 'yaml';
 import OpenApiResponseValidator from 'openapi-response-validator';
 import { createDashboardServer } from './server';
 
+/**
+ * Shape of the structured error envelope required by #967.
+ */
+interface ErrorEnvelope {
+  error: {
+    code: string;
+    message: string;
+    requestId: string;
+  };
+}
+
+function isErrorEnvelope(body: unknown): body is ErrorEnvelope {
+  if (typeof body !== 'object' || body === null) return false;
+  const err = (body as { error?: unknown }).error;
+  if (typeof err !== 'object' || err === null) return false;
+  const { code, message, requestId } = err as Record<string, unknown>;
+  return (
+    typeof code === 'string' &&
+    code.length > 0 &&
+    typeof message === 'string' &&
+    message.length > 0 &&
+    typeof requestId === 'string' &&
+    requestId.length > 0
+  );
+}
+
 interface OpenApiDocument {
   openapi: string;
   paths: Record<string, Record<string, any>>;
@@ -49,8 +75,9 @@ function buildValidator(
 async function fetchJson(
   path: string,
   method: string = 'GET',
-): Promise<{ status: number; body: unknown }> {
-  const res = await fetch(`${baseUrl}${path}`, { method });
+  init: RequestInit = {},
+): Promise<{ status: number; body: unknown; headers: Headers }> {
+  const res = await fetch(`${baseUrl}${path}`, { ...init, method });
   const text = await res.text();
   let body: unknown = undefined;
   if (text.length > 0) {
@@ -60,7 +87,7 @@ async function fetchJson(
       body = text;
     }
   }
-  return { status: res.status, body };
+  return { status: res.status, body, headers: res.headers };
 }
 
 /**
@@ -169,6 +196,202 @@ describe('dashboard API contract (docs/openapi.yaml)', () => {
       const validator = buildValidator(op.path, op.method, statusKey);
       const result = validator.validateResponse(status, body);
       expect(result, JSON.stringify(result, null, 2)).toBeUndefined();
+    });
+  });
+
+  describe('structured error envelope (#967)', () => {
+    it('returns { error: { code, message, requestId } } for unknown /api routes', async () => {
+      const { status, body } = await fetchJson('/api/__does_not_exist__');
+      expect(status).toBe(404);
+      expect(isErrorEnvelope(body)).toBe(true);
+      if (isErrorEnvelope(body)) {
+        expect(body.error.code).toBe('NOT_FOUND');
+      }
+    });
+
+    it('returns the envelope for malformed request bodies', async () => {
+      const { status, body } = await fetchJson('/api/agents/match', 'POST', {
+        headers: { 'content-type': 'application/json' },
+        body: '{ not valid json',
+      });
+      expect(status).toBeGreaterThanOrEqual(400);
+      expect(status).toBeLessThan(500);
+      expect(isErrorEnvelope(body)).toBe(true);
+      if (isErrorEnvelope(body)) {
+        expect(body.error.code).toBe('INVALID_REQUEST');
+      }
+    });
+
+    it('propagates a request id header that matches the envelope', async () => {
+      const { body, headers } = await fetchJson('/api/__does_not_exist__');
+      const headerId = headers.get('x-request-id');
+      expect(headerId).toBeTruthy();
+      if (isErrorEnvelope(body)) {
+        expect(body.error.requestId).toBe(headerId);
+      }
+    });
+
+    it('uses the envelope for every documented /api error response', async () => {
+      const apiOps = documentedOperations().filter((op) =>
+        op.path.startsWith('/api/'),
+      );
+      expect(apiOps.length).toBeGreaterThan(0);
+      for (const op of apiOps) {
+        const pathParams: Record<string, string> = {};
+        for (const param of op.operation.parameters ?? []) {
+          if (param.in === 'path') pathParams[param.name] = param.example ?? '1';
+        }
+        const requestPath = resolvePath(op.path, pathParams);
+        const { status, body } = await fetchJson(requestPath, op.method);
+        if (status >= 400) {
+          expect(
+            isErrorEnvelope(body),
+            `Expected error envelope for ${op.method.toUpperCase()} ${op.path} (status ${status})`,
+          ).toBe(true);
+        }
+      }
+    });
+  });
+
+  describe('/readyz dependency readiness (#966)', () => {
+    it('returns 200 with per-dependency status when healthy', async () => {
+      const { status, body } = await fetchJson('/readyz');
+      expect(status).toBe(200);
+      expect(body).toMatchObject({ ready: true });
+      const deps = (body as { dependencies?: Record<string, unknown> })
+        .dependencies;
+      expect(deps).toBeDefined();
+      expect(deps).toHaveProperty('rpc');
+      expect(deps).toHaveProperty('indexerDb');
+      expect(deps).toHaveProperty('model');
+    });
+
+    it('returns 503 when the RPC dependency is unreachable', async () => {
+      // Point the server at a closed port so the RPC probe fails fast.
+      const unreachable = createDashboardServer({
+        rpcUrl: 'http://127.0.0.1:1',
+        readinessTimeoutMs: 250,
+      });
+      await new Promise<void>((resolveListen) => {
+        unreachable.listen(0, '127.0.0.1', () => resolveListen());
+      });
+      const address = unreachable.address() as AddressInfo;
+      try {
+        const res = await fetch(`http://127.0.0.1:${address.port}/readyz`);
+        const body = (await res.json()) as {
+          ready?: boolean;
+          dependencies?: Record<string, { ok?: boolean }>;
+        };
+        expect(res.status).toBe(503);
+        expect(body.ready).toBe(false);
+        expect(body.dependencies?.rpc?.ok).toBe(false);
+      } finally {
+        await new Promise<void>((resolveClose, reject) => {
+          unreachable.close((err) => (err ? reject(err) : resolveClose()));
+        });
+      }
+    });
+  });
+
+  describe('/api/agents/match embedding cache and memory ceiling (#965)', () => {
+    const matchBody = {
+      query: 'find an agent that summarizes documents',
+      limit: 5,
+    };
+
+    it('reports a cache miss on the first call and a hit on the second', async () => {
+      const first = await fetchJson('/api/agents/match', 'POST', {
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(matchBody),
+      });
+      expect(first.status).toBe(200);
+      expect(first.headers.get('x-embedding-cache')).toBe('miss');
+
+      const second = await fetchJson('/api/agents/match', 'POST', {
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(matchBody),
+      });
+      expect(second.status).toBe(200);
+      expect(second.headers.get('x-embedding-cache')).toBe('hit');
+    });
+
+    it('keeps the embedding cache under its memory ceiling', async () => {
+      const { status, body } = await fetchJson('/api/agents/match', 'POST', {
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(matchBody),
+      });
+      expect(status).toBe(200);
+      const stats = (body as { cache?: { size?: number; maxEntries?: number } })
+        .cache;
+      expect(stats).toBeDefined();
+      expect(typeof stats?.size).toBe('number');
+      expect(typeof stats?.maxEntries).toBe('number');
+      expect(stats!.size!).toBeLessThanOrEqual(stats!.maxEntries!);
+    });
+  });
+
+  describe('/api/admin/audit filtering and pagination (#968)', () => {
+    it('filters by actor', async () => {
+      const { status, body } = await fetchJson(
+        '/api/admin/audit?actor=alice&page=1&pageSize=10',
+      );
+      expect(status).toBe(200);
+      const entries = (body as { entries?: Array<{ actor?: string }> }).entries;
+      expect(Array.isArray(entries)).toBe(true);
+      for (const entry of entries ?? []) {
+        expect(entry.actor).toBe('alice');
+      }
+    });
+
+    it('filters by action and time range', async () => {
+      const from = encodeURIComponent('2024-01-01T00:00:00.000Z');
+      const to = encodeURIComponent('2030-01-01T00:00:00.000Z');
+      const { status, body } = await fetchJson(
+        `/api/admin/audit?action=login&from=${from}&to=${to}&page=1&pageSize=10`,
+      );
+      expect(status).toBe(200);
+      const entries = (
+        body as { entries?: Array<{ action?: string; timestamp?: string }> }
+      ).entries;
+      expect(Array.isArray(entries)).toBe(true);
+      for (const entry of entries ?? []) {
+        expect(entry.action).toBe('login');
+        if (entry.timestamp) {
+          expect(entry.timestamp >= '2024-01-01T00:00:00.000Z').toBe(true);
+          expect(entry.timestamp <= '2030-01-01T00:00:00.000Z').toBe(true);
+        }
+      }
+    });
+
+    it('paginates results and reports total count', async () => {
+      const first = await fetchJson('/api/admin/audit?page=1&pageSize=2');
+      expect(first.status).toBe(200);
+      const firstBody = first.body as {
+        entries?: unknown[];
+        total?: number;
+        page?: number;
+        pageSize?: number;
+      };
+      expect(firstBody.page).toBe(1);
+      expect(firstBody.pageSize).toBe(2);
+      expect(typeof firstBody.total).toBe('number');
+      expect((firstBody.entries ?? []).length).toBeLessThanOrEqual(2);
+
+      const second = await fetchJson('/api/admin/audit?page=2&pageSize=2');
+      expect(second.status).toBe(200);
+      const secondBody = second.body as { entries?: unknown[] };
+      expect((secondBody.entries ?? []).length).toBeLessThanOrEqual(2);
+    });
+
+    it('rejects an invalid time range with the error envelope', async () => {
+      const { status, body } = await fetchJson(
+        '/api/admin/audit?from=not-a-date',
+      );
+      expect(status).toBe(400);
+      expect(isErrorEnvelope(body)).toBe(true);
+      if (isErrorEnvelope(body)) {
+        expect(body.error.code).toBe('INVALID_REQUEST');
+      }
     });
   });
 

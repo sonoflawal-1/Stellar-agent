@@ -953,11 +953,39 @@ All responses are JSON with standard fields:
 
 **Error (4xx/5xx):**
 
+All dashboard `/api` routes return a single structured error shape, produced by one Express error handler:
+
 ```json
 {
-  "error": "Human-readable error message"
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "invalid jobId",
+    "requestId": "req_01H8Z9..."
+  }
 }
 ```
+
+| Field       | Description                                                              |
+| ----------- | ------------------------------------------------------------------------ |
+| `code`      | Stable, machine-readable error code (see table below)                    |
+| `message`   | Human-readable description (safe to display; never contains stack traces) |
+| `requestId` | Correlation ID for the request; also returned in the `X-Request-Id` header |
+
+**Error codes:**
+
+| Code                | Status | Meaning                                          |
+| ------------------- | ------ | ------------------------------------------------ |
+| `VALIDATION_ERROR`  | 400    | Invalid or missing request parameters/body       |
+| `UNAUTHORIZED`      | 401    | Missing or invalid credentials                   |
+| `FORBIDDEN`         | 403    | Authenticated but not permitted                  |
+| `NOT_FOUND`         | 404    | Resource does not exist                          |
+| `CONFLICT`          | 409    | Request conflicts with current state             |
+| `RATE_LIMITED`      | 429    | Rate limit exceeded                              |
+| `UPSTREAM_ERROR`    | 502    | Dependency (RPC, indexer) returned an error      |
+| `NOT_READY`         | 503    | Service not ready (see `/readyz`)                |
+| `INTERNAL_ERROR`    | 500    | Unexpected server error                          |
+
+Clients should branch on `code`, not on `message`. The dashboard client and `@bear/sdk` parse this shape and surface `requestId` in logs.
 
 ### Common Status Codes
 
@@ -970,6 +998,8 @@ All responses are JSON with standard fields:
 | 422  | Unprocessable entity (malformed data)  |
 | 429  | Too many requests (rate limited)       |
 | 500  | Internal server error                  |
+| 502  | Upstream dependency error              |
+| 503  | Service not ready                      |
 
 ---
 
@@ -1067,9 +1097,114 @@ RateLimit-Reset: 1690732000
 
 ```json
 {
-  "error": "service unavailable"
+  "error": {
+    "code": "NOT_READY",
+    "message": "service unavailable: rpc unreachable",
+    "requestId": "req_01H8Z9..."
+  }
 }
 ```
+
+---
+
+## Dashboard Health & Readiness
+
+The dashboard service exposes two probes:
+
+### `GET /health` and `GET /healthz`
+
+Shallow liveness probes. Return `200` with `{ "status": "ok" }` as long as the process is running. They do **not** check dependencies.
+
+### `GET /readyz`
+
+Deep readiness probe. Checks each dependency with a per-check timeout (default `2000ms`, configurable via `READYZ_TIMEOUT_MS`):
+
+| Check     | Description                                                       |
+| --------- | ----------------------------------------------------------------- |
+| `rpc`     | Stellar RPC reachable (`getHealth`/`getLatestLedger`)             |
+| `indexer` | Indexer database reachable and queryable                          |
+| `model`   | LLM model provider configured and reachable                       |
+
+**Response (200 OK — all checks pass):**
+
+```json
+{
+  "status": "ready",
+  "checks": {
+    "rpc": { "ok": true, "latencyMs": 42 },
+    "indexer": { "ok": true, "latencyMs": 7 },
+    "model": { "ok": true, "latencyMs": 118 }
+  }
+}
+```
+
+**Response (503 Service Unavailable — any check fails):**
+
+```json
+{
+  "status": "not_ready",
+  "checks": {
+    "rpc": { "ok": false, "latencyMs": 2000, "error": "timeout" },
+    "indexer": { "ok": true, "latencyMs": 7 },
+    "model": { "ok": true, "latencyMs": 118 }
+  }
+}
+```
+
+`/readyz` returns `503` whenever the RPC is unreachable (or any other check fails), so orchestrators stop routing traffic to the instance. Docker `HEALTHCHECK` and the compose `healthcheck` use `/readyz`; liveness probes should keep using `/healthz`.
+
+```bash
+curl -fsS http://localhost:4700/readyz || echo "not ready"
+```
+
+---
+
+## Dashboard Admin API
+
+### `GET /api/admin/audit`
+
+Read the admin audit trail. Entries are appended to a JSONL log and indexed for efficient filtered reads.
+
+**Query Parameters:**
+
+| Parameter   | Type    | Default | Description                                                       |
+| ----------- | ------- | ------- | ----------------------------------------------------------------- |
+| `page`      | integer | `1`     | 1-based page number                                               |
+| `pageSize`  | integer | `50`    | Page size, clamped to `1..200`                                    |
+| `actor`     | string  | —       | Filter by actor (exact match)                                     |
+| `action`    | string  | —       | Filter by action (exact match, e.g. `agent.deregister`)           |
+| `from`      | string  | —       | Inclusive lower bound on timestamp (ISO-8601)                     |
+| `to`        | string  | —       | Inclusive upper bound on timestamp (ISO-8601)                     |
+
+**Response (200 OK):**
+
+```json
+{
+  "data": [
+    {
+      "id": "aud_01H...",
+      "timestamp": "2026-07-29T09:19:36.884Z",
+      "actor": "admin@example.com",
+      "action": "agent.deregister",
+      "target": "seller-webbuilder",
+      "requestId": "req_01H8Z9..."
+    }
+  ],
+  "page": 1,
+  "pageSize": 50,
+  "total": 1,
+  "hasMore": false
+}
+```
+
+**Error Responses:**
+
+| Status | Description                                        |
+| ------ | -------------------------------------------------- |
+| 400    | Invalid `page`, `pageSize`, `from`, or `to`        |
+| 401    | Unauthorized                                       |
+
+**Performance:** the JSONL audit log is indexed by actor, action, and timestamp, so filtered queries over 100k entries return in well under 100ms (see `docs/audit-performance.md`).
 
 ---
 
@@ -1122,6 +1257,12 @@ console.log(result); // { status: "accepted", jobId: "1" }
 ---
 
 ## Changelog
+
+### v1.2 (2026-07-29)
+
+- Added `/readyz` deep readiness probe (RPC, indexer DB, model) with 503 semantics; used by Docker/compose healthchecks
+- Standardized structured error format `{ error: { code, message, requestId } }` across all `/api` routes
+- Added filters (`actor`, `action`, `from`, `to`) and pagination to `/api/admin/audit`
 
 ### v1.1 (2026-07-29)
 
