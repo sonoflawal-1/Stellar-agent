@@ -259,3 +259,13 @@ jobs:
           for target in $(cargo fuzz list); do
             timeout 600 cargo fuzz run "$target" -- -max_total_time=600 -rss_limit_mb=4096 || exit 1
           done
+
+  integration-docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run integration tests against ephemeral volumes
+        run: docker compose -f docker-compose.test.yml up --exit-code-from tests --abort-on-container-exit
+      - name: Tear down test stack and volumes
+        if: always()
+        run: docker compose -f docker-compose.test.yml down -v
