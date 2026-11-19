@@ -101,3 +101,13 @@ export type { Milestone, MilestoneInput } from './types.js';
 
 // #698 — atomic batch job creation
 export type { JobRequest, BatchJobsCreatedEvent } from './commerce.js';
+
+// #1040 — async iterator helpers for auto-pagination
+export {
+  paginate,
+  listAgentsIterator,
+  jobsByClientIterator,
+  jobsByProviderIterator,
+  type PageFetcher,
+  type PaginateOptions,
+} from "./pagination.js";
