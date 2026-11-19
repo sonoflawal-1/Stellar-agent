@@ -294,3 +294,6 @@ MIT
 
 <!-- handsoff-issue-1037 -->
 - #1037: fix(dashboard): /api/build/submit must verify the transaction network passphrase and source
+
+<!-- handsoff-issue-1039 -->
+- #1039: feat(indexer): agent leaderboard endpoint (reputation, volume, completion rate)
