@@ -15,6 +15,7 @@ import {
   callLlmWithRetry,
   registerGracefulShutdown,
 } from "../shared.js";
+import { sanitizeGeneratedHtml } from "./sanitize.js";
 
 const config = loadAgentConfig({
   agentId: "seller-webbuilder",
@@ -249,11 +250,30 @@ app.post("/job", limiter, async (req, res) => {
         );
       }
 
+      // Sandbox/validate generated artifacts before delivery: strip inline
+      // scripts, event handlers and external requests, and record a report.
+      const { html: sanitized, report } = sanitizeGeneratedHtml(stripped, { jobId });
+      if (report.stripped.length > 0 || report.flagged.length > 0) {
+        console.warn(
+          `[${AGENT_ID}] Job #${jobId} sanitised: ${report.stripped.length} stripped, ${report.flagged.length} flagged`,
+        );
+      }
+
       fs.mkdirSync(OUTPUT_DIR, { recursive: true });
       const filename = `job-${jobId}.html`;
-      fs.writeFileSync(path.join(OUTPUT_DIR, filename), stripped);
+      fs.writeFileSync(path.join(OUTPUT_DIR, filename), sanitized);
+      fs.writeFileSync(
+        path.join(OUTPUT_DIR, `job-${jobId}.content-report.json`),
+        JSON.stringify(report, null, 2),
+      );
+      // Canonical deliverable paths.
+      fs.writeFileSync(path.join(OUTPUT_DIR, "website.html"), sanitized);
+      fs.writeFileSync(
+        path.join(OUTPUT_DIR, "content-report.json"),
+        JSON.stringify(report, null, 2),
+      );
       const deliverable = `${publicUrl}/${OUTPUT_URL}/${filename}`;
-      console.log(`[${AGENT_ID}] Website built (${stripped.length} chars) → ${deliverable}`);
+      console.log(`[${AGENT_ID}] Website built (${sanitized.length} chars) → ${deliverable}`);
 
       const commerce = new CommerceClient(cfg);
       for (let attempt = 1; attempt <= 5; attempt++) {

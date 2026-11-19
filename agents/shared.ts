@@ -78,6 +78,96 @@ export function formatConfigIssues(issues: z.ZodIssue[]): string {
 }
 
 /**
+ * Flatten a Zod schema into a list of leaf env keys with their descriptions.
+ * Used to generate `.env.example` files from the schema.
+ */
+export interface EnvSchemaEntry {
+  key: string;
+  description?: string;
+  optional: boolean;
+}
+
+function unwrapSchema(schema: z.ZodTypeAny): z.ZodTypeAny {
+  let current: z.ZodTypeAny = schema;
+  // Unwrap optional/nullable/default/effects wrappers to inspect the inner type.
+  for (;;) {
+    if (current instanceof z.ZodOptional || current instanceof z.ZodNullable) {
+      current = current.unwrap() as z.ZodTypeAny;
+      continue;
+    }
+    if (current instanceof z.ZodDefault) {
+      current = current.removeDefault() as z.ZodTypeAny;
+      continue;
+    }
+    if (current instanceof z.ZodEffects) {
+      current = current.innerType() as z.ZodTypeAny;
+      continue;
+    }
+    return current;
+  }
+}
+
+function isOptionalSchema(schema: z.ZodTypeAny): boolean {
+  let current: z.ZodTypeAny = schema;
+  for (;;) {
+    if (current instanceof z.ZodOptional) return true;
+    if (current instanceof z.ZodNullable) {
+      current = current.unwrap() as z.ZodTypeAny;
+      continue;
+    }
+    if (current instanceof z.ZodDefault) return true;
+    if (current instanceof z.ZodEffects) {
+      current = current.innerType() as z.ZodTypeAny;
+      continue;
+    }
+    return false;
+  }
+}
+
+/**
+ * Flatten an env schema into a list of leaf keys. Nested objects are flattened
+ * with their keys joined by `_` (e.g. CONTRACT_ADDRESSES.AGENT_IDENTITY_CONTRACT
+ * becomes AGENT_IDENTITY_CONTRACT).
+ */
+export function describeEnvSchema(
+  schema: z.ZodObject<z.ZodRawShape>,
+  prefix = "",
+): EnvSchemaEntry[] {
+  const entries: EnvSchemaEntry[] = [];
+  const shape = schema.shape as Record<string, z.ZodTypeAny>;
+  for (const [key, value] of Object.entries(shape)) {
+    const inner = unwrapSchema(value);
+    if (inner instanceof z.ZodObject) {
+      entries.push(...describeEnvSchema(inner as z.ZodObject<z.ZodRawShape>, prefix));
+      continue;
+    }
+    entries.push({
+      key: `${prefix}${key}`,
+      description: value.description,
+      optional: isOptionalSchema(value),
+    });
+  }
+  return entries;
+}
+
+/**
+ * Render a `.env.example` file body from an env schema.
+ */
+export function generateEnvExample(schema: z.ZodObject<z.ZodRawShape>): string {
+  const entries = describeEnvSchema(schema);
+  const lines: string[] = [
+    "# Generated from the agent env schema. Do not edit by hand.",
+    "",
+  ];
+  for (const entry of entries) {
+    if (entry.description) lines.push(`# ${entry.description}`);
+    lines.push(`${entry.key}=`);
+    lines.push("");
+  }
+  return lines.join("\n").trimEnd() + "\n";
+}
+
+/**
  * Validate a raw environment object against AgentConfigSchema.
  * Throws a readable error (with a terminal table) on failure.
  */
@@ -104,6 +194,33 @@ export function validateAgentConfig(
 }
 
 /**
+ * Validate `env` against `schema` at agent startup. On failure, prints a
+ * formatted table of missing/invalid keys to stderr and exits with code 1.
+ * On success, returns the parsed configuration.
+ */
+export function validateEnv<T extends z.ZodTypeAny>(
+  schema: T,
+  env: Record<string, string | undefined> = process.env,
+  options: {
+    logger?: Pick<Console, "error">;
+    exit?: (code: number) => void;
+  } = {},
+): z.infer<T> {
+  const logger = options.logger ?? console;
+  const exit = options.exit ?? ((code: number) => process.exit(code));
+  const result = schema.safeParse(env);
+  if (!result.success) {
+    logger.error(
+      `Invalid agent configuration:\n${formatConfigIssues(result.error.issues)}`,
+    );
+    exit(1);
+    // If exit is stubbed (e.g. in tests), throw so callers don't continue.
+    throw new Error("Invalid agent configuration");
+  }
+  return result.data as z.infer<T>;
+}
+
+/**
  * Strictly typed agent configuration, validated at boot.
  */
 export const agentConfig: AgentConfig = validateAgentConfig(process.env);
@@ -112,6 +229,59 @@ export const AGENT_LLM_PROVIDER = process.env.AGENT_LLM_PROVIDER ?? "openai";
 export const AGENT_LLM_MODEL =
   process.env.AGENT_LLM_MODEL ??
   (AGENT_LLM_PROVIDER === "anthropic" ? "claude-3-5-sonnet-latest" : "gpt-4o");
+
+/**
+ * Per-agent env schemas. Each agent validates its own required variables at
+ * startup via `validateEnv(<schema>)`.
+ */
+export const BuyerAgentEnvSchema = AgentConfigSchema.extend({
+  AGENT_LLM_PROVIDER: z
+    .enum(["openai", "anthropic"])
+    .default("openai")
+    .describe("LLM provider used for task classification"),
+  AGENT_LLM_MODEL: z
+    .string()
+    .optional()
+    .describe("Override the default LLM model name"),
+  OPENAI_API_KEY: z
+    .string()
+    .optional()
+    .describe("Required when AGENT_LLM_PROVIDER=openai"),
+  ANTHROPIC_API_KEY: z
+    .string()
+    .optional()
+    .describe("Required when AGENT_LLM_PROVIDER=anthropic"),
+});
+
+export type BuyerAgentEnv = z.infer<typeof BuyerAgentEnvSchema>;
+
+export const SellerAgentEnvSchema = AgentConfigSchema.extend({
+  AGENT_LLM_PROVIDER: z
+    .enum(["openai", "anthropic"])
+    .default("openai")
+    .describe("LLM provider used for task execution"),
+  AGENT_LLM_MODEL: z
+    .string()
+    .optional()
+    .describe("Override the default LLM model name"),
+  OPENAI_API_KEY: z
+    .string()
+    .optional()
+    .describe("Required when AGENT_LLM_PROVIDER=openai"),
+  ANTHROPIC_API_KEY: z
+    .string()
+    .optional()
+    .describe("Required when AGENT_LLM_PROVIDER=anthropic"),
+});
+
+export type SellerAgentEnv = z.infer<typeof SellerAgentEnvSchema>;
+
+export const AGENT_ENV_SCHEMAS = {
+  buyer: BuyerAgentEnvSchema,
+  seller: SellerAgentEnvSchema,
+} as const;
+
+export type AgentName = keyof typeof AGENT_ENV_SCHEMAS;
 
 export const CAPABILITY_TAGS = [
   "code-generation",
@@ -148,6 +318,14 @@ export interface RegistryAgent {
   capabilities: CapabilityTag[];
   reputation: number;
   price: number;
+}
+
+/**
+ * Emit `.env.example` content for a given agent (or all agents) from the
+ * registered env schemas. Used by scripts/generate-env-example.ts.
+ */
+export function generateAgentEnvExample(agent: AgentName): string {
+  return generateEnvExample(AGENT_ENV_SCHEMAS[agent]);
 }
 
 interface LlmMessage {

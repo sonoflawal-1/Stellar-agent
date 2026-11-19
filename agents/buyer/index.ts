@@ -17,12 +17,17 @@ import {
   type MarcConfig,
   type Job,
 } from "marc-stellar-sdk";
-import { retryWithBackoff, loadAgentConfig } from "../shared.js";
+import { retryWithBackoff, loadAgentConfig, validateEnv } from "../shared.js";
 import { watchFile, unwatchFile, readFileSync, existsSync } from "node:fs";
 import { createServer } from "node:http";
 import { context, propagation, SpanKind, SpanStatusCode, trace } from "@opentelemetry/api";
 
 const DEFAULT_JOB_BUDGET = 10_000_000n;
+
+// ── Environment validation (issue #998) ───────────────────────────────────────
+// Validate required variables at startup so missing keys fail fast with a
+// clear table instead of a late, cryptic error.
+validateEnv("buyer");
 
 // ── OpenTelemetry tracing (issue #726) ────────────────────────────────────────
 // The tracer is a no-op until a provider is registered (see tracing.ts). All

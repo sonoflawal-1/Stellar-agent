@@ -17,7 +17,12 @@ import {
 
 initTracing("seller-namer");
 
-validateEnv(["PORT", "SECRET_KEY", "REGISTRY_URL", "GROQ_API_KEY"]);
+validateEnv({
+  PORT: { required: true },
+  SECRET_KEY: { required: true },
+  REGISTRY_URL: { required: true },
+  GROQ_API_KEY: { required: true },
+});
 
 const AGENT_DIR = path.dirname(fileURLToPath(import.meta.url));
 

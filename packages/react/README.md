@@ -12,18 +12,92 @@ npm install @bear-protocol/react marc-stellar-sdk react
 
 ## Setup
 
-Wrap your app in the provider so the hooks can reach the configured clients:
+Wrap your app in `WalletProvider` so the hooks can reach the configured clients and share wallet state. Every hook and component below must be rendered inside this provider.
 
 ```tsx
-import { BearProvider } from '@bear-protocol/react'
+import { WalletProvider } from '@bear-protocol/react'
 
 function App() {
   return (
-    <BearProvider network="testnet">
+    <WalletProvider options={{ network: 'testnet' }}>
       <YourApp />
-    </BearProvider>
+    </WalletProvider>
   )
 }
+```
+
+### `<WalletProvider />`
+
+Provides the wallet context consumed by `useWallet`, `useWalletState`, and `<WalletConnectButton />`. It is SSR-safe and renders its children immediately.
+
+Props:
+
+| Prop       | Type                     | Default     | Description                                                                 |
+| ---------- | ------------------------ | ----------- | --------------------------------------------------------------------------- |
+| `children` | `React.ReactNode`        | —           | Your application tree.                                                      |
+| `options`  | `WalletProviderOptions`  | `undefined` | Client configuration: `network`, `rpcUrl`, `horizonUrl`, `explorerUrl`, etc. |
+
+```tsx
+<WalletProvider options={{ network: 'mainnet', rpcUrl: 'https://soroban.stellar.org' }}>
+  <App />
+</WalletProvider>
+```
+
+### `useWalletContext()`
+
+Low-level accessor for the raw context value. Throws if called outside a `<WalletProvider />`. Most applications should use `useWallet()` or `useWalletState()` instead; reach for `useWalletContext()` when building custom wallet UI that needs the underlying client and provider registry.
+
+```tsx
+import { useWalletContext } from '@bear-protocol/react'
+
+function CustomWalletUI() {
+  const { client, providers } = useWalletContext()
+  // ...
+}
+```
+
+## Exports
+
+Everything below is exported from the package root (`@bear-protocol/react`).
+
+### Hooks
+
+| Hook                    | Returns                                                                 | Description                                                       |
+| ----------------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `useWallet()`           | `{ connected, address, balance, provider, connect, switchWallet, disconnect }` | Full multi-wallet connection state and actions.            |
+| `useWalletState()`      | `{ connected, address, balance, provider }`                             | Read-only subset of `useWallet()` for display-only components.    |
+| `useAgent(id, options?)`| `{ agent, loading, error }`                                             | Cached, deduplicated read of `IdentityClient.getAgent()`.         |
+| `useJob(id)`            | `{ job, loading, error }`                                               | Read of `CommerceClient.getJob()`.                                |
+| `useCreateJob()`        | `{ createJob, pending, error }`                                         | Mutation hook for creating jobs, with optimistic UI support.      |
+| `useCommerce()`         | `{ client, loading, error }`                                            | Access to the configured `CommerceClient` instance.               |
+| `usePaymentChannel()`   | `{ channel, open, close, pending, error }`                              | Manage a payment channel lifecycle.                               |
+| `useAsync(fn, deps?)`   | `{ data, loading, error, refetch }`                                     | Generic async state wrapper used to build the hooks above.        |
+| `useFreighter()`        | `{ connected, address, connect, disconnect }`                           | Freighter-only connection helper.                                 |
+| `useMarcFetch(keypair)` | `{ fetch, isPaying, error }`                                            | Wraps `marcFetch` and surfaces x402 payment status.               |
+
+### Components
+
+| Component               | Description                                                                 |
+| ----------------------- | --------------------------------------------------------------------------- |
+| `<WalletConnectButton />` | Drop-in connect button with avatar, truncated address, balance, and modal. |
+| `<AgentCard />`         | Renders an agent record (name, id, metadata) from an `Agent` or agent id.   |
+| `<JobStatusBadge />`    | Colored badge for a `JobStatus` value.                                      |
+| `<EscrowStepper />`     | Step indicator for the escrow lifecycle of a job.                           |
+
+### Cache helpers
+
+| Export                  | Description                                                                 |
+| ----------------------- | --------------------------------------------------------------------------- |
+| `clearCache()`          | Clears all in-memory query caches (useful in tests and on logout).          |
+| `invalidate(key)`       | Invalidates a single cache entry by key.                                    |
+| `getCacheStats()`       | Returns hit/miss statistics for debugging cache behaviour.                  |
+
+### Types
+
+`WalletProviderOptions`, `WalletContextValue`, `WalletProviderName`, `UseWalletResult`, `UseWalletStateResult`, `UseAgentOptions`, `UseAgentResult`, `UseJobResult`, `UseCreateJobResult`, `UseCommerceResult`, `UsePaymentChannelResult`, `UseAsyncResult`, `AgentCardProps`, `JobStatusBadgeProps`, `EscrowStepperProps`, plus re-exported core types (`Agent`, `Job`, `JobStatus`, `MarcConfig`, …).
+
+```tsx
+import type { Agent, Job, JobStatus, UseAgentOptions, WalletProviderOptions } from '@bear-protocol/react'
 ```
 
 ## Hooks
@@ -198,18 +272,77 @@ The modal and dropdown are fully keyboard accessible: focus is trapped inside th
 
 The package is fully SSR-safe: no `window`, `document`, or `localStorage` access happens at module evaluation time, and the initial server render matches the client hydration state (wallets render as disconnected until hydration completes), so you get zero hydration mismatch warnings.
 
-Every hook and component entry point ships with a `'use client'` directive, so they work out of the box in the Next.js 14+ App Router. In a Server Component, just import and render them directly:
+### `'use client'` boundaries
+
+Every hook and component entry point ships with a `'use client'` directive, so they work out of the box in the Next.js 14+ App Router. Because hooks cannot be called from Server Components, wrap them in a Client Component and render that from your server page:
+
+```tsx
+// app/providers.tsx
+'use client'
+
+import { WalletProvider } from '@bear-protocol/react'
+
+export function Providers({ children }: { children: React.ReactNode }) {
+  return <WalletProvider options={{ network: 'testnet' }}>{children}</WalletProvider>
+}
+```
+
+```tsx
+// app/layout.tsx (Server Component)
+import { Providers } from './providers'
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en">
+      <body>
+        <Providers>{children}</Providers>
+      </body>
+    </html>
+  )
+}
+```
 
 ```tsx
 // app/page.tsx (Server Component)
-import { WalletConnectButton } from '@bear-protocol/react'
+import { WalletConnectButton } from './wallet-connect-button'
 
 export default function Page() {
   return <WalletConnectButton />
 }
 ```
 
-Both the Pages Router and App Router are supported. A reference Next.js 14 app lives in `demo/nextjs-app` and is built in CI to verify clean SSR compilation.
+```tsx
+// app/wallet-connect-button.tsx
+'use client'
+
+import { WalletConnectButton } from '@bear-protocol/react'
+
+export function WalletConnectButtonClient() {
+  return <WalletConnectButton />
+}
+```
+
+### Dynamic import with `ssr: false`
+
+If you need to keep a wallet widget out of the server render entirely (for example, to avoid rendering third-party wallet markup during SSR), load it with `next/dynamic` and `ssr: false`. This is only allowed inside a Client Component:
+
+```tsx
+// app/wallet-widget.tsx
+'use client'
+
+import dynamic from 'next/dynamic'
+
+const WalletConnectButton = dynamic(
+  () => import('@bear-protocol/react').then((m) => m.WalletConnectButton),
+  { ssr: false, loading: () => <span>Loading wallet…</span> },
+)
+
+export function WalletWidget() {
+  return <WalletConnectButton />
+}
+```
+
+Both the Pages Router and App Router are supported. A reference Next.js 14 app lives in `examples/nextjs-starter` and is built in CI to verify clean SSR compilation.
 
 ## Bundle size & tree-shaking
 

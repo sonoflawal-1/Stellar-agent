@@ -13,6 +13,7 @@ import {
   MOCK_DELIVERABLES,
   callLlmWithRetry,
   registerGracefulShutdown,
+  validateEnv,
 } from "../shared.js";
 import {
   initTracing,
@@ -24,6 +25,8 @@ import {
 } from "../tracing.js";
 
 const config = loadAgentConfig();
+
+validateEnv("seller-copywriter");
 
 await initTracing("seller-copywriter");
 
