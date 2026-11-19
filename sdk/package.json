@@ -72,5 +72,8 @@
     "kms",
     "vault"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "license": "MIT"
 }

@@ -12,16 +12,20 @@
     "agents/*",
     "indexer",
     "packages/react",
-    "examples/nextjs-starter"
+    "examples/*"
   ],
   "scripts": {
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "lint": "cargo clippy --all-targets --all-features -- -D warnings",
+    "lint": "cargo clippy --all-targets --all-features -- -D warnings && npm run lint --workspaces --if-present",
+    "lint:rust": "cargo clippy --all-targets --all-features -- -D warnings",
+    "lint:ts": "npm run lint --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present",
     "test": "cargo test --workspace && npm run test --workspaces --if-present",
     "test:rust": "cargo test --workspace",
     "test:ts": "npm run test --workspaces --if-present",
     "test:react": "npm run test --workspace packages/react",
+    "ci:timing": "node -e \"const s=Date.now();process.on('exit',()=>console.log('elapsed: '+((Date.now()-s)/1000).toFixed(2)+'s'))\"",
     "state:dump": "tsx scripts/state-dump.ts",
     "gas:check": "tsx scripts/measure-gas.ts",
     "gas:update": "tsx scripts/measure-gas.ts --update",
