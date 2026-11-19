@@ -523,3 +523,96 @@ export function normalizeDeliverableHash(hash: DeliverableHash): Uint8Array {
   }
   return bytes;
 }
+
+// ---------------------------------------------------------------------------
+// #954 — Payment receipt returned from marcFetch
+// ---------------------------------------------------------------------------
+
+/**
+ * A record of the on-chain payment made to satisfy a 402 challenge during
+ * {@link marcFetch} (#954).
+ *
+ * The fields mirror the ledger data of the settlement transaction so callers
+ * can persist an auditable record of what was paid, to whom, and in which
+ * ledger it was confirmed.
+ *
+ * @example
+ * ```ts
+ * const { response, receipt } = await marcFetch(url, { returnReceipt: true });
+ * console.log(`paid ${receipt.amount} of ${receipt.token} to ${receipt.payTo}`);
+ * ```
+ */
+export interface PaymentReceipt {
+  /** Hash of the settlement transaction that carried the payment. */
+  txHash: string;
+  /** Amount paid, in the smallest unit of {@link token}. */
+  amount: bigint;
+  /** Token (SAC) contract address the payment was denominated in. */
+  token: Address;
+  /** Recipient address the payment was sent to. */
+  payTo: Address;
+  /** Ledger sequence number in which the payment was confirmed. */
+  ledger: number;
+}
+
+/**
+ * Result returned by {@link marcFetch} when receipt reporting is enabled
+ * (`returnReceipt: true`) (#954).
+ *
+ * When receipt reporting is not requested, `marcFetch` resolves to the plain
+ * `Response` for backward compatibility.
+ */
+export interface MarcFetchResult {
+  /** The upstream HTTP response, unmodified. */
+  response: Response;
+  /** The on-chain payment receipt for the 402 settlement. */
+  receipt: PaymentReceipt;
+}
+
+// ---------------------------------------------------------------------------
+// #955 — Budget guard for marcFetch
+// ---------------------------------------------------------------------------
+
+/**
+ * Information passed to the {@link BudgetOptions.onBudgetExceeded} hook when a
+ * {@link marcFetch} call is rejected by the budget guard (#955).
+ */
+export interface BudgetExceededInfo {
+  /** Which limit was breached. */
+  limit: "maxPerRequest" | "maxPerWindow";
+  /** The configured limit value, in smallest token units. */
+  limitValue: bigint;
+  /** The amount that would have been spent, in smallest token units. */
+  attemptedAmount: bigint;
+  /** Total amount already spent within the current rolling window. */
+  spentInWindow: bigint;
+  /** Length of the rolling window in milliseconds. */
+  windowMs: number;
+  /** The URL that triggered the guard. */
+  url: string;
+}
+
+/**
+ * Budget guard options for {@link marcFetch} (#955).
+ *
+ * Protects autonomous agents from overpaying or being drained by a malicious
+ * API that keeps issuing 402 challenges.
+ *
+ * ### Default limits
+ * - `maxPerRequest`: `1_000_000n` (1 USDC at 6 decimals)
+ * - `maxPerWindow`: `10_000_000n` (10 USDC at 6 decimals)
+ * - `windowMs`: `3_600_000` (1 hour)
+ *
+ * When a limit is exceeded, `marcFetch` throws a `BudgetExceeded` error and,
+ * if provided, invokes {@link onBudgetExceeded} first.
+ */
+export interface BudgetOptions {
+  /** Maximum amount allowed for a single request, in smallest token units. */
+  maxPerRequest?: bigint;
+  /** Maximum cumulative amount allowed within the rolling window, in smallest token units. */
+  maxPerWindow?: bigint;
+  /** Length of the rolling window in milliseconds. Defaults to 1 hour. */
+  windowMs?: number;
+  /** Optional hook invoked just before a `BudgetExceeded` error is thrown. */
+  onBudgetExceeded?: (info: BudgetExceededInfo) => void;
+}

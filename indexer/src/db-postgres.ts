@@ -31,6 +31,24 @@ export interface EventQuery {
   limit?: number;
   offset?: number;
   count?: boolean;
+  /**
+   * Cursor for keyset pagination. Only events strictly after the cursor
+   * (ordered by block_number, log_index, id) are returned.
+   */
+  after?: EventCursor;
+}
+
+/** Keyset pagination cursor for the events table. */
+export interface EventCursor {
+  blockNumber: number;
+  logIndex: number;
+  id: number;
+}
+
+/** A page of events plus the cursor to fetch the next page (null when exhausted). */
+export interface EventPage {
+  events: IndexerEvent[];
+  nextCursor: EventCursor | null;
 }
 
 export interface IndexerState {
@@ -43,9 +61,34 @@ export interface DatabaseAdapter {
   insertEvent(event: IndexerEvent): Promise<IndexerEvent>;
   insertMany(events: IndexerEvent[]): Promise<number>;
   getEvents(query?: EventQuery): Promise<IndexerEvent[] | number>;
+  /** Cursor-paginated event listing. Never unbounded: limit is clamped. */
+  getEventsPage(query?: EventQuery): Promise<EventPage>;
+  /** Fetch a single event by its unique (ledger, tx, op, event index) key. */
+  getEventByKey(
+    blockNumber: number,
+    transactionHash: string,
+    logIndex: number,
+  ): Promise<IndexerEvent | null>;
+  /** Fetch the most recent events for a job, bounded by `limit`. */
+  getEventsByJob(jobId: string, limit?: number): Promise<IndexerEvent[]>;
   getIndexerState(key: string): Promise<IndexerState | null>;
   setIndexerState(key: string, value: string): Promise<void>;
   close(): Promise<void>;
+}
+
+/** Default and maximum page sizes for cursor pagination. */
+export const DEFAULT_PAGE_LIMIT = 50;
+export const MAX_PAGE_LIMIT = 200;
+
+/** Clamps a requested page limit into [1, MAX_PAGE_LIMIT]. */
+export function clampLimit(limit: number | undefined): number {
+  if (limit === undefined || limit === null || !Number.isFinite(limit)) {
+    return DEFAULT_PAGE_LIMIT;
+  }
+  const n = Math.floor(limit);
+  if (n < 1) return 1;
+  if (n > MAX_PAGE_LIMIT) return MAX_PAGE_LIMIT;
+  return n;
 }
 
 export interface PostgresAdapterOptions {
@@ -96,7 +139,22 @@ export const POSTGRES_MIGRATIONS: string[] = [
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_events_unique_log
-    ON events (transaction_hash, log_index);`,
+    ON events (block_number, transaction_hash, log_index);`,
+  // Migration for existing data: drop the old (tx, log_index) uniqueness so the
+  // new (ledger, tx, op, event index) key can be enforced. Safe to re-run.
+  `DO $$
+   BEGIN
+     IF EXISTS (
+       SELECT 1 FROM pg_indexes
+       WHERE schemaname = current_schema()
+         AND indexname = 'idx_events_unique_log'
+         AND indexdef NOT LIKE '%block_number%'
+     ) THEN
+       DROP INDEX idx_events_unique_log;
+       CREATE UNIQUE INDEX idx_events_unique_log
+         ON events (block_number, transaction_hash, log_index);
+     END IF;
+   END $$;`,
   `CREATE INDEX IF NOT EXISTS idx_events_provider ON events (provider);`,
   `CREATE INDEX IF NOT EXISTS idx_events_client ON events (client);`,
   `CREATE INDEX IF NOT EXISTS idx_events_event_type ON events (event_type);`,
@@ -239,7 +297,7 @@ export class PostgresAdapter implements DatabaseAdapter {
       INSERT INTO events
         (provider, client, event_type, contract, job_id, block_number, transaction_hash, log_index, data)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-      ON CONFLICT (transaction_hash, log_index) DO NOTHING
+      ON CONFLICT (block_number, transaction_hash, log_index) DO NOTHING
       RETURNING id, provider, client, event_type, contract, job_id, block_number,
                 transaction_hash, log_index, data, created_at
     `;
@@ -263,8 +321,9 @@ export class PostgresAdapter implements DatabaseAdapter {
     const existing = await this.pool.query(
       `SELECT id, provider, client, event_type, contract, job_id, block_number,
               transaction_hash, log_index, data, created_at
-       FROM events WHERE transaction_hash = $1 AND log_index = $2`,
-      [event.transactionHash, event.logIndex],
+       FROM events
+       WHERE block_number = $1 AND transaction_hash = $2 AND log_index = $3`,
+      [event.blockNumber, event.transactionHash, event.logIndex],
     );
     if (existing.rows.length > 0) {
       return mapRow(existing.rows[0]);
@@ -310,7 +369,7 @@ export class PostgresAdapter implements DatabaseAdapter {
           INSERT INTO events
             (provider, client, event_type, contract, job_id, block_number, transaction_hash, log_index, data)
           VALUES ${placeholders.join(', ')}
-          ON CONFLICT (transaction_hash, log_index) DO NOTHING
+          ON CONFLICT (block_number, transaction_hash, log_index) DO NOTHING
         `;
         const result = await client.query(sql, values);
         inserted += result.rowCount ?? 0;
@@ -385,6 +444,109 @@ export class PostgresAdapter implements DatabaseAdapter {
     }
 
     const result = await this.pool.query(sql, params);
+    return result.rows.map(mapRow);
+  }
+
+  /**
+   * Cursor-paginated event listing using keyset pagination on
+   * (block_number, log_index, id). Always bounded by clampLimit().
+   */
+  async getEventsPage(query: EventQuery = {}): Promise<EventPage> {
+    await this.init();
+
+    const limit = clampLimit(query.limit);
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+
+    const addEq = (column: string, value?: string) => {
+      if (value !== undefined && value !== null && value !== '') {
+        params.push(value);
+        conditions.push(`${column} = $${params.length}`);
+      }
+    };
+
+    addEq('provider', query.provider);
+    addEq('client', query.client);
+    addEq('event_type', query.eventType);
+    addEq('contract', query.contract);
+    addEq('job_id', query.jobId);
+
+    if (query.fromDate) {
+      params.push(query.fromDate);
+      conditions.push(`created_at >= $${params.length}`);
+    }
+    if (query.toDate) {
+      params.push(query.toDate);
+      conditions.push(`created_at <= $${params.length}`);
+    }
+
+    if (query.after) {
+      const { blockNumber, logIndex, id } = query.after;
+      params.push(blockNumber);
+      const b = params.length;
+      params.push(logIndex);
+      const l = params.length;
+      params.push(id);
+      const i = params.length;
+      conditions.push(
+        `(block_number, log_index, id) > ($${b}, $${l}, $${i})`,
+      );
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    // Fetch one extra row to determine whether another page exists.
+    params.push(limit + 1);
+    const sql = `
+      SELECT id, provider, client, event_type, contract, job_id, block_number,
+             transaction_hash, log_index, data, created_at
+      FROM events
+      ${where}
+      ORDER BY block_number ASC, log_index ASC, id ASC
+      LIMIT $${params.length}
+    `;
+
+    const result = await this.pool.query(sql, params);
+    const rows = result.rows.map(mapRow);
+    const hasMore = rows.length > limit;
+    const events = hasMore ? rows.slice(0, limit) : rows;
+    const last = events[events.length - 1];
+    const nextCursor: EventCursor | null =
+      hasMore && last && last.id !== undefined
+        ? { blockNumber: last.blockNumber, logIndex: last.logIndex, id: last.id }
+        : null;
+
+    return { events, nextCursor };
+  }
+
+  async getEventByKey(
+    blockNumber: number,
+    transactionHash: string,
+    logIndex: number,
+  ): Promise<IndexerEvent | null> {
+    await this.init();
+    const result = await this.pool.query(
+      `SELECT id, provider, client, event_type, contract, job_id, block_number,
+              transaction_hash, log_index, data, created_at
+       FROM events
+       WHERE block_number = $1 AND transaction_hash = $2 AND log_index = $3
+       LIMIT 1`,
+      [blockNumber, transactionHash, logIndex],
+    );
+    return result.rows.length > 0 ? mapRow(result.rows[0]) : null;
+  }
+
+  async getEventsByJob(jobId: string, limit?: number): Promise<IndexerEvent[]> {
+    await this.init();
+    const bounded = clampLimit(limit);
+    const result = await this.pool.query(
+      `SELECT id, provider, client, event_type, contract, job_id, block_number,
+              transaction_hash, log_index, data, created_at
+       FROM events
+       WHERE job_id = $1
+       ORDER BY block_number DESC, log_index DESC, id DESC
+       LIMIT $2`,
+      [jobId, bounded],
+    );
     return result.rows.map(mapRow);
   }
 
@@ -466,7 +628,23 @@ CREATE TABLE IF NOT EXISTS events (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_events_unique_log
-  ON events (transaction_hash, log_index);
+  ON events (block_number, transaction_hash, log_index);
+
+-- Migration for existing data: replace the legacy (tx, log_index) uniqueness
+-- with the (ledger, tx, op, event index) key. Safe to re-run.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_indexes
+    WHERE schemaname = current_schema()
+      AND indexname = 'idx_events_unique_log'
+      AND indexdef NOT LIKE '%block_number%'
+  ) THEN
+    DROP INDEX idx_events_unique_log;
+    CREATE UNIQUE INDEX idx_events_unique_log
+      ON events (block_number, transaction_hash, log_index);
+  END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_events_provider ON events (provider);
 CREATE INDEX IF NOT EXISTS idx_events_client ON events (client);

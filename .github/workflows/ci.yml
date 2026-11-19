@@ -245,6 +245,61 @@ jobs:
       - name: Compare contract gas usage against .gas-baseline.json
         run: npm run gas:check
 
+  gas-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Regenerate docs/gas.md from .gas-baseline.json
+        run: |
+          node - <<'EOF'
+          const fs = require('fs');
+          const path = require('path');
+
+          const baselinePath = '.gas-baseline.json';
+          const outPath = path.join('docs', 'gas.md');
+
+          const baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf8'));
+          const operations = baseline.operations || {};
+          const threshold = baseline.threshold_percent ?? 10;
+
+          const lines = [
+            '# Gas & Resource Baselines',
+            '',
+            '> This file is generated from `.gas-baseline.json` during CI. Do not edit by hand.',
+            '',
+            `Regression threshold: **${threshold}%** (a change exceeding this fails the gas check).`,
+            '',
+          ];
+
+          const entries = Object.entries(operations);
+          if (entries.length === 0) {
+            lines.push('_No entrypoint baselines recorded yet._');
+          } else {
+            lines.push(
+              '| Entry point | CPU instructions | Memory (bytes) |',
+              '| --- | --- | --- |',
+            );
+            for (const [entry, metrics] of entries) {
+              const cpu = metrics.cpu_instructions ?? '—';
+              const mem = metrics.memory_bytes ?? '—';
+              lines.push(`| \`${entry}\` | ${cpu} | ${mem} |`);
+            }
+          }
+
+          lines.push('');
+          fs.mkdirSync(path.dirname(outPath), { recursive: true });
+          fs.writeFileSync(outPath, lines.join('\n'));
+          EOF
+      - name: Fail if docs/gas.md is stale
+        run: |
+          if ! git diff --exit-code -- docs/gas.md; then
+            echo "docs/gas.md is out of date; regenerate it from .gas-baseline.json and commit the result." >&2
+            exit 1
+          fi
+
   fuzz-smoke:
     if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
@@ -259,3 +314,35 @@ jobs:
           for target in $(cargo fuzz list); do
             timeout 600 cargo fuzz run "$target" -- -max_total_time=600 -rss_limit_mb=4096 || exit 1
           done
+
+  integration-docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run integration tests against ephemeral volumes
+        run: docker compose -f docker-compose.test.yml up --exit-code-from tests --abort-on-container-exit
+      - name: Tear down test stack and volumes
+        if: always()
+        run: docker compose -f docker-compose.test.yml down -v
+
+  dashboard:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+      - name: Test
+        run: npm test
+      - name: Build
+        run: npm run build

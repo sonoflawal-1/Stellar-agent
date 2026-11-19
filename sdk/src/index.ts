@@ -1,8 +1,30 @@
 export * from "./types.js";
 export * from "./events.js";
+// #1048 — typed event decoding: exhaustive BearEvent union + assertNever helper
+export {
+  decodeBearEvent,
+  assertNever,
+  type BearEvent,
+  type BearEventType,
+} from "./events.js";
 export * from "./subscribeJob.js";
 export * from "./errors.js";
+// #953/#955 — typed payment failure + budget guard errors
+export {
+  BudgetExceededError,
+  PaymentRejectedError,
+  InsufficientFundsError,
+} from "./errors.js";
 export { formatAmount, parseAmount, isValidMetadataUri } from "./format.js";
+// #952 — multi-token amount helpers using on-chain decimals
+export { toBaseUnits, fromBaseUnits, TokenRegistry } from "./format.js";
+// #954/#955 — payment receipt + budget guard types
+export type {
+  PaymentReceipt,
+  MarcFetchResult,
+  BudgetOptions,
+  BudgetExceededInfo,
+} from "./types.js";
 // #706 — SHA-256 deliverable payload content hash helpers
 export {
   computeDeliverableHash,
@@ -101,3 +123,6 @@ export type { Milestone, MilestoneInput } from './types.js';
 
 // #698 — atomic batch job creation
 export type { JobRequest, BatchJobsCreatedEvent } from './commerce.js';
+
+// #979 — webhook subscription management: timing-safe HMAC-SHA256 signature verification
+export { verifyWebhookSignature } from "./webhookSignature.js";

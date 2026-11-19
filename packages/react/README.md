@@ -54,6 +54,58 @@ function AgentCard({ agentId }: { agentId: string }) {
 }
 ```
 
+### `useAgents(options?)`
+
+List hook built on the SDK's agent iterator. Returns a page of agents along with `loading` and `error` state, plus pagination helpers. Use `owner` to filter the list to agents owned by a specific address.
+
+Options:
+
+| Option     | Type     | Default | Description                                                        |
+| ---------- | -------- | ------- | ------------------------------------------------------------------ |
+| `pageSize` | `number` | `20`    | Number of agents fetched per page.                                 |
+| `owner`    | `string` | `undefined` | Only return agents owned by this address.                      |
+
+Result:
+
+| Field      | Type                     | Description                                                       |
+| ---------- | ------------------------ | ----------------------------------------------------------------- |
+| `agents`   | `Agent[]`                | Agents loaded so far (accumulated across pages).                  |
+| `loading`  | `boolean`                | `true` while a page is being fetched.                             |
+| `error`    | `Error \| null`          | The last error encountered, if any.                               |
+| `hasMore`  | `boolean`                | Whether another page is available.                                |
+| `loadMore` | `() => Promise<void>`    | Fetch the next page and append it to `agents`.                    |
+| `refresh`  | `() => Promise<void>`    | Reset to the first page and refetch.                              |
+
+```tsx
+import { useAgents } from '@bear-protocol/react'
+
+function AgentList({ owner }: { owner?: string }) {
+  const { agents, loading, error, hasMore, loadMore, refresh } = useAgents({
+    pageSize: 10,
+    owner,
+  })
+
+  if (loading && agents.length === 0) return <Spinner />
+  if (error) return <ErrorBanner error={error} />
+
+  return (
+    <div>
+      <button onClick={refresh}>Refresh</button>
+      <ul>
+        {agents.map((agent) => (
+          <li key={agent.id}>{agent.name}</li>
+        ))}
+      </ul>
+      {hasMore && (
+        <button onClick={loadMore} disabled={loading}>
+          {loading ? 'Loading…' : 'Load more'}
+        </button>
+      )}
+    </div>
+  )
+}
+```
+
 ### `useJob(id)`
 
 Read-only hook wrapping `CommerceClient.getJob()`.

@@ -272,6 +272,112 @@
   };
   window.__walletState = wallet;
 
+  // ── Wallet connection state machine (#972) ──
+  // Explicit states for connect / sign / submit flows so the UI can render a
+  // single, consistent status component and errors are never swallowed.
+  var WALLET_STATES = ["idle", "connecting", "signing", "submitted", "failed"];
+  var WALLET_TRANSITIONS = {
+    idle: ["connecting"],
+    connecting: ["signing", "failed", "idle"],
+    signing: ["submitted", "failed", "idle"],
+    submitted: ["idle", "connecting"],
+    failed: ["idle", "connecting"],
+  };
+
+  function createWalletStateMachine() {
+    var current = "idle";
+    var lastError = null;
+    var listeners = [];
+    function canTransition(from, to) {
+      var allowed = WALLET_TRANSITIONS[from];
+      return Boolean(allowed && allowed.indexOf(to) !== -1);
+    }
+    function notify() {
+      for (var i = 0; i < listeners.length; i++) {
+        try {
+          listeners[i](current, lastError);
+        } catch (e) {}
+      }
+    }
+    return {
+      getState: function () {
+        return current;
+      },
+      getError: function () {
+        return lastError;
+      },
+      can: canTransition,
+      subscribe: function (fn) {
+        if (typeof fn === "function") listeners.push(fn);
+        return function () {
+          var idx = listeners.indexOf(fn);
+          if (idx !== -1) listeners.splice(idx, 1);
+        };
+      },
+      transition: function (next, error) {
+        if (!canTransition(current, next)) {
+          return { ok: false, from: current, to: next, error: "Invalid transition " + current + " → " + next };
+        }
+        var prev = current;
+        current = next;
+        lastError = next === "failed" ? normalizeWalletError(error) : null;
+        notify();
+        return { ok: true, from: prev, to: next, error: lastError };
+      },
+      reset: function () {
+        current = "idle";
+        lastError = null;
+        notify();
+      },
+    };
+  }
+
+  function normalizeWalletError(err) {
+    var message = err && err.message ? err.message : String(err || "Unknown wallet error");
+    var code = "wallet_error";
+    if (/reject|denied|cancel/i.test(message)) code = "user_rejected";
+    else if (/not installed|not loaded|not found/i.test(message)) code = "wallet_unavailable";
+    else if (/network|fetch|offline/i.test(message)) code = "network_error";
+    else if (/mainnet/i.test(message)) code = "mainnet_blocked";
+    return { code: code, message: message };
+  }
+
+  var walletSM = createWalletStateMachine();
+  window.__walletStateMachine = walletSM;
+
+  // Single status component rendered from the state machine (#972).
+  function renderWalletStatus() {
+    var el = document.getElementById("wallet-status");
+    if (!el) return;
+    var st = walletSM.getState();
+    var err = walletSM.getError();
+    var labels = {
+      idle: "",
+      connecting: "Connecting to wallet…",
+      signing: "Waiting for signature…",
+      submitted: "Transaction submitted",
+      failed: err ? "Wallet error: " + err.message : "Wallet error",
+    };
+    var text = labels[st] || "";
+    el.textContent = text;
+    el.className = "wallet-status wallet-status-" + st;
+    el.setAttribute("role", st === "failed" ? "alert" : "status");
+    el.setAttribute("aria-live", st === "failed" ? "assertive" : "polite");
+    el.style.display = text ? "" : "none";
+  }
+  walletSM.subscribe(renderWalletStatus);
+
+  // Global unhandled rejection logger (#972) — never leaves a rejection silent.
+  window.addEventListener("unhandledrejection", function (event) {
+    var reason = event && event.reason;
+    try {
+      console.error("[bear] Unhandled promise rejection:", reason);
+    } catch (e) {}
+    if (walletSM.getState() === "connecting" || walletSM.getState() === "signing") {
+      walletSM.transition("failed", reason);
+    }
+  });
+
   // Target network for the dashboard (Testnet). Used for mismatch prompts.
   var TARGET_NETWORK = "testnet";
   var TARGET_PASSPHRASE = "Test SDF Network ; September 2015";
@@ -520,6 +626,8 @@
       toast("Stellar Wallets Kit not loaded", "error");
       return;
     }
+    var started = walletSM.transition("connecting");
+    if (!started.ok) walletSM.reset(), walletSM.transition("connecting");
     try {
       if (typeof StellarWalletsKit.setWallet === "function") {
         StellarWalletsKit.setWallet(id);
@@ -541,7 +649,9 @@
           handleNetworkChanged(netRes && (netRes.network || netRes.networkPassphrase));
         }
       } catch (e) {}
+      walletSM.transition("idle");
     } catch (e) {
+      walletSM.transition("failed", e);
       notifyError(e);
     }
   };
@@ -704,31 +814,43 @@
 
   /** Build unsigned tx on server, sign with Stellar Wallets Kit, submit via server */
   async function signAndSubmit(buildEndpoint, params) {
-    await ensureSession();
-    if (wallet.network === "mainnet") {
-      throw new Error(
-        "Wallet is on Mainnet — dashboard blocks mainnet signing to avoid real transactions",
-      );
+    if (walletSM.getState() === "idle" || walletSM.getState() === "failed") {
+      walletSM.reset();
+      walletSM.transition("connecting");
     }
-    // 1. Build unsigned tx on server
-    var buildRes = await api(buildEndpoint, {
-      method: "POST",
-      body: { publicKey: wallet.publicKey, ...params },
-    });
-    // 2. Sign with Stellar Wallets Kit (multi-wallet, #743)
-    if (!swkReady) throw new Error("Stellar Wallets Kit not loaded");
-    var addressResult = await StellarWalletsKit.getAddress();
-    var signResult = await StellarWalletsKit.signTransaction(buildRes.xdr, {
-      networkPassphrase: TARGET_PASSPHRASE,
-      address: addressResult.address,
-    });
-    var signedXdr =
-      signResult.signedTxXdr ||
-      signResult.signedTransaction ||
-      signResult.signedTx ||
-      signResult.signedXdr ||
-      signResult;
-    return await apiClientSubmit(signedXdr);
+    try {
+      await ensureSession();
+      if (wallet.network === "mainnet") {
+        throw new Error(
+          "Wallet is on Mainnet — dashboard blocks mainnet signing to avoid real transactions",
+        );
+      }
+      // 1. Build unsigned tx on server
+      var buildRes = await api(buildEndpoint, {
+        method: "POST",
+        body: { publicKey: wallet.publicKey, ...params },
+      });
+      // 2. Sign with Stellar Wallets Kit (multi-wallet, #743)
+      if (!swkReady) throw new Error("Stellar Wallets Kit not loaded");
+      walletSM.transition("signing");
+      var addressResult = await StellarWalletsKit.getAddress();
+      var signResult = await StellarWalletsKit.signTransaction(buildRes.xdr, {
+        networkPassphrase: TARGET_PASSPHRASE,
+        address: addressResult.address,
+      });
+      var signedXdr =
+        signResult.signedTxXdr ||
+        signResult.signedTransaction ||
+        signResult.signedTx ||
+        signResult.signedXdr ||
+        signResult;
+      var submitted = await apiClientSubmit(signedXdr);
+      walletSM.transition("submitted");
+      return submitted;
+    } catch (e) {
+      walletSM.transition("failed", e);
+      throw e;
+    }
   }
 
   async function apiClientSubmit(signedXdr) {
@@ -1106,6 +1228,294 @@
     if (!addr) return "\u2014";
     return addr.slice(0, 6) + "..." + addr.slice(-4);
   }
+
+  // ── Accessibility layer (#971) ──
+  // Dialog helpers with focus trap, Escape handling, focus restore and
+  // aria-hidden on the background content.
+  var dialogStack = [];
+
+  function focusableIn(root) {
+    if (!root) return [];
+    var sel =
+      'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),' +
+      'textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+    var nodes = root.querySelectorAll(sel);
+    var out = [];
+    for (var i = 0; i < nodes.length; i++) {
+      if (nodes[i].offsetParent !== null || nodes[i] === document.activeElement) out.push(nodes[i]);
+    }
+    return out;
+  }
+
+  function openDialog(overlay, opts) {
+    if (!overlay) return null;
+    opts = opts || {};
+    var previous = document.activeElement;
+    var dialog = overlay.querySelector('[role="dialog"]') || overlay;
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    if (opts.label && !dialog.getAttribute("aria-label") && !dialog.getAttribute("aria-labelledby")) {
+      dialog.setAttribute("aria-label", opts.label);
+    }
+    var main = document.getElementById("page");
+    if (main) main.setAttribute("aria-hidden", "true");
+    var entry = { overlay: overlay, dialog: dialog, previous: previous };
+    dialogStack.push(entry);
+    function onKeydown(e) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeDialog(overlay);
+        return;
+      }
+      if (e.key !== "Tab") return;
+      var items = focusableIn(dialog);
+      if (items.length === 0) {
+        e.preventDefault();
+        return;
+      }
+      var first = items[0];
+      var last = items[items.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+    entry.onKeydown = onKeydown;
+    document.addEventListener("keydown", onKeydown, true);
+    var items = focusableIn(dialog);
+    if (items.length > 0) {
+      try { items[0].focus(); } catch (e) {}
+    } else {
+      dialog.setAttribute("tabindex", "-1");
+      try { dialog.focus(); } catch (e) {}
+    }
+    return entry;
+  }
+
+  function closeDialog(overlay) {
+    var idx = -1;
+    for (var i = dialogStack.length - 1; i >= 0; i--) {
+      if (!overlay || dialogStack[i].overlay === overlay) {
+        idx = i;
+        break;
+      }
+    }
+    if (idx === -1) return;
+    var entry = dialogStack[idx];
+    dialogStack.splice(idx, 1);
+    if (entry.onKeydown) document.removeEventListener("keydown", entry.onKeydown, true);
+    if (entry.overlay && entry.overlay.parentNode) entry.overlay.parentNode.removeChild(entry.overlay);
+    if (dialogStack.length === 0) {
+      var main = document.getElementById("page");
+      if (main) main.removeAttribute("aria-hidden");
+    }
+    if (entry.previous && typeof entry.previous.focus === "function") {
+      try { entry.previous.focus(); } catch (e) {}
+    }
+  }
+
+  // Roving-tabindex keyboard handling for tablists (Arrow/Home/End).
+  function initTabs(container) {
+    if (!container) return;
+    var tabs = container.querySelectorAll('[role="tab"]');
+    if (!tabs.length) return;
+    function activate(tab) {
+      for (var i = 0; i < tabs.length; i++) {
+        var t = tabs[i];
+        var selected = t === tab;
+        t.setAttribute("aria-selected", selected ? "true" : "false");
+        t.setAttribute("tabindex", selected ? "0" : "-1");
+        var panelId = t.getAttribute("aria-controls");
+        var panel = panelId ? document.getElementById(panelId) : null;
+        if (panel) panel.hidden = !selected;
+      }
+      try { tab.focus(); } catch (e) {}
+    }
+    for (var i = 0; i < tabs.length; i++) {
+      (function (tab, index) {
+        tab.addEventListener("click", function () { activate(tab); });
+        tab.addEventListener("keydown", function (e) {
+          var next = null;
+          if (e.key === "ArrowRight" || e.key === "ArrowDown") next = tabs[(index + 1) % tabs.length];
+          else if (e.key === "ArrowLeft" || e.key === "ArrowUp") next = tabs[(index - 1 + tabs.length) % tabs.length];
+          else if (e.key === "Home") next = tabs[0];
+          else if (e.key === "End") next = tabs[tabs.length - 1];
+          if (next) {
+            e.preventDefault();
+            activate(next);
+          }
+        });
+      })(tabs[i], i);
+    }
+  }
+
+  // Live regions for async updates (#971).
+  function announce(message, assertive) {
+    var id = assertive ? "a11y-live-assertive" : "a11y-live-polite";
+    var el = document.getElementById(id);
+    if (!el) {
+      el = document.createElement("div");
+      el.id = id;
+      el.className = "sr-only";
+      el.setAttribute("aria-live", assertive ? "assertive" : "polite");
+      el.setAttribute("aria-atomic", "true");
+      document.body.appendChild(el);
+    }
+    el.textContent = "";
+    setTimeout(function () { el.textContent = String(message == null ? "" : message); }, 30);
+  }
+
+  // ── Job form validation + fee preview (#973) ──
+  // Mirrors the rules in lib/validator.ts: budget must be a positive integer
+  // amount in stroops-compatible units, description length bounded, provider
+  // address well-formed.
+  var JOB_LIMITS = { budgetMin: 1, budgetMax: 1000000000, descriptionMax: 500 };
+
+  function validateJobForm(values) {
+    var errors = {};
+    var budget = values && values.budget;
+    var budgetNum = Number(budget);
+    if (budget === "" || budget == null) {
+      errors.budget = "Budget is required";
+    } else if (!isFinite(budgetNum) || Math.floor(budgetNum) !== budgetNum) {
+      errors.budget = "Budget must be a whole number";
+    } else if (budgetNum < JOB_LIMITS.budgetMin) {
+      errors.budget = "Budget must be at least " + JOB_LIMITS.budgetMin;
+    } else if (budgetNum > JOB_LIMITS.budgetMax) {
+      errors.budget = "Budget must not exceed " + JOB_LIMITS.budgetMax;
+    }
+    var desc = values && values.description;
+    if (desc != null && String(desc).length > JOB_LIMITS.descriptionMax) {
+      errors.description = "Description must be at most " + JOB_LIMITS.descriptionMax + " characters";
+    }
+    var provider = values && values.provider;
+    if (provider != null && provider !== "" && !/^G[A-Z0-9]{55}$/.test(String(provider))) {
+      errors.provider = "Provider must be a valid Stellar address";
+    }
+    return { valid: Object.keys(errors).length === 0, errors: errors };
+  }
+
+  // Fee math: fee is a percentage of budget, net payout = budget - fee.
+  function computeFeePreview(budget, feeBps) {
+    var b = Number(budget) || 0;
+    var bps = Number(feeBps);
+    if (!isFinite(bps) || bps < 0) bps = 0;
+    var fee = Math.floor((b * bps) / 10000);
+    return { budget: b, feeBps: bps, fee: fee, net: b - fee };
+  }
+
+  var feePreviewTimer = null;
+  function scheduleFeePreview(values, render) {
+    if (feePreviewTimer) clearTimeout(feePreviewTimer);
+    feePreviewTimer = setTimeout(async function () {
+      var budget = Number(values && values.budget) || 0;
+      var feeBps = 0;
+      try {
+        var res = await api("/simulate_job_fee", {
+          method: "POST",
+          body: { budget: budget },
+          _silent: true,
+        });
+        if (res && res.feeBps != null) feeBps = Number(res.feeBps);
+        else if (res && res.fee != null) feeBps = budget > 0 ? Math.round((Number(res.fee) / budget) * 10000) : 0;
+      } catch (e) {
+        feeBps = 0;
+      }
+      if (typeof render === "function") render(computeFeePreview(budget, feeBps));
+    }, 300);
+  }
+
+  // ── Job timeline (#974) ──
+  var TIMELINE_EVENT_MAP = {
+    created: "created",
+    job_created: "created",
+    funded: "funded",
+    job_funded: "funded",
+    submitted: "submitted",
+    job_submitted: "submitted",
+    completed: "completed",
+    job_completed: "completed",
+    approved: "completed",
+    disputed: "disputed",
+    job_disputed: "disputed",
+  };
+
+  function mapTimelineEvent(ev) {
+    var type = ev && (ev.type || ev.event || ev.name);
+    var step = TIMELINE_EVENT_MAP[String(type || "").toLowerCase()] || null;
+    return {
+      step: step,
+      ledger: ev && (ev.ledger || ev.ledgerSequence || ev.ledger_sequence) || null,
+      closedAt: ev && (ev.closedAt || ev.closed_at || ev.ledgerCloseTime || ev.ledger_close_time) || null,
+      txHash: ev && (ev.txHash || ev.tx_hash || ev.transactionHash) || null,
+    };
+  }
+
+  function formatLedgerTime(value) {
+    if (value == null || value === "") return "";
+    var d;
+    if (typeof value === "number" || /^\d+$/.test(String(value))) {
+      var n = Number(value);
+      d = new Date(n > 1e12 ? n : n * 1000);
+    } else {
+      d = new Date(value);
+    }
+    if (isNaN(d.getTime())) return String(value);
+    return d.toLocaleString();
+  }
+
+  async function renderJobTimeline(jobId) {
+    var container = document.getElementById("job-timeline-" + jobId);
+    if (!container) return;
+    container.innerHTML = '<div class="timeline-loading" role="status">Loading timeline…</div>';
+    var events = [];
+    try {
+      var res = await api("/jobs/" + encodeURIComponent(String(jobId)) + "/events", { _silent: true });
+      events = Array.isArray(res) ? res : (res && res.events) || [];
+    } catch (e) {
+      events = [];
+    }
+    if (!events.length) {
+      container.innerHTML =
+        '<div class="timeline-empty" role="status">No lifecycle events recorded yet.</div>';
+      return;
+    }
+    var items = events.map(mapTimelineEvent).filter(function (it) { return it.step; });
+    if (!items.length) {
+      container.innerHTML =
+        '<div class="timeline-empty" role="status">No lifecycle events recorded yet.</div>';
+      return;
+    }
+    var html = '<ol class="job-timeline" aria-label="Job lifecycle timeline">';
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      var time = formatLedgerTime(it.closedAt);
+      html +=
+        '<li class="timeline-item timeline-' + escapeAttr(it.step) + '">' +
+        '<span class="timeline-dot" aria-hidden="true"></span>' +
+        '<div class="timeline-body">' +
+        '<div class="timeline-step">' + escapeHtml(it.step) + "</div>" +
+        (time ? '<div class="timeline-time">' + escapeHtml(time) + "</div>" : "") +
+        (it.ledger ? '<div class="timeline-ledger">Ledger ' + escapeHtml(String(it.ledger)) + "</div>" : "") +
+        (it.txHash
+          ? '<a class="timeline-tx" href="' +
+            escapeAttr(stellarExpertUrl(it.txHash)) +
+            '" target="_blank" rel="noopener noreferrer">View transaction ↗</a>'
+          : "") +
+        "</div></li>";
+    }
+    html += "</ol>";
+    container.innerHTML = html;
+  }
+
+  // Exports for tests (#971–#974)
+  window.__bearA11y = { openDialog: openDialog, closeDialog: closeDialog, initTabs: initTabs, announce: announce };
+  window.__bearWalletSM = { createWalletStateMachine: createWalletStateMachine, states: WALLET_STATES, transitions: WALLET_TRANSITIONS };
+  window.__bearJobForm = { validateJobForm: validateJobForm, computeFeePreview: computeFeePreview, limits: JOB_LIMITS };
+  window.__bearTimeline = { mapTimelineEvent: mapTimelineEvent, formatLedgerTime: formatLedgerTime, renderJobTimeline: renderJobTimeline };
 
   function escapeHtml(str) {
     const div = document.createElement("div");
@@ -3610,6 +4020,126 @@
     setMetaTag("property", "og:url", window.location.href);
   }
 
+  // ── Agent metadata schema validation (#975) ──
+  // Mirrors docs/agent-metadata-schema-v1.json.  The server validates too, but
+  // the dashboard re-checks so a malformed profile renders a warning banner
+  // instead of crashing the view.
+  var AGENT_METADATA_SCHEMA = {
+    type: "object",
+    required: ["name", "description"],
+    properties: {
+      name: { type: "string", minLength: 1, maxLength: 120 },
+      description: { type: "string", minLength: 1, maxLength: 2000 },
+      version: { type: "string" },
+      tags: { type: "array", items: { type: "string" }, maxItems: 32 },
+      capabilities: { type: "array", items: { type: "string" }, maxItems: 32 },
+      pricing: { type: ["string", "object", "number"] },
+      image: { type: "string" },
+      website: { type: "string" },
+      contact: { type: "string" },
+    },
+    additionalProperties: true,
+  };
+
+  function schemaTypeOf(value) {
+    if (value === null) return "null";
+    if (Array.isArray(value)) return "array";
+    return typeof value;
+  }
+
+  function validateAgentMetadata(metadata) {
+    var errors = [];
+    var schema = AGENT_METADATA_SCHEMA;
+    if (schemaTypeOf(metadata) !== "object") {
+      return { valid: false, errors: ["metadata must be a JSON object"] };
+    }
+    var required = schema.required || [];
+    for (var r = 0; r < required.length; r++) {
+      if (metadata[required[r]] == null) errors.push('missing required field "' + required[r] + '"');
+    }
+    var props = schema.properties || {};
+    Object.keys(props).forEach(function (key) {
+      if (metadata[key] == null) return;
+      var rule = props[key];
+      var actual = schemaTypeOf(metadata[key]);
+      var allowed = Array.isArray(rule.type) ? rule.type : [rule.type];
+      if (allowed.indexOf(actual) === -1) {
+        errors.push('field "' + key + '" must be ' + allowed.join(" or ") + " (got " + actual + ")");
+        return;
+      }
+      if (actual === "string") {
+        if (rule.minLength != null && metadata[key].length < rule.minLength) {
+          errors.push('field "' + key + '" is shorter than ' + rule.minLength + " characters");
+        }
+        if (rule.maxLength != null && metadata[key].length > rule.maxLength) {
+          errors.push('field "' + key + '" is longer than ' + rule.maxLength + " characters");
+        }
+      }
+      if (actual === "array") {
+        if (rule.maxItems != null && metadata[key].length > rule.maxItems) {
+          errors.push('field "' + key + '" has more than ' + rule.maxItems + " items");
+        }
+        if (rule.items && rule.items.type) {
+          for (var i = 0; i < metadata[key].length; i++) {
+            if (schemaTypeOf(metadata[key][i]) !== rule.items.type) {
+              errors.push('field "' + key + '[' + i + ']" must be ' + rule.items.type);
+            }
+          }
+        }
+      }
+    });
+    return { valid: errors.length === 0, errors: errors };
+  }
+
+  // Parses the agent's metadata JSON, tolerating malformed input.
+  function parseAgentMetadata(agent) {
+    var raw = agent && (agent.metadata != null ? agent.metadata : agent.metadataJson);
+    if (raw == null) return { present: false, data: null, parseError: null };
+    if (typeof raw === "object") return { present: true, data: raw, parseError: null };
+    try {
+      return { present: true, data: JSON.parse(String(raw)), parseError: null };
+    } catch (e) {
+      return { present: true, data: null, parseError: "Metadata is not valid JSON" };
+    }
+  }
+
+  function renderMetadataWarning(parseError, validation) {
+    var messages = [];
+    if (parseError) messages.push(parseError);
+    if (validation && validation.errors) messages = messages.concat(validation.errors);
+    if (messages.length === 0) return "";
+    var items = "";
+    for (var i = 0; i < messages.length && i < 8; i++) {
+      items += "<li>" + escapeHtml(String(messages[i])) + "</li>";
+    }
+    return (
+      '<div class="metadata-warning" role="alert" style="margin:16px 0;padding:12px 16px;border-radius:8px;' +
+      'border:1px solid #b45309;background:rgba(180,83,9,.12);color:var(--text)">' +
+      '<strong>⚠️ Metadata failed schema validation</strong>' +
+      '<div style="font-size:13px;color:var(--text-muted);margin-top:4px">' +
+      "This profile may render incorrectly. The raw metadata is shown below.</div>" +
+      '<ul style="margin:8px 0 0 18px;font-size:13px">' + items + "</ul></div>"
+    );
+  }
+
+  function renderReputation(reputation) {
+    if (!reputation || typeof reputation !== "object") return "";
+    var completed = reputation.completedJobs != null ? reputation.completedJobs : reputation.completed;
+    var total = reputation.totalJobs != null ? reputation.totalJobs : reputation.total;
+    var rating = reputation.rating != null ? reputation.rating : reputation.averageRating;
+    var disputes = reputation.disputes;
+    var rows = "";
+    if (completed != null) rows += '<div class="reputation-stat"><span class="reputation-label">Completed jobs</span><span class="reputation-value">' + escapeHtml(String(completed)) + "</span></div>";
+    if (total != null) rows += '<div class="reputation-stat"><span class="reputation-label">Total jobs</span><span class="reputation-value">' + escapeHtml(String(total)) + "</span></div>";
+    if (rating != null) rows += '<div class="reputation-stat"><span class="reputation-label">Rating</span><span class="reputation-value">' + escapeHtml(String(rating)) + "</span></div>";
+    if (disputes != null) rows += '<div class="reputation-stat"><span class="reputation-label">Disputes</span><span class="reputation-value">' + escapeHtml(String(disputes)) + "</span></div>";
+    if (!rows) return "";
+    return (
+      '<div class="agent-profile-section"><div class="agent-profile-heading">Reputation</div>' +
+      '<div class="reputation-grid">' + rows + "</div></div>"
+    );
+  }
+
   async function renderAgentProfile(id) {
     setPage(
       '<div class="page-header"><div class="page-title">Agent Profile</div></div>' +
@@ -3648,7 +4178,7 @@
       badges = [];
     }
 
-    // Recent job history for this agent
+    // Recent job history for this agent (indexer-backed)
     var jobs = [];
     try {
       jobs = (await api("/jobs?agent=" + encodeURIComponent(String(id)), { _silent: true })) || [];
@@ -3657,9 +4187,39 @@
       jobs = [];
     }
 
+    // Reputation from the indexer (best-effort — never blocks the profile)
+    var reputation = agent.reputation || null;
+    if (!reputation) {
+      try {
+        reputation = await api("/agents/" + encodeURIComponent(String(id)) + "/reputation", { _silent: true });
+      } catch (e) {
+        reputation = null;
+      }
+    }
+
+    // Metadata JSON validated against docs/agent-metadata-schema-v1.json
+    var parsedMeta = parseAgentMetadata(agent);
+    var validation = { valid: true, errors: [] };
+    if (parsedMeta.present && !parsedMeta.parseError) {
+      validation = validateAgentMetadata(parsedMeta.data);
+    }
+    var metadataWarningHtml = renderMetadataWarning(parsedMeta.parseError, validation);
+    var metadataHtml = "";
+    if (parsedMeta.present) {
+      var metaText = parsedMeta.data != null ? JSON.stringify(parsedMeta.data, null, 2) : String(agent.metadata != null ? agent.metadata : agent.metadataJson);
+      metadataHtml =
+        '<div class="agent-profile-section"><div class="agent-profile-heading">Metadata</div>' +
+        '<pre class="agent-metadata-json" style="white-space:pre-wrap;word-break:break-word;font-size:12px;' +
+        'max-height:320px;overflow:auto;padding:12px;border-radius:8px;background:var(--bg-elevated,#111)">' +
+        escapeHtml(metaText) + "</pre></div>";
+    }
+
     var shareUrl = window.location.origin + window.location.pathname + "#/agent/" + id;
     var capabilities = Array.isArray(agent.tags) ? agent.tags : [];
-    var pricing = agent.pricing || agent.price || null;
+    if (capabilities.length === 0 && parsedMeta.data && Array.isArray(parsedMeta.data.capabilities)) {
+      capabilities = parsedMeta.data.capabilities;
+    }
+    var pricing = agent.pricing || agent.price || (parsedMeta.data && parsedMeta.data.pricing) || null;
 
     var capabilitiesHtml = "";
     if (capabilities.length > 0) {
@@ -3674,7 +4234,7 @@
     if (pricing) {
       pricingHtml =
         '<div class="agent-profile-section"><div class="agent-profile-heading">Pricing</div>' +
-        '<div class="agent-profile-pricing">' + escapeHtml(String(pricing)) + "</div></div>";
+        '<div class="agent-profile-pricing">' + escapeHtml(typeof pricing === "object" ? JSON.stringify(pricing) : String(pricing)) + "</div></div>";
     }
 
     var historyHtml = '<div class="agent-profile-section"><div class="agent-profile-heading">Recent Jobs</div>';
@@ -3695,6 +4255,8 @@
     }
     historyHtml += "</div>";
 
+    var bio = agent.description || (parsedMeta.data && parsedMeta.data.description) || agent.uri || "No bio provided.";
+
     setPage(
       '<div class="agent-profile">' +
         '<div class="agent-profile-banner"></div>' +
@@ -3709,11 +4271,14 @@
         '<button class="btn btn-secondary" onclick="window.__copyShareLink(\'' + escapeAttr(shareUrl) + "')\">Copy Link</button>" +
         "</div></div>" +
         renderBadgeChips(badges) +
+        metadataWarningHtml +
         '<div class="agent-profile-section"><div class="agent-profile-heading">Bio</div>' +
-        '<div class="agent-profile-bio">' + escapeHtml(agent.description || agent.uri || "No bio provided.") + "</div></div>" +
+        '<div class="agent-profile-bio">' + escapeHtml(bio) + "</div></div>" +
+        renderReputation(reputation) +
         pricingHtml +
         capabilitiesHtml +
         historyHtml +
+        metadataHtml +
         "</div>",
     );
   }
@@ -3724,6 +4289,193 @@
 
   window.__hireAgent = function (agentId) {
     window.__showCreateJob({ provider: agentId });
+  };
+
+  // ── Network switcher (#976) ──
+  // Presets come from /api/network; switching clears client caches, asks the
+  // server to drop its caches and (for mainnet) requires explicit confirmation.
+  var networkPresets = null;
+  var networkPresetsPromise = null;
+
+  function getNetworkPresets() {
+    if (networkPresets) return Promise.resolve(networkPresets);
+    if (networkPresetsPromise) return networkPresetsPromise;
+    networkPresetsPromise = (async function () {
+      var presets = null;
+      try {
+        var data = await api("/network", { _silent: true });
+        presets = (data && (data.presets || data.networks)) || data || null;
+      } catch (e) {
+        presets = null;
+      }
+      // Fall back to the built-in presets when the endpoint is unavailable.
+      if (!presets || typeof presets !== "object" || Array.isArray(presets)) {
+        presets = NETWORK_PRESETS;
+      }
+      networkPresets = presets;
+      return presets;
+    })();
+    try {
+      await networkPresetsPromise;
+    } finally {
+      networkPresetsPromise = null;
+    }
+    return networkPresets;
+  }
+
+  function presetFor(networkId) {
+    if (networkPresets && networkPresets[networkId]) return networkPresets[networkId];
+    return NETWORK_PRESETS[networkId] || null;
+  }
+
+  function clearClientCaches() {
+    state.stats = null;
+    state.wallets = null;
+    state.agents = null;
+    state.jobs = null;
+    state.history = null;
+    state.jobTotal = 0;
+    state.jobHasNext = false;
+    state.agentTotal = 0;
+    state.walletBalances = null;
+    try {
+      if (typeof sse !== "undefined" && sse && sse.source) {
+        try { sse.source.close(); } catch (e) {}
+        sse.source = null;
+        sse.live = false;
+      }
+    } catch (e) {}
+  }
+
+  function renderNetworkMismatchBanner() {
+    var existing = document.getElementById("network-mismatch-banner");
+    if (existing) existing.remove();
+    if (!wallet.connected || !wallet.network) return;
+    var active = state.network || "testnet";
+    if (wallet.network === active) return;
+    var banner = document.createElement("div");
+    banner.id = "network-mismatch-banner";
+    banner.className = "network-mismatch-banner";
+    banner.setAttribute("role", "alert");
+    banner.style.cssText =
+      "margin:0 0 16px;padding:12px 16px;border-radius:8px;border:1px solid #b45309;" +
+      "background:rgba(180,83,9,.12);display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap";
+    banner.innerHTML =
+      '<span>⚠️ Your wallet is on <strong>' +
+      escapeHtml(wallet.network === "mainnet" ? "Mainnet" : wallet.network) +
+      "</strong> but the dashboard is set to <strong>" +
+      escapeHtml(active === "mainnet" ? "Mainnet" : active) +
+      "</strong>. Signing may fail.</span>" +
+      '<button type="button" class="btn btn-secondary" id="network-mismatch-switch">Switch dashboard network</button>';
+    var page = document.getElementById("page");
+    if (page && page.parentNode) page.parentNode.insertBefore(banner, page);
+    var btn = document.getElementById("network-mismatch-switch");
+    if (btn) {
+      btn.addEventListener("click", function () {
+        window.__openNetworkSwitcher();
+      });
+    }
+  }
+
+  function updateNetworkBadge() {
+    var nb = document.getElementById("network-badge");
+    if (!nb) return;
+    var active = state.network || "testnet";
+    var preset = presetFor(active);
+    nb.innerHTML =
+      '<span class="badge-dot"></span>' +
+      escapeHtml(preset && preset.label ? preset.label : active);
+  }
+
+  async function switchNetwork(networkId, opts) {
+    var options = opts || {};
+    var presets = await getNetworkPresets();
+    var preset = presets[networkId] || NETWORK_PRESETS[networkId];
+    if (!preset) {
+      toast("Unknown network: " + networkId, "error");
+      return false;
+    }
+    if (networkId === "mainnet" && !options.confirmed) {
+      var confirmed = await confirmMainnetSwitch();
+      if (!confirmed) return false;
+    }
+    // 1. Clear client-side caches so no stale data leaks across networks.
+    clearClientCaches();
+    // 2. Persist the selection.
+    state.network = networkId;
+    try { localStorage.setItem("bear-network", networkId); } catch (e) {}
+    // 3. Ask the server to drop its caches for the new network.
+    try {
+      await api("/network/cache", {
+        method: "POST",
+        body: { network: networkId },
+        _silent: true,
+      });
+    } catch (e) {
+      // Non-fatal — the server may not implement cache clearing yet.
+    }
+    // 4. Re-render the current view with fresh data.
+    updateNetworkBadge();
+    renderNetworkMismatchBanner();
+    toast("Switched to " + (preset.label || networkId));
+    navigate();
+    return true;
+  }
+
+  function confirmMainnetSwitch() {
+    return new Promise(function (resolve) {
+      var overlay = showModal(
+        '<h2 class="modal-title">Switch to Mainnet?</h2>' +
+          '<p style="color:var(--text-muted);margin-bottom:16px">Mainnet uses <strong>real funds</strong>. ' +
+          "Transactions signed on Mainnet are irreversible. Make sure you understand the risks before continuing.</p>" +
+          '<div class="modal-actions">' +
+          '<button class="btn btn-secondary" id="mainnet-cancel">Cancel</button>' +
+          '<button class="btn btn-primary" id="mainnet-confirm">Yes, switch to Mainnet</button>' +
+          "</div>",
+      );
+      var done = function (value) {
+        try { if (overlay) overlay.remove(); } catch (e) {}
+        resolve(value);
+      };
+      var cancelBtn = document.getElementById("mainnet-cancel");
+      var confirmBtn = document.getElementById("mainnet-confirm");
+      if (cancelBtn) cancelBtn.addEventListener("click", function () { done(false); });
+      if (confirmBtn) confirmBtn.addEventListener("click", function () { done(true); });
+    });
+  }
+
+  window.__openNetworkSwitcher = async function () {
+    var presets = await getNetworkPresets();
+    var active = state.network || "testnet";
+    var ids = Object.keys(presets);
+    var cards = "";
+    for (var i = 0; i < ids.length; i++) {
+      var id = ids[i];
+      var p = presets[id] || {};
+      var isActive = id === active;
+      cards +=
+        '<button type="button" class="network-preset-card' + (isActive ? " active" : "") + '" ' +
+        'data-network="' + escapeAttr(id) + '" ' +
+        'onclick="window.__selectNetwork(\'' + escapeAttr(id) + "')\">" +
+        '<span class="network-preset-name">' + escapeHtml(p.label || id) + "</span>" +
+        (p.realFunds ? '<span class="network-preset-warning">Real funds</span>' : "") +
+        (isActive ? '<span class="network-preset-active">Active</span>' : "") +
+        "</button>";
+    }
+    showModal(
+      '<h2 class="modal-title">Switch Network</h2>' +
+        '<p style="color:var(--text-muted);margin-bottom:16px">Switching networks clears cached data and re-fetches from the indexer.</p>' +
+        '<div class="network-preset-grid">' + cards + "</div>" +
+        '<div class="modal-actions">' +
+        '<button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button>' +
+        "</div>",
+    );
+  };
+
+  window.__selectNetwork = async function (networkId) {
+    var overlay = document.querySelector(".modal-overlay");
+    if (overlay) overlay.remove();
+    await switchNetwork(networkId);
   };
 
   // ── Router ──
@@ -4076,7 +4828,13 @@
   connectEventStream();
 
   // Initial render
+  state.network = readPersistedNetwork();
   renderNetworkBadge();
+  updateNetworkBadge();
+  getNetworkPresets().then(function () {
+    updateNetworkBadge();
+    renderNetworkMismatchBanner();
+  });
   navigate();
 
   // Sync the refresh-interval dropdown to the restored/default interval

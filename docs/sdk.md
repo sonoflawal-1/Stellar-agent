@@ -215,6 +215,152 @@ const res = await paidFetch("http://seller-agent/api/work");
 const data = await res.json();
 ```
 
+### Payment receipts (`returnReceipt`)
+
+By default `marcFetch` returns the raw `Response` (backwards compatible). Pass
+`returnReceipt: true` to get a typed `{ response, receipt }` object so callers
+can record what they paid.
+
+```typescript
+import { marcFetch, type PaymentReceipt } from "marc-stellar-sdk";
+
+const paidFetch = marcFetch({
+  signer: keypair,
+  rpcUrl: TESTNET.rpcUrl,
+  returnReceipt: true,
+});
+
+const { response, receipt } = await paidFetch("http://seller-agent/api/work");
+// receipt: PaymentReceipt
+// {
+//   txHash: "abc123...",       // Stellar transaction hash
+//   amount: 10_000n,           // amount paid, in base units (BigInt)
+//   token: "C...",             // token contract address
+//   payTo: "G...",             // recipient address
+//   ledger: 1234567,           // ledger the payment was included in
+// }
+```
+
+The receipt is populated from the submitted transaction's ledger data, so
+`txHash`, `amount`, `token`, `payTo`, and `ledger` match what was settled
+on-chain.
+
+### Budget guard
+
+An autonomous agent following 402 challenges can be drained by a malicious API.
+`marcFetch` supports optional budget limits with typed `BudgetExceededError`
+failures and an `onBudgetExceeded` hook.
+
+```typescript
+const paidFetch = marcFetch({
+  signer: keypair,
+  rpcUrl: TESTNET.rpcUrl,
+  maxPerRequest: 1_000_000n, // max 0.1 USDC per request (base units)
+  maxPerWindow: 10_000_000n, // max 1 USDC per rolling window
+  windowMs: 3_600_000, // rolling window length (default: 1 hour)
+  onBudgetExceeded: (err) => {
+    console.warn("budget exceeded:", err.limit, err.attempted);
+  },
+});
+```
+
+| Option            | Type                     | Default      | Description                                                                 |
+| ----------------- | ------------------------ | ------------ | --------------------------------------------------------------------------- |
+| `maxPerRequest`   | `bigint`                 | unset (off)  | Maximum amount payable for a single request, in base units.                 |
+| `maxPerWindow`    | `bigint`                 | unset (off)  | Maximum total amount payable within the rolling window, in base units.      |
+| `windowMs`        | `number`                 | `3_600_000`  | Length of the rolling window in milliseconds (default 1 hour).              |
+| `onBudgetExceeded`| `(err) => void`          | unset        | Called when a payment is blocked by a budget limit.                         |
+
+When a limit is unset, that check is disabled. Budget checks are enforced
+atomically, so concurrent requests cannot collectively exceed `maxPerWindow`.
+
+### Typed errors
+
+All failure modes surface as typed errors so callers can branch on them:
+
+| Error class                 | When it is thrown                                                              |
+| --------------------------- | ------------------------------------------------------------------------------ |
+| `BudgetExceededError`       | A payment would exceed `maxPerRequest` or `maxPerWindow`.                      |
+| `PaymentRejectedError`      | The server rejects the payment proof (e.g. invalid/expired proof).             |
+| `InsufficientFundsError`    | The signer's balance cannot cover the required payment.                        |
+| `MarcPaymentTimeoutError`   | The payment transaction does not confirm within the timeout (tx pending).      |
+
+```typescript
+import {
+  BudgetExceededError,
+  PaymentRejectedError,
+  InsufficientFundsError,
+  MarcPaymentTimeoutError,
+} from "marc-stellar-sdk";
+
+try {
+  await paidFetch("http://seller-agent/api/work");
+} catch (err) {
+  if (err instanceof BudgetExceededError) {
+    // do not retry — the price exceeds our limits
+  } else if (err instanceof InsufficientFundsError) {
+    // top up the wallet
+  } else if (err instanceof MarcPaymentTimeoutError) {
+    // tx still pending; safe to retry after checking the ledger
+  } else if (err instanceof PaymentRejectedError) {
+    // server refused the proof; do not resend funds
+  }
+}
+```
+
+---
+
+## Amount helpers (multi-token)
+
+`format.ts` formats amounts for the default token. When working with the token
+allowlist (`TokenInfo.decimals`), use the BigInt-based helpers to convert
+between human-readable amounts and on-chain base units. No floating-point math
+is used, so round-trips are exact for every decimals value (0–18).
+
+### `toBaseUnits(amount, decimals)`
+
+Convert a human-readable amount (string or number) to base units (`bigint`).
+
+```typescript
+import { toBaseUnits } from "marc-stellar-sdk";
+
+toBaseUnits("1.5", 7); // 15_000_000n
+toBaseUnits("1", 0); // 1n
+toBaseUnits("0.000000000000000001", 18); // 1n
+```
+
+### `fromBaseUnits(amount, decimals)`
+
+Convert base units (`bigint`) back to a human-readable string.
+
+```typescript
+import { fromBaseUnits } from "marc-stellar-sdk";
+
+fromBaseUnits(15_000_000n, 7); // "1.5"
+fromBaseUnits(1n, 0); // "1"
+fromBaseUnits(1n, 18); // "0.000000000000000001"
+```
+
+### `TokenRegistry`
+
+A cache over `get_token_info` that resolves a token's `decimals` (and other
+`TokenInfo`) so you can convert amounts per token.
+
+```typescript
+import { TokenRegistry } from "marc-stellar-sdk";
+
+const registry = new TokenRegistry(cfg); // caches get_token_info results
+
+const info = await registry.getTokenInfo(TESTNET.usdcToken);
+// { address: "C...", decimals: 7, symbol: "USDC", ... }
+
+const base = toBaseUnits("2.50", info.decimals); // 25_000_000n
+const human = fromBaseUnits(base, info.decimals); // "2.5"
+```
+
+Repeated lookups for the same token are served from the cache; call
+`registry.clear()` to invalidate it.
+
 ---
 
 ## Browser build (client-side wallet signing)

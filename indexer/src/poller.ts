@@ -92,16 +92,72 @@ export function parseEventTopicHeader(
 }
 
 /**
+ * Extracts the operation index and event index from a raw Soroban event.
+ *
+ * Soroban event ids have the shape
+ *   `<toid>-<eventIndex>`  (e.g. `0000000000000000000-0000000000`)
+ * where the leading component is the 64-bit "total order id" encoding the
+ * ledger sequence, transaction order and operation index. The trailing
+ * component is the index of the event within its transaction/operation.
+ *
+ * Both values are needed to build the idempotency key
+ * `(ledger, tx_hash, op_index, event_index)`. When the id cannot be parsed
+ * we fall back to the event's position in the response batch so the key is
+ * still populated (and stable for a given ledger range).
+ */
+function parseEventIndexes(
+  event: StellarRpc.Api.EventResponse,
+  fallbackIndex: number,
+): { opIndex: number; eventIndex: number } {
+  const raw = (event as Record<string, unknown>).id;
+  if (typeof raw === "string" && raw.length > 0) {
+    const dash = raw.lastIndexOf("-");
+    if (dash > 0) {
+      const toidPart = raw.slice(0, dash);
+      const eventPart = raw.slice(dash + 1);
+      const eventIndex = Number.parseInt(eventPart, 10);
+      if (Number.isFinite(eventIndex)) {
+        // The low 32 bits of the toid hold the operation index.
+        const toid = Number.parseInt(toidPart, 10);
+        const opIndex = Number.isFinite(toid)
+          ? toid % 0x1_0000_0000
+          : fallbackIndex;
+        return { opIndex, eventIndex };
+      }
+    }
+  }
+
+  // Fallback: derive a deterministic index from the batch position.
+  const explicitOp = (event as Record<string, unknown>).operationIndex;
+  const explicitEvent = (event as Record<string, unknown>).eventIndex;
+  return {
+    opIndex:
+      typeof explicitOp === "number" && Number.isInteger(explicitOp)
+        ? explicitOp
+        : 0,
+    eventIndex:
+      typeof explicitEvent === "number" && Number.isInteger(explicitEvent)
+        ? explicitEvent
+        : fallbackIndex,
+  };
+}
+
+/**
  * Converts a raw Soroban event into the InsertEventParams format.
  * The full event is stored as a JSON blob in `payload` so no information
  * is lost and new fields can be queried without schema migrations.
+ *
+ * `fallbackIndex` is the event's position within the fetched batch and is
+ * only used when the RPC event id cannot be parsed.
  */
 function toInsertParams(
   event: StellarRpc.Api.EventResponse,
   ledgerCloseTime: number,
+  fallbackIndex = 0,
 ): InsertEventParams {
   const topics = event.topic ?? [];
   const header = parseEventTopicHeader(topics);
+  const { opIndex, eventIndex } = parseEventIndexes(event, fallbackIndex);
 
   const payload: Record<string, unknown> = {
     topics: topics,
@@ -117,6 +173,9 @@ function toInsertParams(
     timestamp: ledgerCloseTime,
     contract: event.contractId ?? "",
     event_type: header?.eventName ?? "Unknown",
+    tx_hash: event.txHash ?? "",
+    op_index: opIndex,
+    event_index: eventIndex,
     payload,
   };
 }
@@ -312,8 +371,8 @@ export class SorobanEventPoller {
     if (!this.reputation) return;
 
     const agents = new Set<string>();
-    for (const ev of events) {
-      const params = toInsertParams(ev, 0);
+    for (const [index, ev] of events.entries()) {
+      const params = toInsertParams(ev, 0, index);
       if (!REPUTATION_EVENT_TYPES.has(params.event_type)) continue;
       const agentId = extractAgentId(ev);
       if (agentId) agents.add(agentId);
@@ -404,17 +463,24 @@ export class SorobanEventPoller {
 
           // Soroban getEvents returns ledger close times via the `ledgerClosedAt` field;
           // fall back to current time when unavailable (e.g. in tests).
-          const inserts: InsertEventParams[] = response.events.map((ev) => {
-            const closeTime =
-              typeof (ev as Record<string, unknown>).ledgerClosedAt === "string"
-                ? Math.floor(
-                    new Date(
-                      (ev as Record<string, unknown>).ledgerClosedAt as string,
-                    ).getTime() / 1000,
-                  )
-                : Math.floor(Date.now() / 1000);
-            return toInsertParams(ev as StellarRpc.Api.EventResponse, closeTime);
-          });
+          const inserts: InsertEventParams[] = response.events.map(
+            (ev, index) => {
+              const closeTime =
+                typeof (ev as Record<string, unknown>).ledgerClosedAt ===
+                "string"
+                  ? Math.floor(
+                      new Date(
+                        (ev as Record<string, unknown>).ledgerClosedAt as string,
+                      ).getTime() / 1000,
+                    )
+                  : Math.floor(Date.now() / 1000);
+              return toInsertParams(
+                ev as StellarRpc.Api.EventResponse,
+                closeTime,
+                index,
+              );
+            },
+          );
 
           // Collect events across all contracts so the whole ledger batch is
           // persisted atomically in a single IMMEDIATE transaction below.
