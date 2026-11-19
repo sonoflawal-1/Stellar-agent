@@ -25,6 +25,12 @@ export {
   type ApiErrorBody,
   type ApiErrorCode,
 } from "./errors.js";
+// #948 — decoded contract error names + typed contract errors
+export {
+  CONTRACT_ERRORS,
+  BearContractError,
+  wrapContractError,
+} from "./contractErrors.js";
 export { formatAmount, parseAmount, isValidMetadataUri } from "./format.js";
 // #952 — multi-token amount helpers using on-chain decimals
 export { toBaseUnits, fromBaseUnits, TokenRegistry } from "./format.js";

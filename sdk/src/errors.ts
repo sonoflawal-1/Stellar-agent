@@ -16,6 +16,55 @@ export const KnownContractErrorCode = {
   AlreadyRegistered: 2,
 } as const;
 
+/** A single decoded contract error variant. */
+export interface ContractErrorEntry {
+  /** The variant name as declared in the contract `Error` enum. */
+  readonly name: string;
+  /** Human-readable explanation of the variant. */
+  readonly message: string;
+}
+
+/**
+ * Generated map of every variant of every MARC contract `Error` enum,
+ * keyed by contract name and then by numeric error code.
+ *
+ * This must stay in sync with the on-chain enums; `errors.test.ts` fails on drift.
+ */
+export const CONTRACT_ERRORS: Record<string, Record<number, ContractErrorEntry>> = {
+  "agentic-commerce": {
+    1: { name: "SelfEscrow", message: "client cannot escrow funds to themselves" },
+    2: {
+      name: "InvalidParties",
+      message: "provider and evaluator cannot be the same address",
+    },
+    3: {
+      name: "ContractPaused",
+      message: "contract is paused; state-changing operations are disabled",
+    },
+    4: { name: "JobNotFound", message: "no job found with the specified ID" },
+    5: { name: "JobNotOpen", message: "job is not open for applications" },
+    6: { name: "Unauthorized", message: "caller is not authorized for this action" },
+    7: { name: "InvalidState", message: "job is not in a valid state for this action" },
+    8: { name: "DeadlinePassed", message: "the job deadline has already passed" },
+    9: { name: "DeadlineNotPassed", message: "the job deadline has not yet passed" },
+    10: { name: "InvalidAmount", message: "amount is invalid or out of range" },
+    11: { name: "InsufficientEscrow", message: "escrow balance is insufficient" },
+    12: { name: "AlreadyApplied", message: "agent has already applied to this job" },
+    13: { name: "NotApplied", message: "agent has not applied to this job" },
+    14: { name: "SlippageExceeded", message: "slippage tolerance was exceeded" },
+  },
+  "agent-identity": {
+    1: { name: "AgentNotFound", message: "no agent found with the specified ID" },
+    2: { name: "AlreadyRegistered", message: "address is already registered to an agent" },
+    3: { name: "Unauthorized", message: "caller is not authorized for this action" },
+    4: { name: "InvalidMetadata", message: "agent metadata is invalid" },
+    5: { name: "AgentInactive", message: "agent is inactive" },
+    6: { name: "InvalidAddress", message: "address is invalid" },
+    7: { name: "DuplicateAgent", message: "an agent with this identity already exists" },
+    8: { name: "InvalidUri", message: "URI is malformed or unsupported" },
+  },
+};
+
 /** Human-readable explanation mapping for agentic-commerce error codes. */
 export const COMMERCE_ERROR_MESSAGES: Record<number, string> = {
   1: "SelfEscrow: client cannot escrow funds to themselves",
@@ -59,6 +108,66 @@ export class ContractError extends Error {
     this.explanation = resolvedExplanation;
     Object.setPrototypeOf(this, ContractError.prototype);
   }
+}
+
+/**
+ * Thrown when a contract invocation or simulation fails with a decoded on-chain
+ * Soroban contract error (#948).
+ *
+ * Unlike {@link ContractError}, this carries the decoded variant `name` from
+ * {@link CONTRACT_ERRORS} and the originating contract name.
+ */
+export class BearContractError extends Error {
+  /** The on-chain numeric error code (e.g. 1 for SelfEscrow). */
+  readonly code: number;
+  /** The decoded variant name (e.g. "SelfEscrow"), or `UnknownError` if unmapped. */
+  readonly name: string;
+  /** The contract name the error originated from (e.g. "agentic-commerce"). */
+  readonly contract: string;
+
+  constructor(code: number, contract: string, message?: string) {
+    const entry = CONTRACT_ERRORS[contract]?.[code];
+    const variantName = entry?.name ?? "UnknownError";
+    const explanation = entry?.message ?? `unknown contract error code #${code}`;
+    super(message || `Contract error ${variantName} (#${code}) on ${contract}: ${explanation}`);
+    this.name = variantName;
+    this.code = code;
+    this.contract = contract;
+    Object.setPrototypeOf(this, BearContractError.prototype);
+  }
+
+  /**
+   * Extract a contract error code from a raw error/message string.
+   *
+   * @returns The integer error code if found, or `null`.
+   */
+  static parseCode(message: string): number | null {
+    return extractContractErrorCode(message);
+  }
+}
+
+/**
+ * Convert a raw simulation or transaction error into a {@link BearContractError}
+ * when it carries a decodable `Error(Contract, #n)` code (#948).
+ *
+ * Non-contract errors are returned unchanged.
+ *
+ * @param err - The raw error thrown by the SDK or Soroban RPC.
+ * @param contract - The contract name used to decode the variant (e.g. "agentic-commerce").
+ */
+export function wrapContractError(err: unknown, contract: string): unknown {
+  if (err instanceof BearContractError) return err;
+  const raw =
+    err instanceof Error
+      ? err.message
+      : typeof err === "string"
+        ? err
+        : typeof err === "object" && err !== null && "message" in err
+          ? String((err as { message: unknown }).message)
+          : "";
+  const code = extractContractErrorCode(raw);
+  if (code === null) return err;
+  return new BearContractError(code, contract);
 }
 
 /**

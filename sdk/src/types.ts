@@ -194,13 +194,27 @@ export interface MarcConfig {
   /** Soroban JSON-RPC endpoint (e.g., `https://soroban-testnet.stellar.org`). */
   rpcUrl: string;
   /**
-   * Optional list of Soroban RPC endpoints for automatic failover (#781).
+   * Optional list of Soroban RPC endpoints for automatic failover (#781, #949).
    *
    * When provided, the SDK creates an {@link RpcFailoverPool} that routes
    * all calls through the healthiest available endpoint. `rpcUrl` is used
    * as a fallback when this array is empty or omitted.
+   *
+   * On a retryable failure (HTTP 429 or 5xx, or a network error) the client
+   * rotates to the next endpoint in this list and retries with jittered
+   * exponential backoff. `rpcUrl` is always included in the rotation set.
    */
   rpcUrls?: string[];
+  /**
+   * Maximum number of retry attempts per RPC call when an endpoint fails
+   * with a retryable error (HTTP 429 / 5xx or network error) (#949).
+   *
+   * Each retry rotates to the next endpoint (see {@link rpcUrls}) and waits
+   * for a jittered exponential backoff delay. Defaults to `3`.
+   *
+   * Set to `0` to disable retries entirely.
+   */
+  maxRetries?: number;
   /** Network passphrase for transaction signing (e.g., `Networks.TESTNET`). */
   networkPassphrase: string;
   /** Deployed `agent_identity` contract address (starts with `C`). */
