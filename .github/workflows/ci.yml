@@ -10,11 +10,14 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [20, 22]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm ci
       - run: npm run build
@@ -22,11 +25,14 @@ jobs:
 
   react-package:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [20, 22]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm ci
       - name: Build React package
@@ -38,11 +44,14 @@ jobs:
 
   nextjs-ssr:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [20, 22]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm ci
       - name: Build React package
@@ -59,11 +68,14 @@ jobs:
 
   env-schema:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [20, 22]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm ci
       - name: Validate .env.example files against Zod schemas
@@ -71,11 +83,14 @@ jobs:
 
   openapi-lint:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [20, 22]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ matrix.node-version }}
       - run: npx --yes @redocly/cli@latest lint docs/openapi.yaml
 
   conflict-markers:
@@ -91,6 +106,9 @@ jobs:
 
   state-dump:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [20, 22]
     env:
       SOROBAN_RPC_URL: ${{ secrets.SOROBAN_RPC_URL }}
       CONTRACT_ID: ${{ vars.CONTRACT_ID }}
@@ -98,7 +116,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm ci
       - run: npm run build
@@ -235,11 +253,14 @@ jobs:
   gas-check:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [20, 22]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm ci
       - name: Compare contract gas usage against .gas-baseline.json

@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "Commerce layer for AI agent payments built on the Stellar blockchain",
   "private": true,
+  "engines": {
+    "node": ">=20"
+  },
   "workspaces": [
     "sdk",
     "dashboard",

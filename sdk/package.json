@@ -20,6 +20,9 @@
   "files": [
     "dist"
   ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
