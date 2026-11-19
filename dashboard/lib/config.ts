@@ -173,6 +173,60 @@ export function getConfigForNetwork(networkId?: string | null): MarcConfig {
 
 export const DEMO_MODE = process.env.DEMO_MODE === "true";
 
+// ---------------------------------------------------------------------------
+// Security settings (headers, body limits, rate limits)
+// ---------------------------------------------------------------------------
+
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function parseOriginList(value: string | undefined, fallback: string[]): string[] {
+  if (!value) return fallback;
+  const origins = value
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+  return origins.length > 0 ? origins : fallback;
+}
+
+/**
+ * Request body size limits (passed to express.json({ limit })).
+ * A small global limit applies to every route; larger limits are only used on
+ * routes that legitimately accept big payloads (e.g. /api/build/submit).
+ */
+export const bodyLimitDefault = process.env.BODY_LIMIT_DEFAULT ?? "100kb";
+export const bodyLimitBuildSubmit = process.env.BODY_LIMIT_BUILD_SUBMIT ?? "2mb";
+
+/**
+ * Content-Security-Policy allow-lists. Defaults cover the static dashboard
+ * (public/app.js) plus the configured RPC endpoints.
+ */
+export const cspScriptSrc = parseOriginList(process.env.CSP_SCRIPT_SRC, ["'self'"]);
+export const cspImgSrc = parseOriginList(process.env.CSP_IMG_SRC, [
+  "'self'",
+  "data:",
+  "https:",
+]);
+export const cspConnectSrc = parseOriginList(process.env.CSP_CONNECT_SRC, [
+  "'self'",
+  ...rpcUrls,
+]);
+
+/**
+ * Rate-limit buckets. Each bucket is keyed independently so that a wallet
+ * cannot bypass limits by rotating IPs (and vice versa).
+ * - ip: per-IP request budget for read endpoints.
+ * - wallet: per-wallet request budget for authenticated endpoints.
+ * - token: per-token request budget for token-scoped endpoints.
+ * - embeddingCost: cost weight applied to embedding-heavy routes.
+ */
+export const rateLimitIp = parsePositiveInt(process.env.RATE_LIMIT_IP, 120);
+export const rateLimitWallet = parsePositiveInt(process.env.RATE_LIMIT_WALLET, 60);
+export const rateLimitToken = parsePositiveInt(process.env.RATE_LIMIT_TOKEN, 60);
+export const rateLimitEmbeddingCost = parsePositiveInt(process.env.RATE_LIMIT_EMBEDDING_COST, 5);
+
 // Audit log storage (SQLite, WAL mode) with retention and JSONL migration.
 // - AUDIT_DB_PATH: path to the SQLite database file (default: data/audit.sqlite).
 // - AUDIT_RETENTION_DAYS: entries older than this many days are pruned by the

@@ -52,6 +52,12 @@ import {
 import { SlidingWindowRateLimiter } from "./lib/rateLimiter.js";
 import { IssuedChallengeStore } from "./lib/authChallenges.js";
 import { parseAllowedOrigins } from "./lib/origins.js";
+import {
+  csrfProtection,
+  issueCsrfToken,
+  CSRF_COOKIE_NAME,
+  CSRF_HEADER_NAME,
+} from "./lib/csrf.js";
 import { WebSocketServer, type WebSocket } from "ws";
 import { getReadOnlyDb } from "../../indexer/src/db.js";
 import { eventHub, type SorobanEvent } from "../../indexer/src/events.js";
@@ -176,6 +182,24 @@ const STELLAR_CONNECT_SRCS = [
   "https://channels.openzeppelin.com",
 ];
 
+// ── #962: Security headers ───────────────────────────────────────────────────
+// Helmet is applied globally so both the landing site and the /app dashboard
+// receive a consistent header set (HSTS, X-Content-Type-Options, X-Frame-Options,
+// Referrer-Policy, CSP, …). The CSP is tailored to public/app.js: it allows the
+// Stellar Wallets Kit CDN bundle, Google Fonts, and the allow-listed RPC/Horizon/
+// IPFS origins used by the dashboard's connect-src.
+const CSP_CONNECT_SRCS = Array.from(
+  new Set([
+    ...STELLAR_CONNECT_SRCS,
+    ...rpcUrls,
+    ...Object.values(NETWORK_PRESETS).flatMap((preset) => [
+      preset.rpcUrl,
+      ...preset.rpcUrls,
+      preset.horizonUrl,
+    ]),
+  ]),
+).filter((origin) => /^https?:\/\//.test(origin));
+
 app.use(
   helmet({
     contentSecurityPolicy: {
@@ -200,7 +224,7 @@ app.use(
         ],
         fontSrc: ["'self'", "https://fonts.gstatic.com", "data:"],
         imgSrc: ["'self'", "data:", "https:"],
-        connectSrc: ["'self'", ...STELLAR_CONNECT_SRCS, "wss:"],
+        connectSrc: ["'self'", ...CSP_CONNECT_SRCS, "wss:"],
         objectSrc: ["'none'"],
         baseUri: ["'self'"],
         formAction: ["'self'"],
@@ -212,7 +236,17 @@ app.use(
     crossOriginEmbedderPolicy: false, // required for Freighter wallet extension
   }),
 );
-app.use(express.json());
+
+// ── #963: Bounded request body sizes ────────────────────────────────────────
+// A small global JSON limit protects every route by default. Routes that need a
+// larger payload (e.g. /api/build/submit, which carries a signed XDR) mount a
+// dedicated parser with a larger, configurable limit before the global parser.
+const JSON_BODY_LIMIT = process.env.JSON_BODY_LIMIT ?? "64kb";
+const BUILD_SUBMIT_BODY_LIMIT = process.env.BUILD_SUBMIT_BODY_LIMIT ?? "512kb";
+
+const buildSubmitJsonParser = express.json({ limit: BUILD_SUBMIT_BODY_LIMIT });
+app.use("/api/build/submit", buildSubmitJsonParser);
+app.use(express.json({ limit: JSON_BODY_LIMIT }));
 
 // Landing page at root
 const landingDir = path.join(__dirname, "..", "landing");
@@ -487,6 +521,88 @@ function rateLimitMutating(req: Request, res: Response, next: NextFunction) {
   if (!result.allowed) {
     res.setHeader("Retry-After", String(result.retryAfterSeconds));
     res.status(429).json({ error: "rate limit exceeded" });
+    return;
+  }
+  next();
+}
+
+// ── #964: Per-wallet, per-token, and cost-weighted read rate limits ─────────
+// Read endpoints (agent matching, embeddings) can be abused from many IPs, so
+// in addition to the per-IP limiter above we enforce:
+//   • a per-wallet bucket (x-stellar-wallet header) — 120 req/min
+//   • a per-token bucket (Authorization bearer token) — 120 req/min
+//   • a cost-weighted bucket for embedding-heavy routes — 60 cost units/min,
+//     where each request costs `EMBEDDING_COST` units (default 5).
+// All buckets are documented in docs/security.md. 429 responses always include
+// a Retry-After header.
+const READ_WALLET_RATE_LIMIT = Number(process.env.READ_WALLET_RATE_LIMIT ?? 120);
+const READ_TOKEN_RATE_LIMIT = Number(process.env.READ_TOKEN_RATE_LIMIT ?? 120);
+const READ_RATE_WINDOW_MS = Number(process.env.READ_RATE_WINDOW_MS ?? 60_000);
+const EMBEDDING_COST_LIMIT = Number(process.env.EMBEDDING_COST_LIMIT ?? 60);
+const EMBEDDING_COST = Number(process.env.EMBEDDING_COST ?? 5);
+
+const readWalletRateLimiter = new SlidingWindowRateLimiter({
+  limit: READ_WALLET_RATE_LIMIT,
+  windowMs: READ_RATE_WINDOW_MS,
+});
+const readTokenRateLimiter = new SlidingWindowRateLimiter({
+  limit: READ_TOKEN_RATE_LIMIT,
+  windowMs: READ_RATE_WINDOW_MS,
+});
+const embeddingCostRateLimiter = new SlidingWindowRateLimiter({
+  limit: EMBEDDING_COST_LIMIT,
+  windowMs: READ_RATE_WINDOW_MS,
+});
+
+function bearerToken(req: Request): string | undefined {
+  const header = req.headers.authorization;
+  if (!header) return undefined;
+  const match = /^Bearer\s+(.+)$/i.exec(header);
+  return match ? match[1].trim() : undefined;
+}
+
+function rejectRateLimited(res: Response, retryAfterSeconds: number): void {
+  res.setHeader("Retry-After", String(retryAfterSeconds));
+  res.status(429).json({ error: "rate limit exceeded" });
+}
+
+/**
+ * Per-wallet and per-token read limiter. Requests without a wallet or token are
+ * still bounded by the per-IP limiter applied separately.
+ */
+function rateLimitRead(req: Request, res: Response, next: NextFunction) {
+  const wallet = String(req.headers["x-stellar-wallet"] ?? "").trim();
+  if (wallet) {
+    const result = readWalletRateLimiter.check(`wallet:${wallet}`);
+    res.setHeader("X-RateLimit-Wallet-Remaining", String(result.remaining));
+    if (!result.allowed) {
+      rejectRateLimited(res, result.retryAfterSeconds);
+      return;
+    }
+  }
+  const token = bearerToken(req);
+  if (token) {
+    const result = readTokenRateLimiter.check(`token:${token}`);
+    res.setHeader("X-RateLimit-Token-Remaining", String(result.remaining));
+    if (!result.allowed) {
+      rejectRateLimited(res, result.retryAfterSeconds);
+      return;
+    }
+  }
+  next();
+}
+
+/**
+ * Cost-weighted limiter for embedding-heavy routes. Each request consumes
+ * `EMBEDDING_COST` units from a per-wallet (or per-IP fallback) bucket.
+ */
+function rateLimitEmbeddingCost(req: Request, res: Response, next: NextFunction) {
+  const wallet = String(req.headers["x-stellar-wallet"] ?? "").trim();
+  const key = wallet ? `wallet:${wallet}` : `ip:${req.ip || "unknown"}`;
+  const result = embeddingCostRateLimiter.check(key, EMBEDDING_COST);
+  res.setHeader("X-RateLimit-Cost-Remaining", String(result.remaining));
+  if (!result.allowed) {
+    rejectRateLimited(res, result.retryAfterSeconds);
     return;
   }
   next();
@@ -1080,6 +1196,14 @@ async function getTokenBalance(
 }
 
 // --- API Routes ---
+
+// GET /api/csrf-token — issue a double-submit CSRF token (#961).
+// The token is returned in the body and set as a SameSite=Strict cookie. Clients
+// echo it back in the X-CSRF-Token header on mutating requests.
+app.get("/api/csrf-token", (req, res) => {
+  const token = issueCsrfToken(req, res);
+  res.json({ csrfToken: token, header: CSRF_HEADER_NAME, cookie: CSRF_COOKIE_NAME });
+});
 
 // GET /api/demo-mode — lets the frontend know whether to skip Freighter auth
 app.get("/api/demo-mode", (_req, res) => {
@@ -1694,7 +1818,8 @@ app.get("/api/agents/:id", async (req, res) => {
 });
 
 // POST /api/agents/match — semantic agent discovery (#736)
-app.post("/api/agents/match", async (req, res) => {
+// Embedding-heavy: bounded by per-wallet/per-token and cost-weighted limits (#964).
+app.post("/api/agents/match", rateLimitRead, rateLimitEmbeddingCost, async (req, res) => {
   try {
     const parsed = agentMatchSchema.parse(req.body);
     const started = process.hrtime.bigint();
@@ -1776,7 +1901,15 @@ app.get("/api/jobs", async (req, res) => {
 });
 
 // POST /api/jobs/create
-app.post("/api/jobs/create", auditAdminAction, optionalAuthMiddleware, requireDashboardWallet, async (req, res) => {
+// #961: CSRF-protected — cookie-authenticated requests must present a valid
+// double-submit token; bearer-token auth is the supported transport.
+app.post(
+  "/api/jobs/create",
+  csrfProtection,
+  auditAdminAction,
+  optionalAuthMiddleware,
+  requireDashboardWallet,
+  async (req, res) => {
   try {
     const parsed = createJobSchema.parse(req.body);
     const { wallet, provider, evaluator, budget, description } = parsed;
@@ -1804,7 +1937,8 @@ app.post("/api/jobs/create", auditAdminAction, optionalAuthMiddleware, requireDa
   } catch (err: unknown) {
     handleRouteError(err, res);
   }
-});
+  },
+);
 
 // POST /api/jobs/:id/submit
 app.post(
@@ -1927,7 +2061,8 @@ app.put("/api/jobs/:id", auditAdminAction, optionalAuthMiddleware, requireDashbo
   }
 });
 
-app.post("/api/dispute-job", optionalAuthMiddleware, requireDashboardWallet, async (req, res) => {
+// #961: CSRF-protected mutating route.
+app.post("/api/dispute-job", csrfProtection, optionalAuthMiddleware, requireDashboardWallet, async (req, res) => {
   try {
     const parsed = buildUnsignedActionSchema.parse(req.body);
     const op = commerceContract.call(
@@ -1943,7 +2078,8 @@ app.post("/api/dispute-job", optionalAuthMiddleware, requireDashboardWallet, asy
   }
 });
 
-app.post("/api/claim-refund", optionalAuthMiddleware, requireDashboardWallet, async (req, res) => {
+// #961: CSRF-protected mutating route.
+app.post("/api/claim-refund", csrfProtection, optionalAuthMiddleware, requireDashboardWallet, async (req, res) => {
   try {
     const parsed = buildUnsignedActionSchema.parse(req.body);
     const op = commerceContract.call(
@@ -2044,7 +2180,8 @@ app.post(
 );
 
 // POST /api/build/submit — build unsigned submit tx
-app.post("/api/build/submit", rateLimitMutating, optionalAuthMiddleware, requireDashboardWallet, async (req, res) => {
+// #961: CSRF-protected; #963: uses the larger body limit mounted above.
+app.post("/api/build/submit", csrfProtection, rateLimitMutating, optionalAuthMiddleware, requireDashboardWallet, async (req, res) => {
   try {
     const parsed = buildUnsignedActionSchema.parse(req.body);
     const deliverable = req.body.deliverable || "ipfs://dashboard-delivery";
@@ -2434,6 +2571,15 @@ app.get("/app/*", (_req, res) => {
 });
 
 function errorHandler(err: unknown, _req: Request, res: Response, _next: NextFunction) {
+  // #963: Oversized bodies are rejected by express.json with a 413 status.
+  if (
+    err &&
+    typeof err === "object" &&
+    ((err as { type?: string }).type === "entity.too.large" ||
+      (err as { status?: number }).status === 413)
+  ) {
+    return res.status(413).json({ error: "Request body too large" });
+  }
   if (err instanceof SyntaxError && "body" in err) {
     return res.status(400).json({ error: "Malformed JSON payload" });
   }
@@ -2518,3 +2664,9 @@ wss.on("connection", (socket: WebSocket) => {
 });
 
 export { app, matchmaking, httpServer, wss, readOnlyDb, auditStore };
+export {
+  readWalletRateLimiter,
+  readTokenRateLimiter,
+  embeddingCostRateLimiter,
+  mutatingRateLimiter,
+};
