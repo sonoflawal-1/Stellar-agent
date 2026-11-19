@@ -130,6 +130,46 @@ paths:
           description: Agent removed
         '404':
           $ref: '#/components/responses/NotFound'
+  /api/agents/{id}/detail:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+    get:
+      tags: [Agents]
+      summary: Get a rich agent profile
+      description: |
+        Returns the agent's reputation, job history and raw metadata. The
+        metadata is validated against `docs/agent-metadata-schema-v1.json`;
+        invalid metadata is reported via `metadataValid: false` and
+        `metadataErrors` rather than failing the request.
+      responses:
+        '200':
+          description: Agent profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentDetail'
+              example:
+                id: agent_01HXYZ
+                name: oracle-1
+                status: active
+                createdAt: '2024-01-01T00:00:00Z'
+                reputation:
+                  score: 87.5
+                  completedJobs: 120
+                  failedJobs: 3
+                jobs:
+                  - id: task_01HABC
+                    agentId: agent_01HXYZ
+                    status: completed
+                    createdAt: '2024-01-02T00:00:00Z'
+                metadata:
+                  name: oracle-1
+                  version: '1.0.0'
+                  capabilities: [summarize]
+                metadataValid: true
+                metadataErrors: []
+        '404':
+          $ref: '#/components/responses/NotFound'
   /api/agents/{id}/heartbeat:
     post:
       tags: [Agents]
@@ -325,230 +365,48 @@ paths:
               schema:
                 type: array
                 items:
-                  type: object
-                  properties:
-                    level:
-                      type: string
-                    message:
-                      type: string
-                    timestamp:
-                      type: string
-                      format: date-time
-                  required: [level, message, timestamp]
-  /api/events:
+                  $ref: '#/components/schemas/LogEntry'
+  /api/audit/export:
     get:
-      tags: [Events]
-      summary: List indexed events
+      tags: [Config]
+      summary: Export the audit log as JSONL
       description: |
-        Returns indexed protocol events ordered by ascending sequence. Results are
-        always bounded by `limit`; use the returned `nextCursor` to page forward.
+        Streams the audit log as newline-delimited JSON (one `AuditEntry`
+        object per line). The response body is `application/x-ndjson`.
       parameters:
-        - $ref: '#/components/parameters/Cursor'
-        - $ref: '#/components/parameters/CursorLimit'
-        - name: type
+        - $ref: '#/components/parameters/Limit'
+        - name: since
           in: query
-          description: Filter by event type
           schema:
             type: string
-        - name: agentId
-          in: query
-          description: Filter by agent id
-          schema:
-            type: string
-        - name: jobId
-          in: query
-          description: Filter by job id
-          schema:
-            type: string
+            format: date-time
       responses:
         '200':
-          description: A cursor-paginated page of events
+          description: Audit log entries as JSONL
           content:
-            application/json:
+            application/x-ndjson:
               schema:
-                $ref: '#/components/schemas/EventPage'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-  /api/agents/{id}/reputation:
-    parameters:
-      - $ref: '#/components/parameters/AgentId'
-    get:
-      tags: [Reputation]
-      summary: Get an agent's reputation history
-      description: |
-        Returns reputation entries for the agent ordered by descending sequence.
-        Results are always bounded by `limit`; use the returned `nextCursor` to
-        page forward.
-      parameters:
-        - $ref: '#/components/parameters/Cursor'
-        - $ref: '#/components/parameters/CursorLimit'
-      responses:
-        '200':
-          description: A cursor-paginated page of reputation entries
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ReputationPage'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '404':
-          $ref: '#/components/responses/NotFound'
-  /api/jobs/{id}:
-    parameters:
-      - $ref: '#/components/parameters/JobId'
-    get:
-      tags: [Jobs]
-      summary: Get an indexed job by id
-      responses:
-        '200':
-          description: Job found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Job'
-        '404':
-          $ref: '#/components/responses/NotFound'
-  /api/webhooks/subscriptions:
-    get:
-      tags: [Webhooks]
-      summary: List webhook subscriptions
-      parameters:
-        - $ref: '#/components/parameters/Cursor'
-        - $ref: '#/components/parameters/CursorLimit'
-      responses:
-        '200':
-          description: A cursor-paginated page of subscriptions
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/WebhookSubscriptionPage'
-        '400':
-          $ref: '#/components/responses/BadRequest'
+                type: string
+              example: |
+                {"timestamp":"2024-01-01T00:00:00Z","level":"info","action":"agent.register","actor":"admin","message":"registered oracle-1"}
+  /api/cache/clear:
     post:
-      tags: [Webhooks]
-      summary: Create a webhook subscription
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/WebhookSubscriptionCreate'
-            example:
-              url: https://example.com/hooks/bear
-              events: [job.completed, reputation.updated]
-      responses:
-        '201':
-          description: Subscription created
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/WebhookSubscription'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-  /api/webhooks/subscriptions/{id}:
-    parameters:
-      - $ref: '#/components/parameters/WebhookSubscriptionId'
-    get:
-      tags: [Webhooks]
-      summary: Get a webhook subscription
-      responses:
-        '200':
-          description: Subscription found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/WebhookSubscription'
-        '404':
-          $ref: '#/components/responses/NotFound'
-    patch:
-      tags: [Webhooks]
-      summary: Update a webhook subscription
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/WebhookSubscriptionUpdate'
-      responses:
-        '200':
-          description: Subscription updated
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/WebhookSubscription'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '404':
-          $ref: '#/components/responses/NotFound'
-    delete:
-      tags: [Webhooks]
-      summary: Delete a webhook subscription
-      responses:
-        '204':
-          description: Subscription removed
-        '404':
-          $ref: '#/components/responses/NotFound'
-  /api/webhooks/subscriptions/{id}/rotate-secret:
-    parameters:
-      - $ref: '#/components/parameters/WebhookSubscriptionId'
-    post:
-      tags: [Webhooks]
-      summary: Rotate a webhook subscription's HMAC secret
+      tags: [Config]
+      summary: Clear server-side caches
       description: |
-        Issues a new signing secret. The previous secret remains valid for a
-        configurable grace period so in-flight deliveries can still be verified.
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                gracePeriodSeconds:
-                  type: integer
-                  minimum: 0
-                  maximum: 86400
-                  default: 3600
+        Flushes cached indexer data. Called by the dashboard network switcher
+        when changing networks so stale data from the previous network is not
+        served.
       responses:
         '200':
-          description: Secret rotated
+          description: Caches cleared
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/WebhookSecretRotation'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '404':
-          $ref: '#/components/responses/NotFound'
-  /api/webhooks/subscriptions/{id}/deliveries:
-    parameters:
-      - $ref: '#/components/parameters/WebhookSubscriptionId'
-    get:
-      tags: [Webhooks]
-      summary: List delivery logs for a subscription
-      description: |
-        Returns delivery attempts ordered by descending sequence. Results are
-        always bounded by `limit`; use the returned `nextCursor` to page forward.
-      parameters:
-        - $ref: '#/components/parameters/Cursor'
-        - $ref: '#/components/parameters/CursorLimit'
-        - name: status
-          in: query
-          description: Filter by delivery status
-          schema:
-            type: string
-            enum: [pending, success, failed]
-      responses:
-        '200':
-          description: A cursor-paginated page of delivery logs
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/WebhookDeliveryPage'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '404':
-          $ref: '#/components/responses/NotFound'
+                $ref: '#/components/schemas/CacheClearResponse'
+              example:
+                cleared: true
+                keys: 42
 components:
   securitySchemes:
     ApiKeyAuth:
@@ -667,6 +525,82 @@ components:
           type: string
           format: uri
       required: [name, endpoint]
+    AgentReputation:
+      type: object
+      properties:
+        score:
+          type: number
+        completedJobs:
+          type: integer
+        failedJobs:
+          type: integer
+      required: [score, completedJobs, failedJobs]
+    AgentDetail:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum: [active, inactive, degraded]
+        endpoint:
+          type: string
+          format: uri
+        createdAt:
+          type: string
+          format: date-time
+        reputation:
+          $ref: '#/components/schemas/AgentReputation'
+        jobs:
+          type: array
+          items:
+            $ref: '#/components/schemas/Task'
+        metadata:
+          type: object
+          additionalProperties: true
+        metadataValid:
+          type: boolean
+        metadataErrors:
+          type: array
+          items:
+            type: string
+      required: [id, name, status, createdAt, reputation, jobs, metadataValid]
+    LogEntry:
+      type: object
+      properties:
+        level:
+          type: string
+        message:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+      required: [level, message, timestamp]
+    AuditEntry:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        level:
+          type: string
+        action:
+          type: string
+        actor:
+          type: string
+        message:
+          type: string
+      required: [timestamp, level, action, message]
+    CacheClearResponse:
+      type: object
+      properties:
+        cleared:
+          type: boolean
+        keys:
+          type: integer
+      required: [cleared]
     Task:
       type: object
       properties:
