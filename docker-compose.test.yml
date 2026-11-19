@@ -1,0 +1,91 @@
+# docker-compose.test.yml
+#
+# Ephemeral compose stack for integration tests.
+#
+# Usage:
+#   docker compose -f docker-compose.test.yml up --exit-code-from tests
+#
+# All stateful data (postgres data, agent output dirs, stellar data) is mounted
+# on tmpfs so every run starts from a clean slate and nothing is persisted
+# between runs. The `tests` service is the exit-code source, so the command
+# above propagates the integration suite's status.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+      POSTGRES_DB: test
+    # Ephemeral storage: nothing survives the container.
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test -d test"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+  stellar:
+    image: stellar/quickstart:latest
+    command: ["--standalone", "--enable-soroban-rpc"]
+    # Ephemeral storage for ledger/network data.
+    tmpfs:
+      - /opt/stellar
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/soroban/rpc -X POST -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getHealth\"}' || exit 1"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+      start_period: 10s
+
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgres://test:test@postgres:5432/test
+      STELLAR_RPC_URL: http://stellar:8000/soroban/rpc
+      STELLAR_NETWORK_PASSPHRASE: "Standalone Network ; February 2017"
+      AGENT_OUTPUT_DIR: /var/lib/agent/output
+    # Ephemeral storage for agent output dirs.
+    tmpfs:
+      - /var/lib/agent/output
+    depends_on:
+      postgres:
+        condition: service_healthy
+      stellar:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+  tests:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: []
+    command: ["sh", "-c", "cargo test --test integration -- --nocapture"]
+    environment:
+      DATABASE_URL: postgres://test:test@postgres:5432/test
+      STELLAR_RPC_URL: http://stellar:8000/soroban/rpc
+      STELLAR_NETWORK_PASSPHRASE: "Standalone Network ; February 2017"
+      AGENT_URL: http://agent:8080
+      AGENT_OUTPUT_DIR: /tmp/agent-output
+      RUST_LOG: info
+    # Ephemeral scratch space for test artifacts.
+    tmpfs:
+      - /tmp/agent-output
+    depends_on:
+      postgres:
+        condition: service_healthy
+      stellar:
+        condition: service_healthy
+      agent:
+        condition: service_healthy
+    # This service is the exit-code source for `up --exit-code-from tests`.
+    restart: "no"
