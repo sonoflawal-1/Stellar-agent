@@ -65,6 +65,100 @@ paths:
               example:
                 status: ready
                 uptime: 12345
+  /readyz:
+    get:
+      tags: [Health]
+      summary: Deep readiness probe
+      description: |
+        Checks downstream dependencies (RPC node, indexer database and model
+        availability) with per-check timeouts. Returns `200` when every check
+        passes and `503` when any check fails. Used by Docker `HEALTHCHECK`
+        and compose `healthcheck` directives.
+      security: []
+      responses:
+        '200':
+          description: All dependencies are ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessResponse'
+              example:
+                status: ready
+                checks:
+                  rpc:
+                    status: ok
+                    latencyMs: 12
+                  indexerDb:
+                    status: ok
+                    latencyMs: 3
+                  model:
+                    status: ok
+                    latencyMs: 41
+        '503':
+          description: One or more dependencies are unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessResponse'
+              example:
+                status: unavailable
+                checks:
+                  rpc:
+                    status: error
+                    latencyMs: 2000
+                    error: RPC request timed out after 2000ms
+                  indexerDb:
+                    status: ok
+                    latencyMs: 3
+                  model:
+                    status: ok
+                    latencyMs: 41
+  /api/admin/audit:
+    get:
+      tags: [Config]
+      summary: Query the admin audit trail
+      description: |
+        Returns a filtered, paginated page of audit entries. Filters are
+        combined with logical AND. Backed by an indexed JSONL store; see
+        `docs/audit-trail.md` for the 100k-entry performance notes.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: actor
+          in: query
+          description: Filter by the actor that performed the action
+          schema:
+            type: string
+        - name: action
+          in: query
+          description: Filter by action name (e.g. `agent.register`)
+          schema:
+            type: string
+        - name: from
+          in: query
+          description: Inclusive lower bound on entry timestamp
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          description: Inclusive upper bound on entry timestamp
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: A page of audit entries
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
   /api/agents:
     get:
       tags: [Agents]
@@ -469,19 +563,48 @@ components:
         minimum: 1
         maximum: 100
         default: 20
+    Page:
+      name: page
+      in: query
+      description: 1-based page number
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PageSize:
+      name: pageSize
+      in: query
+      description: Number of entries per page
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
   responses:
     BadRequest:
       description: Invalid request payload
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/Error'
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Missing or invalid API key
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
     NotFound:
       description: Resource not found
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/Error'
+            $ref: '#/components/schemas/ErrorResponse'
+    InternalError:
+      description: Unexpected server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
   schemas:
     HealthResponse:
       type: object
@@ -493,12 +616,88 @@ components:
       required: [status]
     Error:
       type: object
+      description: |
+        Structured error envelope returned by every `/api` route. `code` is a
+        stable machine-readable identifier, `message` is human-readable and
+        `requestId` correlates the response with server logs.
       properties:
         error:
-          type: string
-        message:
-          type: string
+          type: object
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable error code
+              example: RPC_UNAVAILABLE
+            message:
+              type: string
+              description: Human-readable error message
+              example: RPC node is unreachable
+            requestId:
+              type: string
+              description: Correlation id for this request
+              example: req_01HXYZ
+          required: [code, message, requestId]
       required: [error]
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              example: BAD_REQUEST
+            message:
+              type: string
+              example: Invalid request payload
+            requestId:
+              type: string
+              example: req_01HXYZ
+          required: [code, message, requestId]
+      required: [error]
+    ReadinessCheck:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, error]
+        latencyMs:
+          type: number
+        error:
+          type: string
+      required: [status]
+    ReadinessResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ready, unavailable]
+        checks:
+          type: object
+          properties:
+            rpc:
+              $ref: '#/components/schemas/ReadinessCheck'
+            indexerDb:
+              $ref: '#/components/schemas/ReadinessCheck'
+            model:
+              $ref: '#/components/schemas/ReadinessCheck'
+          required: [rpc, indexerDb, model]
+      required: [status, checks]
+    AuditPage:
+      type: object
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/AuditEntry'
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        total:
+          type: integer
+      required: [items, page, pageSize, total]
     Agent:
       type: object
       properties:

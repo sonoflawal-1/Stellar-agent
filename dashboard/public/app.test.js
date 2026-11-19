@@ -12,6 +12,7 @@ const {
   getWalletNetworkMismatch,
   migrateAuditLogs,
   applyAuditRetention,
+  parseApiError,
 } = require('./app.js');
 
 describe('parseSimulationResult', () => {
@@ -294,6 +295,67 @@ describe('network switching', () => {
 
   test('getWalletNetworkMismatch returns null when networks match', () => {
     expect(getWalletNetworkMismatch('testnet', 'testnet')).toBeNull();
+  });
+});
+
+describe('parseApiError', () => {
+  test('parses the structured error envelope', () => {
+    const body = {
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: 'amount must be positive',
+        requestId: 'req-123',
+      },
+    };
+
+    const err = parseApiError(400, body);
+
+    expect(err).not.toBeNull();
+    expect(err.code).toBe('VALIDATION_ERROR');
+    expect(err.message).toBe('amount must be positive');
+    expect(err.requestId).toBe('req-123');
+    expect(err.status).toBe(400);
+  });
+
+  test('parses the structured envelope from a JSON string body', () => {
+    const body = JSON.stringify({
+      error: {
+        code: 'NOT_FOUND',
+        message: 'agent not found',
+        requestId: 'req-456',
+      },
+    });
+
+    const err = parseApiError(404, body);
+
+    expect(err.code).toBe('NOT_FOUND');
+    expect(err.message).toBe('agent not found');
+    expect(err.requestId).toBe('req-456');
+  });
+
+  test('falls back gracefully on legacy { error: "message" } shapes', () => {
+    const err = parseApiError(500, { error: 'internal failure' });
+
+    expect(err).not.toBeNull();
+    expect(err.code).toBeNull();
+    expect(err.message).toBe('internal failure');
+    expect(err.requestId).toBeNull();
+    expect(err.status).toBe(500);
+  });
+
+  test('falls back gracefully on legacy { message } shapes', () => {
+    const err = parseApiError(422, { message: 'bad input' });
+
+    expect(err.code).toBeNull();
+    expect(err.message).toBe('bad input');
+    expect(err.requestId).toBeNull();
+  });
+
+  test('returns a generic error for empty or unparseable bodies', () => {
+    expect(parseApiError(502, null).message).toBeTruthy();
+    expect(parseApiError(502, '').message).toBeTruthy();
+    expect(parseApiError(502, 'not json').message).toBeTruthy();
+    expect(parseApiError(502, {}).code).toBeNull();
   });
 });
 

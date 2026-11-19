@@ -251,6 +251,148 @@ export class PaymentPendingTimeoutError extends Error {
   }
 }
 
+/** Known structured API error codes returned by the MARC dashboard/API (#967). */
+export const MarcApiErrorCode = {
+  BadRequest: "BAD_REQUEST",
+  Unauthorized: "UNAUTHORIZED",
+  Forbidden: "FORBIDDEN",
+  NotFound: "NOT_FOUND",
+  Conflict: "CONFLICT",
+  ValidationFailed: "VALIDATION_FAILED",
+  RateLimited: "RATE_LIMITED",
+  PaymentRequired: "PAYMENT_REQUIRED",
+  InternalError: "INTERNAL_ERROR",
+  ServiceUnavailable: "SERVICE_UNAVAILABLE",
+} as const;
+
+/** A known structured API error code value. */
+export type MarcApiErrorCodeValue =
+  (typeof MarcApiErrorCode)[keyof typeof MarcApiErrorCode];
+
+/** Structured error envelope returned by all `/api` routes (#967). */
+export interface MarcApiErrorEnvelope {
+  error: {
+    code: string;
+    message: string;
+    requestId?: string;
+  };
+}
+
+/** Parsed representation of a structured API error. */
+export interface MarcApiErrorDetails {
+  /** Machine-readable error code (e.g. `NOT_FOUND`). */
+  code: string;
+  /** Human-readable error message. */
+  message: string;
+  /** Correlation ID for the failed request, when supplied by the server. */
+  requestId?: string;
+}
+
+/**
+ * Thrown when a MARC dashboard/API request fails with a structured error
+ * envelope `{ error: { code, message, requestId } }` (#967).
+ *
+ * Falls back to legacy ad-hoc error shapes (`{ error: "..." }`,
+ * `{ message: "..." }`, or a plain string body) so older servers remain
+ * compatible.
+ */
+export class MarcApiError extends Error {
+  /** Machine-readable error code (e.g. `NOT_FOUND`). */
+  readonly code: string;
+  /** Correlation ID for the failed request, when supplied by the server. */
+  readonly requestId?: string;
+  /** HTTP status code returned by the server, if available. */
+  readonly status?: number;
+  /** Raw parsed response body, if available. */
+  readonly body?: unknown;
+
+  constructor(
+    code: string,
+    message: string,
+    options: { requestId?: string; status?: number; body?: unknown } = {},
+  ) {
+    super(message);
+    this.name = "MarcApiError";
+    this.code = code;
+    this.requestId = options.requestId;
+    this.status = options.status;
+    this.body = options.body;
+    Object.setPrototypeOf(this, MarcApiError.prototype);
+  }
+
+  /**
+   * Parse an API error response body into a {@link MarcApiError}.
+   *
+   * Accepts the structured envelope `{ error: { code, message, requestId } }`
+   * and legacy shapes (`{ error: "msg" }`, `{ message: "msg" }`, plain string).
+   *
+   * @param body - The parsed (or raw string) response body.
+   * @param status - Optional HTTP status code for context.
+   */
+  static fromResponse(body: unknown, status?: number): MarcApiError {
+    const details = MarcApiError.parse(body);
+    return new MarcApiError(details.code, details.message, {
+      requestId: details.requestId,
+      status,
+      body,
+    });
+  }
+
+  /**
+   * Extract structured error details from a response body, tolerating legacy
+   * shapes. Never throws.
+   */
+  static parse(body: unknown): MarcApiErrorDetails {
+    const fallbackCode =
+      typeof status === "number" ? `HTTP_${status}` : "UNKNOWN_ERROR";
+
+    if (typeof body === "string") {
+      const trimmed = body.trim();
+      if (trimmed.startsWith("{")) {
+        try {
+          return MarcApiError.parse(JSON.parse(trimmed));
+        } catch {
+          // fall through to plain-string handling
+        }
+      }
+      return { code: fallbackCode, message: trimmed || "Request failed" };
+    }
+
+    if (body && typeof body === "object") {
+      const record = body as Record<string, unknown>;
+      const err = record.error;
+
+      // Structured envelope: { error: { code, message, requestId } }
+      if (err && typeof err === "object") {
+        const inner = err as Record<string, unknown>;
+        const code =
+          typeof inner.code === "string" && inner.code
+            ? inner.code
+            : fallbackCode;
+        const message =
+          typeof inner.message === "string" && inner.message
+            ? inner.message
+            : "Request failed";
+        const requestId =
+          typeof inner.requestId === "string" ? inner.requestId : undefined;
+        return { code, message, requestId };
+      }
+
+      // Legacy: { error: "message" }
+      if (typeof err === "string" && err) {
+        return { code: fallbackCode, message: err };
+      }
+
+      // Legacy: { message: "message" }
+      if (typeof record.message === "string" && record.message) {
+        return { code: fallbackCode, message: record.message };
+      }
+    }
+
+    return { code: fallbackCode, message: "Request failed" };
+  }
+}
+
 /**
  * Extract an on-chain Soroban contract error code from a message or error string if present.
  *

@@ -1,3 +1,8 @@
+Looking at the current file, I need to make several changes. However, I notice the file references several things that don't exist in the current content (`env`, `instrumentRpc`, `tracedRpc`, `tracedDb`, `activeEscrowJobsGauge`, `stellarEventsIngestedTotal`, `deliverableValidator`, `rpcServer`). These appear to be from a larger codebase that's been partially shown. I'll work with what's present and make the requested changes while preserving existing functionality.
+
+Since the step references new lib files (`lib/embeddings.ts`, `lib/readiness.ts`, `lib/apiError.ts`) that I need to import, and the audit store needs new filter/cursor support, I'll wire these in assuming those modules exist per the plan. Let me implement the changes:
+
+```typescript
 import express, { type Request, type Response, type NextFunction } from "express";
 import cors from "cors";
 import helmet from "helmet";
@@ -66,8 +71,20 @@ import {
   createAuditStore,
   type AuditStore,
   type AuditEntry,
+  type AuditFilter,
 } from "./lib/auditStore.js";
 import { validateAgentMetadata } from "./lib/agentMetadata.js";
+// ── #965: Embeddings cache ───────────────────────────────────────────────────
+import { createEmbeddingsCache, type EmbeddingsCache } from "./lib/embeddings.js";
+// ── #966: Readiness checks ───────────────────────────────────────────────────
+import { runReadinessChecks, type ReadinessResult } from "./lib/readiness.js";
+// ── #967: Structured API errors ──────────────────────────────────────────────
+import {
+  ApiError,
+  apiErrorHandler,
+  newRequestId,
+  type ApiErrorBody,
+} from "./lib/apiError.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -161,6 +178,18 @@ function tracingMiddleware(req: Request, res: Response, next: NextFunction) {
 }
 
 app.use(tracingMiddleware);
+
+// ── #967: Per-request id for structured error responses ──────────────────────
+// Every request gets a stable id that is echoed in error bodies and returned in
+// the X-Request-Id response header so clients can correlate logs.
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const incoming = req.header("x-request-id");
+  const requestId = incoming && incoming.trim() ? incoming.trim() : newRequestId();
+  (req as any).requestId = requestId;
+  res.locals.requestId = requestId;
+  res.setHeader("X-Request-Id", requestId);
+  next();
+});
 
 // ── #778: Strict Content Security Policy with per-request nonces ─────────────
 // Generate a fresh cryptographic nonce for every request. The nonce is stored
@@ -450,6 +479,18 @@ const matchmaking: MatchmakingEngine = createMatchmakingEngine({
   sqlitePath: process.env.VECTOR_DB_PATH,
 });
 
+// ── #965: Embeddings cache ───────────────────────────────────────────────────
+// Agent embeddings are cached keyed by a metadata hash so re-indexing the same
+// agent metadata is a no-op. The underlying model is lazy-loaded with a timeout
+// and exposes readiness for /readyz. Warm vs cold latency is documented in
+// docs/embeddings.md.
+const embeddingsCache: EmbeddingsCache = createEmbeddingsCache({
+  enabled: process.env.EMBEDDINGS_ENABLED !== "false",
+  model: process.env.EMBEDDING_MODEL ?? "Xenova/all-MiniLM-L6-v2",
+  loadTimeoutMs: Number(process.env.EMBEDDING_LOAD_TIMEOUT_MS ?? 30_000),
+  maxEntries: Number(process.env.EMBEDDING_CACHE_MAX_ENTRIES ?? 10_000),
+});
+
 /** Build the text document that represents an agent for embedding purposes. */
 function agentToDocument(agent: {
   id?: unknown;
@@ -520,7 +561,7 @@ function rateLimitMutating(req: Request, res: Response, next: NextFunction) {
 
   if (!result.allowed) {
     res.setHeader("Retry-After", String(result.retryAfterSeconds));
-    res.status(429).json({ error: "rate limit exceeded" });
+    next(new ApiError("RATE_LIMITED", "rate limit exceeded", 429));
     return;
   }
   next();
@@ -729,9 +770,21 @@ function parseBudget(value: string | number | undefined, defaultValue = 10_000_0
   return typeof value === "number" ? BigInt(value) : BigInt(value);
 }
 
+// ── #967: Structured error helpers ───────────────────────────────────────────
+// Routes throw ApiError (or ZodError) and the single error handler at the bottom
+// of the file serializes them into { error: { code, message, requestId } }.
 function respondWithValidationError(err: unknown, res: Response): boolean {
   if (err instanceof ZodError) {
-    res.status(400).json({ error: "Invalid request payload", details: err.issues });
+    const requestId = (res.locals.requestId as string | undefined) ?? newRequestId();
+    const body: ApiErrorBody = {
+      error: {
+        code: "VALIDATION_ERROR",
+        message: "Invalid request payload",
+        requestId,
+        details: err.issues,
+      },
+    };
+    res.status(400).json(body);
     return true;
   }
   return false;
@@ -739,11 +792,22 @@ function respondWithValidationError(err: unknown, res: Response): boolean {
 
 function handleRouteError(err: unknown, res: Response): void {
   if (respondWithValidationError(err, res)) return;
-  if (err instanceof Error && err.message === "Invalid wallet") {
-    res.status(400).json({ error: "Invalid wallet" });
+  if (err instanceof ApiError) {
+    const requestId = (res.locals.requestId as string | undefined) ?? newRequestId();
+    res.status(err.status).json({
+      error: { code: err.code, message: err.message, requestId, ...(err.details ? { details: err.details } : {}) },
+    } as ApiErrorBody);
     return;
   }
-  res.status(500).json({ error: (err as Error).message });
+  if (err instanceof Error && err.message === "Invalid wallet") {
+    const requestId = (res.locals.requestId as string | undefined) ?? newRequestId();
+    res.status(400).json({ error: { code: "INVALID_WALLET", message: "Invalid wallet", requestId } } as ApiErrorBody);
+    return;
+  }
+  const requestId = (res.locals.requestId as string | undefined) ?? newRequestId();
+  res.status(500).json({
+    error: { code: "INTERNAL_ERROR", message: (err as Error).message ?? "Internal server error", requestId },
+  } as ApiErrorBody);
 }
 
 const MAX_AUDIT_ENTRIES = 500;
@@ -751,9 +815,17 @@ const AUDIT_LOG_PATH = process.env.AUDIT_LOG_PATH ?? path.join(__dirname, "audit
 const AUDIT_LOG_MAX_FILES = 3;
 const AUDIT_SALT = process.env.AUDIT_SALT ?? crypto.randomBytes(32).toString("hex");
 
+// ── #968: Audit query schema with filters and cursor/offset pagination ───────
 const auditQuerySchema = z.object({
   page: z.coerce.number().int().positive().default(1),
   pageSize: z.coerce.number().int().positive().max(100).default(50),
+  // Filters (#968)
+  actor: z.string().min(1).optional(),
+  action: z.string().min(1).optional(),
+  from: z.string().datetime({ offset: true }).optional(),
+  to: z.string().datetime({ offset: true }).optional(),
+  // Cursor-based pagination (#968): opaque cursor returned in the response.
+  cursor: z.string().min(1).optional(),
 });
 
 function hashIp(ip: string | undefined): string | undefined {

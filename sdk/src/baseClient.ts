@@ -5,6 +5,7 @@ import { toSigner } from "./signer.js";
 import { maskSecret } from "./format.js";
 import {
   ContractError,
+  MarcApiError,
   SimulationError,
   TransactionTimeoutError,
   extractContractErrorCode,
@@ -388,6 +389,39 @@ export abstract class BaseClient {
       if (this.rpcPool) return this.rpcPool.call(fn);
       return fn(this.server);
     });
+  }
+
+  /**
+   * Perform an HTTP request against a dashboard `/api` route and parse the
+   * structured error envelope `{ error: { code, message, requestId } }`
+   * (issue #967) into a {@link MarcApiError}.
+   *
+   * Successful (2xx) responses are returned as parsed JSON. Any non-2xx
+   * response is converted into a `MarcApiError` carrying the server-provided
+   * `code`, `message`, `requestId`, and HTTP status. If the body is not a
+   * valid structured error envelope, a generic `MarcApiError` is thrown so
+   * callers always receive a consistent error type.
+   *
+   * @param url - Absolute or relative URL of the dashboard API route.
+   * @param init - Optional fetch options (method, headers, body, ...).
+   * @returns The parsed JSON body of a successful response.
+   * @throws {MarcApiError} When the response status is not 2xx.
+   */
+  protected async apiRequest<T>(url: string, init?: RequestInit): Promise<T> {
+    const response = await fetch(url, init);
+
+    if (response.ok) {
+      return (await response.json()) as T;
+    }
+
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      body = undefined;
+    }
+
+    throw MarcApiError.fromResponseBody(body, response.status);
   }
 
   /**
