@@ -24,6 +24,10 @@ import {
   type AgentReputation,
   type ReputationBreakdown,
 } from "./reputation.js";
+import {
+  createRestHandler,
+  type RestHandlerDeps,
+} from "./rest.js";
 
 export type { QueryOptions, ParsedEventRow, MigrationOptions, MigrationResult };
 
@@ -149,14 +153,22 @@ export class BearEventIndexer {
   /** Start the reputation/events HTTP API on the configured port. */
   async startApi(): Promise<void> {
     if (this.server) return;
-    const handler = createReputationHandler(this.reputation);
+    const restDeps: RestHandlerDeps = {
+      store: this.readStore,
+      reputation: this.reputation,
+    };
+    const restHandler = createRestHandler(restDeps);
+    const reputationHandler = createReputationHandler(this.reputation);
     const server = createServer((req, res) => {
       const path = (req.url ?? "/").split("?")[0];
       if (path === "/api/events/stream") {
         handleEventsStream(req, res, this.hub, this.readStore);
         return;
       }
-      handler(req, res);
+      // REST routes (/api/events, /api/agents/:id/reputation, /api/jobs/:id)
+      // take precedence; fall back to the legacy reputation handler.
+      if (restHandler(req, res)) return;
+      reputationHandler(req, res);
     });
     this.server = server;
     this.hub.attachWebSocket(server, "/events");
@@ -357,3 +369,12 @@ export { SorobanEventPoller } from "./poller.js";
 export { EventHub } from "./events.js";
 export { ReputationEngine } from "./reputation.js";
 export { initTracing, shutdownTracing, withSpan } from "./tracing.js";
+export {
+  createRestHandler,
+  encodeCursor,
+  decodeCursor,
+  DEFAULT_PAGE_LIMIT,
+  MAX_PAGE_LIMIT,
+  type RestHandlerDeps,
+  type CursorPage,
+} from "./rest.js";

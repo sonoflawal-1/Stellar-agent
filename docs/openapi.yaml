@@ -26,6 +26,14 @@ tags:
     description: Protocol metrics and analytics
   - name: Config
     description: Runtime configuration
+  - name: Events
+    description: Indexed protocol events
+  - name: Reputation
+    description: Agent reputation scores
+  - name: Jobs
+    description: Indexed jobs
+  - name: Webhooks
+    description: Webhook subscription management and delivery logs
 paths:
   /api/health:
     get:
@@ -327,6 +335,220 @@ paths:
                       type: string
                       format: date-time
                   required: [level, message, timestamp]
+  /api/events:
+    get:
+      tags: [Events]
+      summary: List indexed events
+      description: |
+        Returns indexed protocol events ordered by ascending sequence. Results are
+        always bounded by `limit`; use the returned `nextCursor` to page forward.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/CursorLimit'
+        - name: type
+          in: query
+          description: Filter by event type
+          schema:
+            type: string
+        - name: agentId
+          in: query
+          description: Filter by agent id
+          schema:
+            type: string
+        - name: jobId
+          in: query
+          description: Filter by job id
+          schema:
+            type: string
+      responses:
+        '200':
+          description: A cursor-paginated page of events
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /api/agents/{id}/reputation:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+    get:
+      tags: [Reputation]
+      summary: Get an agent's reputation history
+      description: |
+        Returns reputation entries for the agent ordered by descending sequence.
+        Results are always bounded by `limit`; use the returned `nextCursor` to
+        page forward.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/CursorLimit'
+      responses:
+        '200':
+          description: A cursor-paginated page of reputation entries
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReputationPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/jobs/{id}:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+    get:
+      tags: [Jobs]
+      summary: Get an indexed job by id
+      responses:
+        '200':
+          description: Job found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/webhooks/subscriptions:
+    get:
+      tags: [Webhooks]
+      summary: List webhook subscriptions
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/CursorLimit'
+      responses:
+        '200':
+          description: A cursor-paginated page of subscriptions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookSubscriptionPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+    post:
+      tags: [Webhooks]
+      summary: Create a webhook subscription
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookSubscriptionCreate'
+            example:
+              url: https://example.com/hooks/bear
+              events: [job.completed, reputation.updated]
+      responses:
+        '201':
+          description: Subscription created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookSubscription'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /api/webhooks/subscriptions/{id}:
+    parameters:
+      - $ref: '#/components/parameters/WebhookSubscriptionId'
+    get:
+      tags: [Webhooks]
+      summary: Get a webhook subscription
+      responses:
+        '200':
+          description: Subscription found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookSubscription'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Webhooks]
+      summary: Update a webhook subscription
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookSubscriptionUpdate'
+      responses:
+        '200':
+          description: Subscription updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookSubscription'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Webhooks]
+      summary: Delete a webhook subscription
+      responses:
+        '204':
+          description: Subscription removed
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/webhooks/subscriptions/{id}/rotate-secret:
+    parameters:
+      - $ref: '#/components/parameters/WebhookSubscriptionId'
+    post:
+      tags: [Webhooks]
+      summary: Rotate a webhook subscription's HMAC secret
+      description: |
+        Issues a new signing secret. The previous secret remains valid for a
+        configurable grace period so in-flight deliveries can still be verified.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                gracePeriodSeconds:
+                  type: integer
+                  minimum: 0
+                  maximum: 86400
+                  default: 3600
+      responses:
+        '200':
+          description: Secret rotated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookSecretRotation'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/webhooks/subscriptions/{id}/deliveries:
+    parameters:
+      - $ref: '#/components/parameters/WebhookSubscriptionId'
+    get:
+      tags: [Webhooks]
+      summary: List delivery logs for a subscription
+      description: |
+        Returns delivery attempts ordered by descending sequence. Results are
+        always bounded by `limit`; use the returned `nextCursor` to page forward.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/CursorLimit'
+        - name: status
+          in: query
+          description: Filter by delivery status
+          schema:
+            type: string
+            enum: [pending, success, failed]
+      responses:
+        '200':
+          description: A cursor-paginated page of delivery logs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookDeliveryPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
 components:
   securitySchemes:
     ApiKeyAuth:
@@ -362,6 +584,33 @@ components:
       required: true
       schema:
         type: string
+    JobId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    WebhookSubscriptionId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    Cursor:
+      name: cursor
+      in: query
+      description: Opaque cursor returned as `nextCursor` by a previous page
+      schema:
+        type: string
+    CursorLimit:
+      name: limit
+      in: query
+      description: Maximum number of items to return per page
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
   responses:
     BadRequest:
       description: Invalid request payload
@@ -465,3 +714,206 @@ components:
         heartbeatIntervalMs:
           type: integer
       required: [logLevel]
+    Event:
+      type: object
+      properties:
+        id:
+          type: string
+        sequence:
+          type: integer
+        type:
+          type: string
+        agentId:
+          type: string
+        jobId:
+          type: string
+        data:
+          type: object
+          additionalProperties: true
+        blockNumber:
+          type: integer
+        txHash:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, sequence, type, createdAt]
+    EventPage:
+      type: object
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/Event'
+        nextCursor:
+          type: string
+          nullable: true
+      required: [items]
+    ReputationEntry:
+      type: object
+      properties:
+        id:
+          type: string
+        sequence:
+          type: integer
+        agentId:
+          type: string
+        score:
+          type: number
+        delta:
+          type: number
+        reason:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, sequence, agentId, score, createdAt]
+    ReputationPage:
+      type: object
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/ReputationEntry'
+        nextCursor:
+          type: string
+          nullable: true
+      required: [items]
+    Job:
+      type: object
+      properties:
+        id:
+          type: string
+        agentId:
+          type: string
+        status:
+          type: string
+          enum: [open, assigned, completed, failed, cancelled]
+        payload:
+          type: object
+          additionalProperties: true
+        result:
+          type: object
+          additionalProperties: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, status, createdAt]
+    WebhookSubscription:
+      type: object
+      properties:
+        id:
+          type: string
+        url:
+          type: string
+          format: uri
+        events:
+          type: array
+          items:
+            type: string
+        active:
+          type: boolean
+        secretLastRotatedAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, url, events, active, createdAt]
+    WebhookSubscriptionCreate:
+      type: object
+      properties:
+        url:
+          type: string
+          format: uri
+        events:
+          type: array
+          items:
+            type: string
+        active:
+          type: boolean
+          default: true
+      required: [url, events]
+    WebhookSubscriptionUpdate:
+      type: object
+      properties:
+        url:
+          type: string
+          format: uri
+        events:
+          type: array
+          items:
+            type: string
+        active:
+          type: boolean
+    WebhookSubscriptionPage:
+      type: object
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/WebhookSubscription'
+        nextCursor:
+          type: string
+          nullable: true
+      required: [items]
+    WebhookSecretRotation:
+      type: object
+      properties:
+        id:
+          type: string
+        secret:
+          type: string
+          description: Newly issued HMAC signing secret. Shown only once.
+        previousSecretExpiresAt:
+          type: string
+          format: date-time
+        rotatedAt:
+          type: string
+          format: date-time
+      required: [id, secret, rotatedAt]
+    WebhookDelivery:
+      type: object
+      properties:
+        id:
+          type: string
+        sequence:
+          type: integer
+        subscriptionId:
+          type: string
+        eventId:
+          type: string
+        status:
+          type: string
+          enum: [pending, success, failed]
+        attempts:
+          type: integer
+        statusCode:
+          type: integer
+        error:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        lastAttemptAt:
+          type: string
+          format: date-time
+      required: [id, sequence, subscriptionId, status, attempts, createdAt]
+    WebhookDeliveryPage:
+      type: object
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/WebhookDelivery'
+        nextCursor:
+          type: string
+          nullable: true
+      required: [items]

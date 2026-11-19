@@ -108,3 +108,6 @@ export type { Milestone, MilestoneInput } from './types.js';
 
 // #698 — atomic batch job creation
 export type { JobRequest, BatchJobsCreatedEvent } from './commerce.js';
+
+// #979 — webhook subscription management: timing-safe HMAC-SHA256 signature verification
+export { verifyWebhookSignature } from "./webhookSignature.js";
