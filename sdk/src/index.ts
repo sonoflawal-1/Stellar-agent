@@ -9,7 +9,22 @@ export {
 } from "./events.js";
 export * from "./subscribeJob.js";
 export * from "./errors.js";
+// #953/#955 — typed payment failure + budget guard errors
+export {
+  BudgetExceededError,
+  PaymentRejectedError,
+  InsufficientFundsError,
+} from "./errors.js";
 export { formatAmount, parseAmount, isValidMetadataUri } from "./format.js";
+// #952 — multi-token amount helpers using on-chain decimals
+export { toBaseUnits, fromBaseUnits, TokenRegistry } from "./format.js";
+// #954/#955 — payment receipt + budget guard types
+export type {
+  PaymentReceipt,
+  MarcFetchResult,
+  BudgetOptions,
+  BudgetExceededInfo,
+} from "./types.js";
 // #706 — SHA-256 deliverable payload content hash helpers
 export {
   computeDeliverableHash,

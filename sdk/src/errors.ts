@@ -131,6 +131,127 @@ export class MarcPaymentTimeoutError extends Error {
 }
 
 /**
+ * Thrown when a `marcFetch` request would exceed a configured spending budget
+ * guard (`maxPerRequest` or rolling `maxPerWindow`) (#955).
+ *
+ * The request is aborted before any funds are sent.
+ */
+export class BudgetExceededError extends Error {
+  /** Which budget limit was exceeded. */
+  readonly limitType: "perRequest" | "perWindow";
+  /** The configured limit that was exceeded (in stroops). */
+  readonly limit: number;
+  /** The amount that would have been spent (in stroops). */
+  readonly attempted: number;
+  /** Rolling window size in milliseconds (only set for `perWindow`). */
+  readonly windowMs?: number;
+  /** The request URL that triggered the budget check. */
+  readonly url: string;
+
+  constructor(
+    limitType: "perRequest" | "perWindow",
+    limit: number,
+    attempted: number,
+    url: string,
+    windowMs?: number,
+    message?: string,
+  ) {
+    const msg =
+      message ||
+      (limitType === "perRequest"
+        ? `Payment of ${attempted} for ${url} exceeds maxPerRequest limit of ${limit}`
+        : `Payment of ${attempted} for ${url} would exceed maxPerWindow limit of ${limit} over ${windowMs}ms`);
+    super(msg);
+    this.name = "BudgetExceededError";
+    this.limitType = limitType;
+    this.limit = limit;
+    this.attempted = attempted;
+    this.windowMs = windowMs;
+    this.url = url;
+    Object.setPrototypeOf(this, BudgetExceededError.prototype);
+  }
+}
+
+/**
+ * Thrown when the payment server rejects a submitted payment proof (#953).
+ *
+ * No retry is attempted; the server explicitly refused the proof.
+ */
+export class PaymentRejectedError extends Error {
+  /** The request URL whose payment proof was rejected. */
+  readonly url: string;
+  /** Human-readable reason supplied by the server (or a default). */
+  readonly reason: string;
+  /** HTTP status code returned by the server, if available. */
+  readonly status?: number;
+
+  constructor(url: string, reason: string, status?: number, message?: string) {
+    const msg = message || `Payment proof for ${url} was rejected: ${reason}`;
+    super(msg);
+    this.name = "PaymentRejectedError";
+    this.url = url;
+    this.reason = reason;
+    this.status = status;
+    Object.setPrototypeOf(this, PaymentRejectedError.prototype);
+  }
+}
+
+/**
+ * Thrown when the payer account does not hold enough funds to satisfy a
+ * payment challenge (#953).
+ *
+ * No funds are sent when this error is raised.
+ */
+export class InsufficientFundsError extends Error {
+  /** The request URL that required payment. */
+  readonly url: string;
+  /** The amount required by the challenge (in stroops). */
+  readonly required: number;
+  /** The amount available on the payer account (in stroops). */
+  readonly available: number;
+
+  constructor(url: string, required: number, available: number, message?: string) {
+    const msg =
+      message ||
+      `Insufficient funds for ${url}: required ${required}, available ${available}`;
+    super(msg);
+    this.name = "InsufficientFundsError";
+    this.url = url;
+    this.required = required;
+    this.available = available;
+    Object.setPrototypeOf(this, InsufficientFundsError.prototype);
+  }
+}
+
+/**
+ * Thrown when a submitted payment transaction does not reach a terminal state
+ * within the configured timeout (#953).
+ *
+ * Distinct from {@link MarcPaymentTimeoutError}, which covers exhausting all
+ * 402 retry attempts; this covers a single pending transaction timing out.
+ */
+export class PaymentPendingTimeoutError extends Error {
+  /** The request URL that required payment. */
+  readonly url: string;
+  /** The transaction hash that remained pending. */
+  readonly txHash: string;
+  /** Elapsed time before timeout in milliseconds. */
+  readonly durationMs: number;
+
+  constructor(url: string, txHash: string, durationMs: number, message?: string) {
+    const msg =
+      message ||
+      `Payment transaction ${txHash} for ${url} still pending after ${durationMs}ms`;
+    super(msg);
+    this.name = "PaymentPendingTimeoutError";
+    this.url = url;
+    this.txHash = txHash;
+    this.durationMs = durationMs;
+    Object.setPrototypeOf(this, PaymentPendingTimeoutError.prototype);
+  }
+}
+
+/**
  * Extract an on-chain Soroban contract error code from a message or error string if present.
  *
  * Handles standard Soroban host error strings such as:
