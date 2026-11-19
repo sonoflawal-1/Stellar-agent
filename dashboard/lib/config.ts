@@ -173,28 +173,59 @@ export function getConfigForNetwork(networkId?: string | null): MarcConfig {
 
 export const DEMO_MODE = process.env.DEMO_MODE === "true";
 
-// Embedding model (Xenova/all-MiniLM-L6-v2) tuning for /api/agents/match.
-// - EMBEDDINGS_ENABLED: enable semantic agent matching (default: true).
-// - EMBEDDING_CACHE_MAX: maximum number of cached agent embeddings keyed by
-//   metadata hash; bounds memory of the vector search (default: 1000).
-// - EMBEDDING_LOAD_TIMEOUT_MS: max time to wait for the lazy model load before
-//   reporting the model as unavailable (default: 30000).
-export const embeddingsEnabled = process.env.EMBEDDINGS_ENABLED !== "false";
-export const embeddingCacheMax = Math.max(
-  0,
-  Number(process.env.EMBEDDING_CACHE_MAX ?? 1000) || 0,
-);
-export const embeddingLoadTimeoutMs = Math.max(
-  1,
-  Number(process.env.EMBEDDING_LOAD_TIMEOUT_MS ?? 30_000) || 30_000,
-);
+// ---------------------------------------------------------------------------
+// Security settings (headers, body limits, rate limits)
+// ---------------------------------------------------------------------------
 
-// Readiness (/readyz) dependency check timeout in milliseconds. Each check
-// (RPC, indexer DB, embedding model) is bounded by this budget (default: 5000).
-export const readyzTimeoutMs = Math.max(
-  1,
-  Number(process.env.READYZ_TIMEOUT_MS ?? 5_000) || 5_000,
-);
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function parseOriginList(value: string | undefined, fallback: string[]): string[] {
+  if (!value) return fallback;
+  const origins = value
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+  return origins.length > 0 ? origins : fallback;
+}
+
+/**
+ * Request body size limits (passed to express.json({ limit })).
+ * A small global limit applies to every route; larger limits are only used on
+ * routes that legitimately accept big payloads (e.g. /api/build/submit).
+ */
+export const bodyLimitDefault = process.env.BODY_LIMIT_DEFAULT ?? "100kb";
+export const bodyLimitBuildSubmit = process.env.BODY_LIMIT_BUILD_SUBMIT ?? "2mb";
+
+/**
+ * Content-Security-Policy allow-lists. Defaults cover the static dashboard
+ * (public/app.js) plus the configured RPC endpoints.
+ */
+export const cspScriptSrc = parseOriginList(process.env.CSP_SCRIPT_SRC, ["'self'"]);
+export const cspImgSrc = parseOriginList(process.env.CSP_IMG_SRC, [
+  "'self'",
+  "data:",
+  "https:",
+]);
+export const cspConnectSrc = parseOriginList(process.env.CSP_CONNECT_SRC, [
+  "'self'",
+  ...rpcUrls,
+]);
+
+/**
+ * Rate-limit buckets. Each bucket is keyed independently so that a wallet
+ * cannot bypass limits by rotating IPs (and vice versa).
+ * - ip: per-IP request budget for read endpoints.
+ * - wallet: per-wallet request budget for authenticated endpoints.
+ * - token: per-token request budget for token-scoped endpoints.
+ * - embeddingCost: cost weight applied to embedding-heavy routes.
+ */
+export const rateLimitIp = parsePositiveInt(process.env.RATE_LIMIT_IP, 120);
+export const rateLimitWallet = parsePositiveInt(process.env.RATE_LIMIT_WALLET, 60);
+export const rateLimitToken = parsePositiveInt(process.env.RATE_LIMIT_TOKEN, 60);
+export const rateLimitEmbeddingCost = parsePositiveInt(process.env.RATE_LIMIT_EMBEDDING_COST, 5);
 
 // Audit log storage (SQLite, WAL mode) with retention and JSONL migration.
 // - AUDIT_DB_PATH: path to the SQLite database file (default: data/audit.sqlite).
