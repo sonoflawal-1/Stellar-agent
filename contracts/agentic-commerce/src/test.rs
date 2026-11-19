@@ -1414,3 +1414,628 @@ fn complete_with_zero_fee_bps_sends_full_budget_to_provider() {
     let job = client.get_job(&id).unwrap();
     assert_eq!(job.status, JobStatus::Completed);
 }
+
+// ===========================================================================
+// #1049 — claim_expired()
+// ===========================================================================
+
+#[test]
+fn claim_expired_refunds_buyer_after_deadline() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let (token_addr, token, stellar_token) = deploy_token(&env, &admin, &client);
+    stellar_token.mint(&buyer, &1_000_000);
+
+    let deadline = 1_000u64;
+    let id = client.create_job(
+        &buyer,
+        &seller,
+        &buyer,
+        &token_addr,
+        &100_000i128,
+        &String::from_str(&env, "expiring job"),
+        &deadline,
+        &0u32,
+    );
+
+    // Escrow funded, buyer debited.
+    assert_eq!(token.balance(&buyer), 900_000);
+    assert_eq!(token.balance(&client.address), 100_000);
+
+    // Advance past the deadline.
+    env.ledger().set_timestamp(deadline + 1);
+
+    client.claim_expired(&buyer, &id);
+
+    // Buyer refunded, escrow drained.
+    assert_eq!(token.balance(&buyer), 1_000_000);
+    assert_eq!(token.balance(&client.address), 0);
+
+    let job = client.get_job(&id).unwrap();
+    assert_eq!(job.status, JobStatus::Cancelled);
+
+    let expected_event = JobExpired {
+        version: EVENT_VERSION,
+        job_id: id,
+        client: buyer.clone(),
+    };
+    let all_events = env.events().all().filter_by_contract(&client.address);
+    assert_eq!(
+        all_events.events().last().unwrap().clone(),
+        expected_event.to_xdr(&env, &client.address),
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn claim_expired_panics_with_job_not_found_for_unknown_id() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _treasury) = setup(&env);
+    let buyer = Address::generate(&env);
+    client.claim_expired(&buyer, &9999u64);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")]
+fn claim_expired_panics_on_wrong_status() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let (token_addr, token, stellar_token) = deploy_token(&env, &admin, &client);
+    stellar_token.mint(&buyer, &1_000_000);
+
+    let deadline = 1_000u64;
+    let id = client.create_job(
+        &buyer,
+        &seller,
+        &buyer,
+        &token_addr,
+        &100_000i128,
+        &String::from_str(&env, "expiring job"),
+        &deadline,
+        &0u32,
+    );
+    // Cancel first so status is no longer Funded.
+    client.cancel(&buyer, &id);
+    env.ledger().set_timestamp(deadline + 1);
+
+    let before = token.balance(&buyer);
+    client.claim_expired(&buyer, &id);
+    // Unreachable — panic expected. Balance assertion documents intent.
+    assert_eq!(token.balance(&buyer), before);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")]
+fn claim_expired_panics_before_deadline() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let (token_addr, token, stellar_token) = deploy_token(&env, &admin, &client);
+    stellar_token.mint(&buyer, &1_000_000);
+
+    let deadline = 1_000u64;
+    let id = client.create_job(
+        &buyer,
+        &seller,
+        &buyer,
+        &token_addr,
+        &100_000i128,
+        &String::from_str(&env, "expiring job"),
+        &deadline,
+        &0u32,
+    );
+    // Still before the deadline.
+    env.ledger().set_timestamp(deadline - 1);
+
+    let before = token.balance(&buyer);
+    client.claim_expired(&buyer, &id);
+    assert_eq!(token.balance(&buyer), before);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #6)")]
+fn claim_expired_rejects_non_client() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let mallory = Address::generate(&env);
+    let (token_addr, token, stellar_token) = deploy_token(&env, &admin, &client);
+    stellar_token.mint(&buyer, &1_000_000);
+
+    let deadline = 1_000u64;
+    let id = client.create_job(
+        &buyer,
+        &seller,
+        &buyer,
+        &token_addr,
+        &100_000i128,
+        &String::from_str(&env, "expiring job"),
+        &deadline,
+        &0u32,
+    );
+    env.ledger().set_timestamp(deadline + 1);
+
+    let before = token.balance(&buyer);
+    client.claim_expired(&mallory, &id);
+    assert_eq!(token.balance(&buyer), before);
+}
+
+// ===========================================================================
+// #1050 — remove_token()
+// ===========================================================================
+
+#[test]
+fn remove_token_removes_from_allowlist_without_touching_balances() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let (token_addr, token, stellar_token) = deploy_token(&env, &admin, &client);
+    let holder = Address::generate(&env);
+    stellar_token.mint(&holder, &1_000_000);
+
+    assert!(client.is_token_allowed(&token_addr));
+
+    let before = token.balance(&holder);
+    client.remove_token(&admin, &token_addr);
+
+    assert!(!client.is_token_allowed(&token_addr));
+    // Removing from the allowlist must not move any tokens.
+    assert_eq!(token.balance(&holder), before);
+
+    let expected_event = TokenRemoved {
+        version: EVENT_VERSION,
+        token: token_addr.clone(),
+    };
+    let all_events = env.events().all().filter_by_contract(&client.address);
+    assert_eq!(
+        all_events.events().last().unwrap().clone(),
+        expected_event.to_xdr(&env, &client.address),
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #9)")]
+fn remove_token_rejects_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let (token_addr, token, stellar_token) = deploy_token(&env, &admin, &client);
+    let holder = Address::generate(&env);
+    stellar_token.mint(&holder, &1_000_000);
+    let mallory = Address::generate(&env);
+
+    let before = token.balance(&holder);
+    client.remove_token(&mallory, &token_addr);
+    assert_eq!(token.balance(&holder), before);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn remove_token_rejects_unknown_token() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let unknown = Address::generate(&env);
+
+    client.remove_token(&admin, &unknown);
+}
+
+// ===========================================================================
+// #1051 — approve_milestone()
+// ===========================================================================
+
+#[test]
+fn approve_milestone_pays_provider_and_fee() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, treasury) = setup(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let (token_addr, token, stellar_token) = deploy_token(&env, &admin, &client);
+    stellar_token.mint(&buyer, &1_000_000);
+
+    let id = client.create_milestone_job(
+        &buyer,
+        &seller,
+        &buyer,
+        &token_addr,
+        &100_000i128,
+        &String::from_str(&env, "milestone job"),
+        &soroban_sdk::vec![
+            &env,
+            Milestone {
+                index: 0,
+                amount: 100_000,
+                description: String::from_str(&env, "one milestone"),
+                deliverable: String::from_str(&env, ""),
+                approved: false,
+            },
+        ],
+    );
+
+    // Escrow funded.
+    assert_eq!(token.balance(&buyer), 900_000);
+    assert_eq!(token.balance(&client.address), 100_000);
+
+    let hash = sample_hash(&env);
+    client.submit_milestone(
+        &seller,
+        &id,
+        &0u32,
+        &String::from_str(&env, "ipfs://milestone-0.json"),
+        &hash,
+    );
+
+    client.approve_milestone(&buyer, &id, &0u32);
+
+    // 1% fee → fee = 1_000, payout = 99_000.
+    assert_eq!(token.balance(&seller), 99_000);
+    assert_eq!(token.balance(&treasury), 1_000);
+    assert_eq!(token.balance(&client.address), 0);
+
+    let expected_event = MilestoneApproved {
+        version: EVENT_VERSION,
+        job_id: id,
+        index: 0,
+        payout: 99_000,
+        fee: 1_000,
+    };
+    let all_events = env.events().all().filter_by_contract(&client.address);
+    assert_eq!(
+        all_events.events().last().unwrap().clone(),
+        expected_event.to_xdr(&env, &client.address),
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn approve_milestone_panics_with_job_not_found() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _treasury) = setup(&env);
+    let buyer = Address::generate(&env);
+    client.approve_milestone(&buyer, &9999u64, &0u32);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #8)")]
+fn approve_milestone_rejects_non_evaluator() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let mallory = Address::generate(&env);
+    let (token_addr, token, stellar_token) = deploy_token(&env, &admin, &client);
+    stellar_token.mint(&buyer, &1_000_000);
+
+    let id = client.create_milestone_job(
+        &buyer,
+        &seller,
+        &buyer,
+        &token_addr,
+        &100_000i128,
+        &String::from_str(&env, "milestone job"),
+        &soroban_sdk::vec![
+            &env,
+            Milestone {
+                index: 0,
+                amount: 100_000,
+                description: String::from_str(&env, "one milestone"),
+                deliverable: String::from_str(&env, ""),
+                approved: false,
+            },
+        ],
+    );
+    let hash = sample_hash(&env);
+    client.submit_milestone(
+        &seller,
+        &id,
+        &0u32,
+        &String::from_str(&env, "ipfs://milestone-0.json"),
+        &hash,
+    );
+
+    let before = token.balance(&seller);
+    client.approve_milestone(&mallory, &id, &0u32);
+    assert_eq!(token.balance(&seller), before);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")]
+fn approve_milestone_rejects_invalid_status() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let (token_addr, token, stellar_token) = deploy_token(&env, &admin, &client);
+    stellar_token.mint(&buyer, &1_000_000);
+
+    let id = client.create_milestone_job(
+        &buyer,
+        &seller,
+        &buyer,
+        &token_addr,
+        &100_000i128,
+        &String::from_str(&env, "milestone job"),
+        &soroban_sdk::vec![
+            &env,
+            Milestone {
+                index: 0,
+                amount: 100_000,
+                description: String::from_str(&env, "one milestone"),
+                deliverable: String::from_str(&env, ""),
+                approved: false,
+            },
+        ],
+    );
+    // Cancel the job so status is no longer active.
+    client.cancel(&buyer, &id);
+
+    let before = token.balance(&seller);
+    client.approve_milestone(&buyer, &id, &0u32);
+    assert_eq!(token.balance(&seller), before);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")]
+fn approve_milestone_rejects_non_milestone_job() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let (token_addr, token, stellar_token) = deploy_token(&env, &admin, &client);
+    stellar_token.mint(&buyer, &1_000_000);
+
+    let id = client.create_job(
+        &buyer,
+        &seller,
+        &buyer,
+        &token_addr,
+        &100_000i128,
+        &String::from_str(&env, "plain job"),
+        &0u64,
+        &0u32,
+    );
+
+    let before = token.balance(&seller);
+    client.approve_milestone(&buyer, &id, &0u32);
+    assert_eq!(token.balance(&seller), before);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #10)")]
+fn approve_milestone_rejects_index_out_of_bounds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let (token_addr, token, stellar_token) = deploy_token(&env, &admin, &client);
+    stellar_token.mint(&buyer, &1_000_000);
+
+    let id = client.create_milestone_job(
+        &buyer,
+        &seller,
+        &buyer,
+        &token_addr,
+        &100_000i128,
+        &String::from_str(&env, "milestone job"),
+        &soroban_sdk::vec![
+            &env,
+            Milestone {
+                index: 0,
+                amount: 100_000,
+                description: String::from_str(&env, "one milestone"),
+                deliverable: String::from_str(&env, ""),
+                approved: false,
+            },
+        ],
+    );
+
+    let before = token.balance(&seller);
+    client.approve_milestone(&buyer, &id, &5u32);
+    assert_eq!(token.balance(&seller), before);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")]
+fn approve_milestone_rejects_already_approved() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let (token_addr, token, stellar_token) = deploy_token(&env, &admin, &client);
+    stellar_token.mint(&buyer, &1_000_000);
+
+    let id = client.create_milestone_job(
+        &buyer,
+        &seller,
+        &buyer,
+        &token_addr,
+        &100_000i128,
+        &String::from_str(&env, "milestone job"),
+        &soroban_sdk::vec![
+            &env,
+            Milestone {
+                index: 0,
+                amount: 100_000,
+                description: String::from_str(&env, "one milestone"),
+                deliverable: String::from_str(&env, ""),
+                approved: false,
+            },
+        ],
+    );
+    let hash = sample_hash(&env);
+    client.submit_milestone(
+        &seller,
+        &id,
+        &0u32,
+        &String::from_str(&env, "ipfs://milestone-0.json"),
+        &hash,
+    );
+    client.approve_milestone(&buyer, &id, &0u32);
+
+    let before = token.balance(&seller);
+    client.approve_milestone(&buyer, &id, &0u32);
+    assert_eq!(token.balance(&seller), before);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")]
+fn approve_milestone_rejects_deliverable_not_submitted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let (token_addr, token, stellar_token) = deploy_token(&env, &admin, &client);
+    stellar_token.mint(&buyer, &1_000_000);
+
+    let id = client.create_milestone_job(
+        &buyer,
+        &seller,
+        &buyer,
+        &token_addr,
+        &100_000i128,
+        &String::from_str(&env, "milestone job"),
+        &soroban_sdk::vec![
+            &env,
+            Milestone {
+                index: 0,
+                amount: 100_000,
+                description: String::from_str(&env, "one milestone"),
+                deliverable: String::from_str(&env, ""),
+                approved: false,
+            },
+        ],
+    );
+
+    // No submit_milestone call — approving must fail.
+    let before = token.balance(&seller);
+    client.approve_milestone(&buyer, &id, &0u32);
+    assert_eq!(token.balance(&seller), before);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #12)")]
+fn approve_milestone_rejects_when_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let (token_addr, token, stellar_token) = deploy_token(&env, &admin, &client);
+    stellar_token.mint(&buyer, &1_000_000);
+
+    let id = client.create_milestone_job(
+        &buyer,
+        &seller,
+        &buyer,
+        &token_addr,
+        &100_000i128,
+        &String::from_str(&env, "milestone job"),
+        &soroban_sdk::vec![
+            &env,
+            Milestone {
+                index: 0,
+                amount: 100_000,
+                description: String::from_str(&env, "one milestone"),
+                deliverable: String::from_str(&env, ""),
+                approved: false,
+            },
+        ],
+    );
+    let hash = sample_hash(&env);
+    client.submit_milestone(
+        &seller,
+        &id,
+        &0u32,
+        &String::from_str(&env, "ipfs://milestone-0.json"),
+        &hash,
+    );
+    client.pause_channels(&admin);
+
+    let before = token.balance(&seller);
+    client.approve_milestone(&buyer, &id, &0u32);
+    assert_eq!(token.balance(&seller), before);
+}
+
+// ===========================================================================
+// #1052 — upgrade()
+// ===========================================================================
+
+#[test]
+fn upgrade_by_admin_preserves_state_and_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, treasury) = setup(&env);
+    let (token_addr, token, stellar_token) = deploy_token(&env, &admin, &client);
+    let holder = Address::generate(&env);
+    stellar_token.mint(&holder, &1_000_000);
+
+    let new_wasm_hash = BytesN::from_array(&env, &[7u8; 32]);
+    let before = token.balance(&holder);
+
+    client.upgrade(&admin, &new_wasm_hash);
+
+    // Admin/treasury state persists across upgrade.
+    assert_eq!(client.admin(), admin);
+    assert_eq!(client.treasury(), treasury);
+    // Token balances unchanged by upgrade.
+    assert_eq!(token.balance(&holder), before);
+
+    let expected_event = ContractUpgraded {
+        version: EVENT_VERSION,
+        wasm_hash: new_wasm_hash.clone(),
+    };
+    let all_events = env.events().all().filter_by_contract(&client.address);
+    assert_eq!(
+        all_events.events().last().unwrap().clone(),
+        expected_event.to_xdr(&env, &client.address),
+    );
+}
+
+#[test]
+#[should_panic(expected = "not initialized")]
+fn upgrade_rejects_uninitialized_contract() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AgenticCommerceContract, ());
+    let client = AgenticCommerceContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let new_wasm_hash = BytesN::from_array(&env, &[7u8; 32]);
+
+    client.upgrade(&admin, &new_wasm_hash);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #9)")]
+fn upgrade_rejects_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let (token_addr, token, stellar_token) = deploy_token(&env, &admin, &client);
+    let holder = Address::generate(&env);
+    stellar_token.mint(&holder, &1_000_000);
+    let mallory = Address::generate(&env);
+    let new_wasm_hash = BytesN::from_array(&env, &[7u8; 32]);
+
+    let before = token.balance(&holder);
+    client.upgrade(&mallory, &new_wasm_hash);
+    assert_eq!(token.balance(&holder), before);
+}
