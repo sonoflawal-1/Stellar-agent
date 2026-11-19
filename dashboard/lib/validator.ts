@@ -88,6 +88,87 @@ export interface DeliverableValidatorOptions {
 }
 
 // ---------------------------------------------------------------------------
+// Job creation form rules
+// ---------------------------------------------------------------------------
+//
+// These constants are the single source of truth for the client-side job
+// creation form (dashboard/public/app.js). The browser cannot import this
+// module directly, so the same values are mirrored there — keep them in sync.
+// The server-side contract enforces the same bounds; any change here MUST be
+// reflected in both the contract and the dashboard form validator.
+
+export interface JobFormRules {
+  /** Minimum job budget in whole USDC. */
+  budgetMinUsdc: number;
+  /** Maximum job budget in whole USDC. */
+  budgetMaxUsdc: number;
+  /** Maximum number of decimal places allowed for a budget amount. */
+  budgetDecimals: number;
+  /** Minimum description length (characters, trimmed). */
+  descriptionMinLength: number;
+  /** Maximum description length (characters, trimmed). */
+  descriptionMaxLength: number;
+  /** Maximum deliverable URI length (characters, trimmed). */
+  deliverableMaxLength: number;
+  /** Regex source (string form) for a Stellar account address (G...). */
+  stellarAddressPattern: string;
+  /** Regex source (string form) for a Soroban contract address (C...). */
+  contractAddressPattern: string;
+}
+
+export const JOB_FORM_RULES: Readonly<JobFormRules> = Object.freeze({
+  budgetMinUsdc: 1,
+  budgetMaxUsdc: 1_000_000,
+  budgetDecimals: 7,
+  descriptionMinLength: 10,
+  descriptionMaxLength: 2_000,
+  deliverableMaxLength: 2_048,
+  stellarAddressPattern: '^G[A-Z2-7]{55}$',
+  contractAddressPattern: '^C[A-Z2-7]{55}$',
+});
+
+/**
+ * Returns true if `value` is a valid Stellar account address (G..., 56 chars,
+ * base32 alphabet). Mirrors the contract's address validation.
+ */
+export function isValidStellarAddress(value: string): boolean {
+  return new RegExp(JOB_FORM_RULES.stellarAddressPattern).test(value);
+}
+
+/**
+ * Returns true if `value` is a valid Soroban contract address (C..., 56 chars,
+ * base32 alphabet). Mirrors the contract's address validation.
+ */
+export function isValidContractAddress(value: string): boolean {
+  return new RegExp(JOB_FORM_RULES.contractAddressPattern).test(value);
+}
+
+/**
+ * Returns true if `value` is a budget amount within the allowed bounds and
+ * decimal precision. Accepts a number or a numeric string.
+ */
+export function isValidBudget(value: number | string): boolean {
+  const amount = typeof value === 'string' ? Number(value) : value;
+  if (!Number.isFinite(amount)) return false;
+  if (amount < JOB_FORM_RULES.budgetMinUsdc) return false;
+  if (amount > JOB_FORM_RULES.budgetMaxUsdc) return false;
+  const decimals = (String(amount).split('.')[1] ?? '').length;
+  return decimals <= JOB_FORM_RULES.budgetDecimals;
+}
+
+/**
+ * Returns true if `value` is a description within the allowed length bounds
+ * (measured after trimming surrounding whitespace).
+ */
+export function isValidDescription(value: string): boolean {
+  const trimmed = value.trim();
+  return (
+    trimmed.length >= JOB_FORM_RULES.descriptionMinLength &&
+    trimmed.length <= JOB_FORM_RULES.descriptionMaxLength
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
@@ -266,6 +347,15 @@ export class DeliverableValidator {
       warnings.push({
         code: 'DISALLOWED_SCHEME',
         message: `Scheme "${parsed.protocol}" is not allowed. Only https:// and ipfs:// are permitted.`,
+      });
+      return { valid: false, warnings, metadata };
+    }
+
+    // --- 1b. Length bound (mirrors JOB_FORM_RULES.deliverableMaxLength) ----
+    if (trimmed.length > JOB_FORM_RULES.deliverableMaxLength) {
+      warnings.push({
+        code: 'INVALID_URI',
+        message: `Deliverable exceeds the ${JOB_FORM_RULES.deliverableMaxLength}-character limit.`,
       });
       return { valid: false, warnings, metadata };
     }

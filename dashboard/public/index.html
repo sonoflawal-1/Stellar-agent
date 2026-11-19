@@ -32,6 +32,8 @@
     <script src="https://cdn.jsdelivr.net/gh/jamesbachini/Stellar-Wallets-Kit-Boilerplate@main/vanilla/stellar-kit-bundle/dist/wallet-kit-bundle.umd.js"></script>
   </head>
   <body>
+    <!-- Skip link (#971) — first focusable element so keyboard users can bypass the sidebar -->
+    <a class="skip-link" href="#main">Skip to main content</a>
     <!-- Mainnet warning banner (#761) -->
     <div class="network-warning-banner" id="network-warning-banner" role="alert" hidden>
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -55,7 +57,7 @@
           <span class="logo-text">Bear</span>
         </a>
       </div>
-      <nav class="sidebar-nav">
+      <nav class="sidebar-nav" aria-label="Primary">
         <a href="#/" class="nav-item active" data-route="/">
           <svg
             width="20"
@@ -307,7 +309,7 @@
     <div class="sidebar-backdrop" id="sidebar-backdrop" aria-hidden="true"></div>
 
     <!-- Main content -->
-    <main class="main" id="main">
+    <main class="main" id="main" role="main" tabindex="-1">
       <div class="page-transition" id="page">
         <input
           type="search"
@@ -316,6 +318,225 @@
           aria-label="Search agents by name, skill, or tag"
         />
       </div>
+      <!-- Wallet connection status region (#972) — announces state machine transitions -->
+      <div
+        class="wallet-status-region"
+        id="wallet-status-region"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        data-wallet-state="idle"
+      >
+        <span class="wallet-status-text" id="wallet-status-text">Wallet idle</span>
+      </div>
+      <!-- Filter tabs (#971) — tablist/tab/tabpanel pattern with roving tabindex -->
+      <div class="filter-tabs" id="filter-tabs" role="tablist" aria-label="Filter jobs">
+        <button
+          type="button"
+          class="filter-tab active"
+          id="filter-tab-all"
+          role="tab"
+          aria-selected="true"
+          aria-controls="filter-panel-all"
+          tabindex="0"
+          data-filter="all"
+        >
+          All
+        </button>
+        <button
+          type="button"
+          class="filter-tab"
+          id="filter-tab-open"
+          role="tab"
+          aria-selected="false"
+          aria-controls="filter-panel-open"
+          tabindex="-1"
+          data-filter="open"
+        >
+          Open
+        </button>
+        <button
+          type="button"
+          class="filter-tab"
+          id="filter-tab-active"
+          role="tab"
+          aria-selected="false"
+          aria-controls="filter-panel-active"
+          tabindex="-1"
+          data-filter="active"
+        >
+          In Progress
+        </button>
+        <button
+          type="button"
+          class="filter-tab"
+          id="filter-tab-completed"
+          role="tab"
+          aria-selected="false"
+          aria-controls="filter-panel-completed"
+          tabindex="-1"
+          data-filter="completed"
+        >
+          Completed
+        </button>
+        <button
+          type="button"
+          class="filter-tab"
+          id="filter-tab-disputed"
+          role="tab"
+          aria-selected="false"
+          aria-controls="filter-panel-disputed"
+          tabindex="-1"
+          data-filter="disputed"
+        >
+          Disputed
+        </button>
+      </div>
+      <div
+        class="filter-panel"
+        id="filter-panel-all"
+        role="tabpanel"
+        aria-labelledby="filter-tab-all"
+        tabindex="0"
+      ></div>
+      <div
+        class="filter-panel"
+        id="filter-panel-open"
+        role="tabpanel"
+        aria-labelledby="filter-tab-open"
+        tabindex="0"
+        hidden
+      ></div>
+      <div
+        class="filter-panel"
+        id="filter-panel-active"
+        role="tabpanel"
+        aria-labelledby="filter-tab-active"
+        tabindex="0"
+        hidden
+      ></div>
+      <div
+        class="filter-panel"
+        id="filter-panel-completed"
+        role="tabpanel"
+        aria-labelledby="filter-tab-completed"
+        tabindex="0"
+        hidden
+      ></div>
+      <div
+        class="filter-panel"
+        id="filter-panel-disputed"
+        role="tabpanel"
+        aria-labelledby="filter-tab-disputed"
+        tabindex="0"
+        hidden
+      ></div>
+      <!-- Job creation form (#973) — inline errors and fee preview before signing -->
+      <section class="job-create-section" id="job-create-section" aria-labelledby="job-create-title">
+        <h2 class="section-title" id="job-create-title">Create Job</h2>
+        <form class="job-create-form" id="job-create-form" novalidate>
+          <div class="form-field">
+            <label class="form-label" for="job-title">Job Title *</label>
+            <input
+              type="text"
+              id="job-title"
+              class="form-input"
+              name="title"
+              required
+              aria-required="true"
+              aria-describedby="job-title-error"
+            />
+            <div class="field-error" id="job-title-error" role="alert" aria-live="polite"></div>
+          </div>
+          <div class="form-field">
+            <label class="form-label" for="job-description">Description *</label>
+            <textarea
+              id="job-description"
+              class="form-input form-textarea"
+              name="description"
+              rows="3"
+              required
+              aria-required="true"
+              aria-describedby="job-description-error"
+            ></textarea>
+            <div class="field-error" id="job-description-error" role="alert" aria-live="polite"></div>
+          </div>
+          <div class="form-field">
+            <label class="form-label" for="job-budget">Budget (USDC) *</label>
+            <input
+              type="number"
+              id="job-budget"
+              class="form-input"
+              name="budget"
+              min="0"
+              step="0.0000001"
+              required
+              aria-required="true"
+              aria-describedby="job-budget-error"
+            />
+            <div class="field-error" id="job-budget-error" role="alert" aria-live="polite"></div>
+          </div>
+          <div class="form-field">
+            <label class="form-label" for="job-deadline">Deadline (ledger)</label>
+            <input
+              type="number"
+              id="job-deadline"
+              class="form-input"
+              name="deadline"
+              min="0"
+              step="1"
+              aria-describedby="job-deadline-error"
+            />
+            <div class="field-error" id="job-deadline-error" role="alert" aria-live="polite"></div>
+          </div>
+          <!-- Fee preview region (#973) — populated from simulate_job_fee -->
+          <div
+            class="fee-preview"
+            id="fee-preview"
+            role="region"
+            aria-labelledby="fee-preview-title"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            <h3 class="fee-preview-title" id="fee-preview-title">Fee Preview</h3>
+            <dl class="fee-preview-list">
+              <div class="fee-preview-row">
+                <dt>Budget</dt>
+                <dd id="fee-preview-budget">—</dd>
+              </div>
+              <div class="fee-preview-row">
+                <dt>Protocol Fee</dt>
+                <dd id="fee-preview-fee">—</dd>
+              </div>
+              <div class="fee-preview-row">
+                <dt>Net Payout</dt>
+                <dd id="fee-preview-net">—</dd>
+              </div>
+            </dl>
+            <p class="fee-preview-status" id="fee-preview-status"></p>
+          </div>
+          <div class="modal-actions">
+            <button type="submit" class="btn btn-primary" id="job-create-submit">Create Job</button>
+          </div>
+        </form>
+      </section>
+      <!-- Job timeline (#974) — lifecycle events with ledger times and tx links -->
+      <section class="job-timeline-section" id="job-timeline-section" aria-labelledby="job-timeline-title">
+        <h2 class="section-title" id="job-timeline-title">Job Timeline</h2>
+        <div
+          class="job-timeline"
+          id="job-timeline"
+          role="region"
+          aria-labelledby="job-timeline-title"
+          aria-live="polite"
+          aria-busy="false"
+        >
+          <ol class="job-timeline-list" id="job-timeline-list"></ol>
+          <p class="job-timeline-empty" id="job-timeline-empty">
+            No lifecycle events yet. Events will appear here once the job is created.
+          </p>
+        </div>
+      </section>
       <!-- Analytics view container (#747) -->
       <section
         class="analytics-view"
@@ -349,9 +570,9 @@
     </template>
 
     <!-- x402 Playground view container (#751) -->
-    <section class="playground-view" id="playground-view" hidden>
+    <section class="playground-view" id="playground-view" aria-labelledby="playground-title" hidden>
       <div class="playground-header">
-        <h1 class="playground-title">x402 Playground</h1>
+        <h1 class="playground-title" id="playground-title">x402 Playground</h1>
         <p class="playground-subtitle">Simulate HTTP 402 payment requirements and test automated micro-settlements.</p>
       </div>
       <div class="playground-grid">
@@ -407,7 +628,7 @@
 
     <!-- IPFS metadata uploader modal (#752) -->
     <div class="modal-overlay" id="metadata-modal" role="dialog" aria-modal="true" aria-labelledby="metadata-modal-title" hidden>
-      <div class="modal metadata-modal">
+      <div class="modal metadata-modal" tabindex="-1">
         <div class="modal-header">
           <h2 class="modal-title" id="metadata-modal-title">Create Agent Metadata</h2>
           <button class="modal-close" id="metadata-modal-close" type="button" aria-label="Close">&times;</button>
@@ -464,7 +685,7 @@
 
     <!-- Dispute submission modal (#753) -->
     <div class="modal-overlay" id="dispute-modal" role="dialog" aria-modal="true" aria-labelledby="dispute-modal-title" hidden>
-      <div class="modal dispute-modal">
+      <div class="modal dispute-modal" tabindex="-1">
         <div class="modal-header">
           <h2 class="modal-title" id="dispute-modal-title">Open Dispute</h2>
           <button class="modal-close" id="dispute-modal-close" type="button" aria-label="Close">&times;</button>
@@ -510,15 +731,21 @@
       </div>
     </template>
 
-    <!-- Toast container -->
-    <div class="toast-container" id="toasts"></div>
+    <!-- Toast container (#971) — polite live region for async updates -->
+    <div
+      class="toast-container"
+      id="toasts"
+      role="status"
+      aria-live="polite"
+      aria-atomic="false"
+    ></div>
 
     <!-- Keyboard shortcut cheat sheet modal (#759) -->
     <div class="modal-overlay" id="shortcut-help-modal" role="dialog" aria-modal="true" aria-labelledby="shortcut-help-title" hidden>
-      <div class="modal shortcut-help-modal">
+      <div class="modal shortcut-help-modal" tabindex="-1">
         <div class="modal-header">
           <h2 class="modal-title" id="shortcut-help-title">Keyboard Shortcuts</h2>
-          <button class="modal-close" id="shortcut-help-close" aria-label="Close keyboard shortcuts">
+          <button class="modal-close" id="shortcut-help-close" type="button" aria-label="Close keyboard shortcuts">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M18 6 6 18M6 6l12 12" />
             </svg>
@@ -538,10 +765,10 @@
 
     <!-- Settings modal (#759) -->
     <div class="modal-overlay" id="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title" hidden>
-      <div class="modal settings-modal">
+      <div class="modal settings-modal" tabindex="-1">
         <div class="modal-header">
           <h2 class="modal-title" id="settings-modal-title">Settings</h2>
-          <button class="modal-close" id="settings-modal-close" aria-label="Close settings">
+          <button class="modal-close" id="settings-modal-close" type="button" aria-label="Close settings">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M18 6 6 18M6 6l12 12" />
             </svg>
@@ -563,11 +790,19 @@
     </div>
 
     <!-- Transaction overlay -->
-    <div class="tx-overlay" id="tx-overlay">
-      <div class="tx-modal">
-        <div class="tx-spinner"></div>
-        <p class="tx-text">Submitting to Stellar...</p>
-        <p class="tx-sub">This takes 5-8 seconds on testnet</p>
+    <div class="tx-overlay" id="tx-overlay" hidden>
+      <div
+        class="tx-modal"
+        id="tx-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="tx-modal-title"
+        aria-describedby="tx-modal-desc"
+        tabindex="-1"
+      >
+        <div class="tx-spinner" aria-hidden="true"></div>
+        <p class="tx-text" id="tx-modal-title">Submitting to Stellar...</p>
+        <p class="tx-sub" id="tx-modal-desc">This takes 5-8 seconds on testnet</p>
       </div>
     </div>
 

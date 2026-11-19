@@ -2268,6 +2268,23 @@ textarea:focus-visible,
   .sim-balance-amounts {
     text-align: left;
   }
+  /* #974 — timeline collapses to a single column */
+  .job-timeline {
+    margin-left: 0;
+    padding-left: 14px;
+  }
+  .job-timeline-head {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+  .job-timeline-time {
+    white-space: normal;
+  }
+  .job-timeline-tx {
+    display: flex;
+    width: 100%;
+  }
 }
 
 /* ── Theme Toggle ── */
@@ -2427,6 +2444,354 @@ textarea:focus-visible,
   text-decoration: underline dotted;
   text-underline-offset: 2px;
 }
+
+/* ────────────────────────────────────────────
+   #971 — ARIA patterns: dialogs, tabs, tables
+   ──────────────────────────────────────────── */
+/* Dialog focus ring on the container itself */
+[role="dialog"]:focus-visible,
+[role="alertdialog"]:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+/* Tab list + tab focus styles */
+[role="tablist"] {
+  display: flex;
+  gap: 2px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 3px;
+  margin-bottom: 20px;
+  overflow-x: auto;
+}
+[role="tab"] {
+  padding: 7px 18px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-dim);
+  white-space: nowrap;
+  transition: all 0.2s var(--ease);
+}
+[role="tab"]:hover {
+  color: var(--text-muted);
+}
+[role="tab"][aria-selected="true"] {
+  color: var(--text);
+  background: var(--bg-surface);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+[role="tab"]:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 5px var(--accent-soft);
+}
+[role="tabpanel"]:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+/* Data tables: caption + header scope */
+.data-table,
+.jobs-table,
+.events-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.data-table caption,
+.jobs-table caption,
+.events-table caption {
+  caption-side: top;
+  text-align: left;
+  padding: 0 0 10px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+}
+.data-table th,
+.jobs-table th,
+.events-table th {
+  text-align: left;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.data-table td,
+.jobs-table td,
+.events-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+/* Live regions are visually hidden but announced */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ────────────────────────────────────────────
+   #973 — Inline field errors & fee preview
+   ──────────────────────────────────────────── */
+.form-input[aria-invalid="true"],
+.form-select[aria-invalid="true"],
+.form-textarea[aria-invalid="true"] {
+  border-color: var(--status-cancelled);
+  box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.15);
+}
+.form-input[aria-invalid="true"]:focus,
+.form-select[aria-invalid="true"]:focus {
+  border-color: var(--status-cancelled);
+  box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.25);
+}
+.field-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--status-cancelled);
+  line-height: 1.4;
+}
+.field-error svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.field-error[hidden] {
+  display: none;
+}
+.field-hint {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.fee-preview {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+}
+.fee-preview-title {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+.fee-preview-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 0;
+  font-size: 12.5px;
+}
+.fee-preview-row.total {
+  margin-top: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-weight: 700;
+}
+.fee-preview-label {
+  color: var(--text-muted);
+}
+.fee-preview-value {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.fee-preview-value.positive {
+  color: var(--status-completed);
+}
+.fee-preview-value.negative {
+  color: var(--status-cancelled);
+}
+.fee-preview-status {
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.fee-preview-status.error {
+  color: var(--status-cancelled);
+}
+
+/* ────────────────────────────────────────────
+   #974 — Job lifecycle timeline (responsive)
+   ──────────────────────────────────────────── */
+.job-timeline {
+  display: flex;
+  flex-direction: column;
+  border-left: 2px solid var(--border-hover);
+  margin-left: 5px;
+  padding-left: 16px;
+}
+.job-timeline-item {
+  position: relative;
+  padding: 8px 0;
+}
+.job-timeline-dot {
+  position: absolute;
+  left: -22px;
+  top: 14px;
+  width: 10px;
+  height: 10px;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+}
+.job-timeline-item[data-state="completed"] .job-timeline-dot {
+  background: var(--status-completed);
+}
+.job-timeline-item[data-state="disputed"] .job-timeline-dot {
+  background: var(--status-cancelled);
+}
+.job-timeline-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.job-timeline-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.job-timeline-time {
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.job-timeline-meta {
+  display: block;
+  font-size: 12px;
+  font-family: var(--mono);
+  color: var(--text-muted);
+  word-break: break-all;
+}
+.job-timeline-tx {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 4px;
+  font-size: 11.5px;
+  font-family: var(--mono);
+  color: var(--accent);
+  word-break: break-all;
+  transition: opacity 0.15s;
+}
+.job-timeline-tx:hover {
+  opacity: 0.8;
+  text-decoration: underline;
+}
+.job-timeline-tx:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.job-timeline-empty {
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 6px 0;
+}
+
+/* ────────────────────────────────────────────
+   #972 — Wallet connection state indicator
+   ──────────────────────────────────────────── */
+.wallet-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  transition: background 0.2s, border-color 0.2s, color 0.2s;
+}
+.wallet-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+.wallet-status[data-state="idle"] {
+  color: var(--text-dim);
+}
+.wallet-status[data-state="connecting"] {
+  color: var(--status-submitted);
+  border-color: rgba(251, 191, 36, 0.25);
+  background: rgba(251, 191, 36, 0.06);
+}
+.wallet-status[data-state="connecting"] .wallet-status-dot {
+  animation: sse-blink 1s step-end infinite;
+}
+.wallet-status[data-state="signing"] {
+  color: var(--status-funded);
+  border-color: rgba(96, 165, 250, 0.25);
+  background: rgba(96, 165, 250, 0.06);
+}
+.wallet-status[data-state="signing"] .wallet-status-dot {
+  animation: sse-pulse 1.6s ease-in-out infinite;
+}
+.wallet-status[data-state="submitted"] {
+  color: var(--status-completed);
+  border-color: rgba(52, 211, 153, 0.25);
+  background: rgba(52, 211, 153, 0.06);
+}
+.wallet-status[data-state="failed"] {
+  color: var(--status-cancelled);
+  border-color: rgba(248, 113, 113, 0.3);
+  background: rgba(248, 113, 113, 0.08);
+}
+.wallet-status .spinner {
+  width: 12px;
+  height: 12px;
+  border-width: 2px;
+  margin: 0;
+}
+.wallet-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: rgba(248, 113, 113, 0.08);
+  border: 1px solid rgba(248, 113, 113, 0.25);
+  color: var(--status-cancelled);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.wallet-error svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.wallet-error[hidden] {
+  display: none;
+}
+=======
 
 /* ────────────────────────────────────────────
    #761 — Network Switcher
