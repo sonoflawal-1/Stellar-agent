@@ -31,6 +31,10 @@ jobs:
       - run: npm ci
       - name: Build React package
         run: npm run build --workspace @marc-stellar/react
+      - name: Validate package with publint
+        run: npm run lint:pkg --workspace @marc-stellar/react
+      - name: Check ESM/CJS export map with attw
+        run: npm run check:exports --workspace @marc-stellar/react
       - name: Run React hook tests with coverage
         run: npm test --workspace @marc-stellar/react -- --coverage
       - name: Check bundle size (<15 KB gzipped)

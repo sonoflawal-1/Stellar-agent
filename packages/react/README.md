@@ -240,6 +240,105 @@ function PaidResource({ keypair }: { keypair: Keypair }) {
 }
 ```
 
+## TanStack Query
+
+If your app already uses [TanStack Query](https://tanstack.com/query), the optional `@bear-protocol/react/query` entry point provides ready-made query hooks, a query key factory, and invalidation helpers so you don't have to wrap SDK calls by hand.
+
+`@tanstack/react-query` (>= 5) is an **optional peer dependency**: it is only required if you import from `@bear-protocol/react/query`. Apps that don't use TanStack Query are unaffected and don't need to install it.
+
+```bash
+npm install @tanstack/react-query
+```
+
+### Query hooks
+
+```tsx
+import { useJobQuery, useAgentQuery } from '@bear-protocol/react/query'
+
+function JobStatus({ jobId }: { jobId: string }) {
+  const { data: job, isLoading, error } = useJobQuery(jobId)
+
+  if (isLoading) return <Spinner />
+  if (error) return <ErrorBanner error={error} />
+
+  return <span>Status: {job?.status}</span>
+}
+```
+
+### Query keys
+
+Every query is keyed through a factory so you can target caches precisely (e.g. for prefetching, `setQueryData`, or invalidation). The factories are exported as `jobKeys` and `agentKeys`:
+
+| Factory     | Key                                   | Description                              |
+| ----------- | ------------------------------------- | ---------------------------------------- |
+| `jobKeys`   | `jobKeys.all`                         | Root key for every job query.            |
+|             | `jobKeys.lists()`                     | Key for job list queries.                |
+|             | `jobKeys.detail(id)`                  | Key for a single job by id.              |
+| `agentKeys` | `agentKeys.all`                       | Root key for every agent query.          |
+|             | `agentKeys.lists()`                   | Key for agent list queries.              |
+|             | `agentKeys.detail(id)`                | Key for a single agent by id.            |
+
+```tsx
+import { useQueryClient } from '@tanstack/react-query'
+import { jobKeys, agentKeys } from '@bear-protocol/react/query'
+
+const queryClient = useQueryClient()
+
+// Prefetch a job into the cache
+queryClient.prefetchQuery({ queryKey: jobKeys.detail('job-1'), queryFn: /* … */ })
+
+// Read cached data for an agent
+const agent = queryClient.getQueryData(agentKeys.detail('agent-1'))
+```
+
+### Invalidation helpers
+
+After a mutation, invalidate the affected caches with the provided helpers instead of hand-writing keys:
+
+```tsx
+import { useCreateJob } from '@bear-protocol/react'
+import { useQueryClient } from '@tanstack/react-query'
+import { invalidateJob, invalidateAgent } from '@bear-protocol/react/query'
+
+function NewJobButton() {
+  const { createJob, pending } = useCreateJob()
+  const queryClient = useQueryClient()
+
+  const onClick = async () => {
+    const job = await createJob({ agentId: 'agent-1', budget: '10' })
+    // Refresh the single job and any job lists
+    await invalidateJob(queryClient, job.id)
+    // Or invalidate everything for an agent
+    await invalidateAgent(queryClient, 'agent-1')
+  }
+
+  return <button disabled={pending} onClick={onClick}>Create job</button>
+}
+```
+
+## Import paths
+
+The package ships a dual ESM + CJS build with TypeScript declarations, and exposes two entry points through its export map:
+
+| Import path                     | Contents                                                              |
+| ------------------------------- | --------------------------------------------------------------------- |
+| `@bear-protocol/react`          | Hooks, components, and types (no TanStack Query dependency).          |
+| `@bear-protocol/react/query`    | TanStack Query hooks, `jobKeys`/`agentKeys`, and invalidation helpers. |
+
+Both entry points resolve for ESM (`import`) and CJS (`require`) consumers, with matching `.d.ts` types for each:
+
+```ts
+// ESM
+import { useAgent } from '@bear-protocol/react'
+import { useJobQuery, jobKeys } from '@bear-protocol/react/query'
+
+// CJS
+const { useAgent } = require('@bear-protocol/react')
+const { useJobQuery, jobKeys } = require('@bear-protocol/react/query')
+```
+
+The export map is validated in CI with [`publint`](https://publint.dev) and [`@arethetypeswrong/cli`](https://arethetypeswrong.github.io) (`attw`) on every pull request, so broken or mismatched entry points fail the build.
+
 ## Types
 
 The package ships exhaustive TypeScript types for every hook and component, with `isolatedModules` and `declarationMap` enabled. Hook option and result interfaces (`UseAgentOptions`, `UseAgentResult`, `UseJobResult`, `UseCommerceResult`, …) and component prop interfaces are exported from the package root, and essential core types (`Agent`, `Job`, `JobStatus`, `MarcConfig`, …) are re-exported directly from `marc-stellar-sdk` so you don't need to import from both packages.
