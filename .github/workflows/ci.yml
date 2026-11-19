@@ -89,6 +89,13 @@ jobs:
             exit 1
           fi
 
+  entrypoint-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check every public entrypoint has a test
+        run: bash scripts/check-entrypoint-tests.sh
+
   state-dump:
     runs-on: ubuntu-latest
     env:
