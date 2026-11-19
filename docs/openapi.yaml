@@ -26,6 +26,14 @@ tags:
     description: Protocol metrics and analytics
   - name: Config
     description: Runtime configuration
+  - name: Events
+    description: Indexed protocol events
+  - name: Reputation
+    description: Agent reputation scores
+  - name: Jobs
+    description: Indexed jobs
+  - name: Webhooks
+    description: Webhook subscription management and delivery logs
 paths:
   /api/health:
     get:
@@ -434,6 +442,33 @@ components:
       required: true
       schema:
         type: string
+    JobId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    WebhookSubscriptionId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    Cursor:
+      name: cursor
+      in: query
+      description: Opaque cursor returned as `nextCursor` by a previous page
+      schema:
+        type: string
+    CursorLimit:
+      name: limit
+      in: query
+      description: Maximum number of items to return per page
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
   responses:
     BadRequest:
       description: Invalid request payload
@@ -613,3 +648,206 @@ components:
         heartbeatIntervalMs:
           type: integer
       required: [logLevel]
+    Event:
+      type: object
+      properties:
+        id:
+          type: string
+        sequence:
+          type: integer
+        type:
+          type: string
+        agentId:
+          type: string
+        jobId:
+          type: string
+        data:
+          type: object
+          additionalProperties: true
+        blockNumber:
+          type: integer
+        txHash:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, sequence, type, createdAt]
+    EventPage:
+      type: object
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/Event'
+        nextCursor:
+          type: string
+          nullable: true
+      required: [items]
+    ReputationEntry:
+      type: object
+      properties:
+        id:
+          type: string
+        sequence:
+          type: integer
+        agentId:
+          type: string
+        score:
+          type: number
+        delta:
+          type: number
+        reason:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, sequence, agentId, score, createdAt]
+    ReputationPage:
+      type: object
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/ReputationEntry'
+        nextCursor:
+          type: string
+          nullable: true
+      required: [items]
+    Job:
+      type: object
+      properties:
+        id:
+          type: string
+        agentId:
+          type: string
+        status:
+          type: string
+          enum: [open, assigned, completed, failed, cancelled]
+        payload:
+          type: object
+          additionalProperties: true
+        result:
+          type: object
+          additionalProperties: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, status, createdAt]
+    WebhookSubscription:
+      type: object
+      properties:
+        id:
+          type: string
+        url:
+          type: string
+          format: uri
+        events:
+          type: array
+          items:
+            type: string
+        active:
+          type: boolean
+        secretLastRotatedAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, url, events, active, createdAt]
+    WebhookSubscriptionCreate:
+      type: object
+      properties:
+        url:
+          type: string
+          format: uri
+        events:
+          type: array
+          items:
+            type: string
+        active:
+          type: boolean
+          default: true
+      required: [url, events]
+    WebhookSubscriptionUpdate:
+      type: object
+      properties:
+        url:
+          type: string
+          format: uri
+        events:
+          type: array
+          items:
+            type: string
+        active:
+          type: boolean
+    WebhookSubscriptionPage:
+      type: object
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/WebhookSubscription'
+        nextCursor:
+          type: string
+          nullable: true
+      required: [items]
+    WebhookSecretRotation:
+      type: object
+      properties:
+        id:
+          type: string
+        secret:
+          type: string
+          description: Newly issued HMAC signing secret. Shown only once.
+        previousSecretExpiresAt:
+          type: string
+          format: date-time
+        rotatedAt:
+          type: string
+          format: date-time
+      required: [id, secret, rotatedAt]
+    WebhookDelivery:
+      type: object
+      properties:
+        id:
+          type: string
+        sequence:
+          type: integer
+        subscriptionId:
+          type: string
+        eventId:
+          type: string
+        status:
+          type: string
+          enum: [pending, success, failed]
+        attempts:
+          type: integer
+        statusCode:
+          type: integer
+        error:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        lastAttemptAt:
+          type: string
+          format: date-time
+      required: [id, sequence, subscriptionId, status, attempts, createdAt]
+    WebhookDeliveryPage:
+      type: object
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/WebhookDelivery'
+        nextCursor:
+          type: string
+          nullable: true
+      required: [items]

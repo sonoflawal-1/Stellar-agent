@@ -277,6 +277,10 @@ export type EventRow = {
   contract: string;
   event_type: string;
   payload: string;
+  /** Unique-key components (issue #980); may be absent on legacy rows. */
+  tx_hash?: string | null;
+  op_index?: number | null;
+  event_index?: number | null;
 };
 
 export type ParsedEventRow = Omit<EventRow, "payload"> & { payload: Record<string, unknown> };
@@ -298,6 +302,81 @@ export type InsertEventParams = {
 export type QueryOptions = {
   limit?: number;
   offset?: number;
+  fromTimestamp?: number;
+  toTimestamp?: number;
+};
+
+/** Maximum number of rows any cursor-paginated query may return. */
+export const MAX_PAGE_LIMIT = 100;
+/** Default page size for cursor-paginated queries. */
+export const DEFAULT_PAGE_LIMIT = 20;
+
+/**
+ * Opaque cursor for keyset pagination.  Encodes the unique event key
+ * `(ledger, tx_hash, op_index, event_index)` so ordering is stable even when
+ * multiple events share a ledger.
+ */
+export type EventCursor = {
+  ledger: number;
+  tx_hash: string;
+  op_index: number;
+  event_index: number;
+};
+
+/** Encode a cursor as an opaque, URL-safe string. */
+export function encodeCursor(cursor: EventCursor): string {
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+
+/**
+ * Decode an opaque cursor string.  Returns `null` when the value is missing or
+ * malformed so callers can respond with a 400 rather than crashing.
+ */
+export function decodeCursor(raw: string | null | undefined): EventCursor | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(
+      Buffer.from(raw, "base64url").toString("utf8"),
+    ) as Partial<EventCursor>;
+    if (
+      typeof parsed.ledger !== "number" ||
+      typeof parsed.tx_hash !== "string" ||
+      typeof parsed.op_index !== "number" ||
+      typeof parsed.event_index !== "number"
+    ) {
+      return null;
+    }
+    return {
+      ledger: parsed.ledger,
+      tx_hash: parsed.tx_hash,
+      op_index: parsed.op_index,
+      event_index: parsed.event_index,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Clamp a requested page size into `[1, MAX_PAGE_LIMIT]`. */
+export function clampPageLimit(limit: number | undefined): number {
+  if (limit === undefined || !Number.isFinite(limit)) return DEFAULT_PAGE_LIMIT;
+  const n = Math.floor(limit);
+  if (n < 1) return 1;
+  if (n > MAX_PAGE_LIMIT) return MAX_PAGE_LIMIT;
+  return n;
+}
+
+/** A single page of events plus the cursor to fetch the next page. */
+export type EventPage = {
+  events: ParsedEventRow[];
+  /** Cursor to pass as `cursor` for the next page, or null at the end. */
+  nextCursor: string | null;
+};
+
+/** Filters accepted by {@link EventStore.listEventsPage}. */
+export type EventPageFilters = {
+  contract?: string;
+  event_type?: string;
   fromTimestamp?: number;
   toTimestamp?: number;
 };
@@ -896,6 +975,120 @@ export class EventStore {
         .prepare("SELECT COUNT(*) as c FROM events")
         .get() as { c: number };
       return row.c;
+    });
+  }
+
+  // ── Cursor pagination (issue #978) ─────────────────────────────────────────
+
+  /**
+   * Keyset-paginated event listing.  Always applies a bounded `LIMIT` (clamped
+   * to {@link MAX_PAGE_LIMIT}) and orders by the unique event key
+   * `(ledger, tx_hash, op_index, event_index)` so pages are stable and no
+   * unbounded query is ever issued.
+   */
+  listEventsPage(
+    cursor: EventCursor | null = null,
+    limit?: number,
+    filters: EventPageFilters = {},
+  ): EventPage {
+    return withSpan("db.events.listPage", (span) => {
+      span.setAttribute("db.system", "sqlite");
+      const pageSize = clampPageLimit(limit);
+      span.setAttribute("db.page.limit", pageSize);
+
+      let sql = `SELECT * FROM events WHERE 1 = 1`;
+      const params: (string | number)[] = [];
+
+      if (filters.contract !== undefined) {
+        sql += " AND contract = ?";
+        params.push(filters.contract);
+      }
+      if (filters.event_type !== undefined) {
+        sql += " AND event_type = ?";
+        params.push(filters.event_type);
+      }
+      if (filters.fromTimestamp !== undefined) {
+        sql += " AND timestamp >= ?";
+        params.push(filters.fromTimestamp);
+      }
+      if (filters.toTimestamp !== undefined) {
+        sql += " AND timestamp <= ?";
+        params.push(filters.toTimestamp);
+      }
+      if (cursor) {
+        sql += ` AND (
+          ledger > ?
+          OR (ledger = ? AND COALESCE(tx_hash, '') > ?)
+          OR (ledger = ? AND COALESCE(tx_hash, '') = ? AND COALESCE(op_index, 0) > ?)
+          OR (ledger = ? AND COALESCE(tx_hash, '') = ? AND COALESCE(op_index, 0) = ? AND COALESCE(event_index, 0) > ?)
+        )`;
+        params.push(
+          cursor.ledger,
+          cursor.ledger,
+          cursor.tx_hash,
+          cursor.ledger,
+          cursor.tx_hash,
+          cursor.op_index,
+          cursor.ledger,
+          cursor.tx_hash,
+          cursor.op_index,
+          cursor.event_index,
+        );
+      }
+
+      // Fetch one extra row to determine whether another page exists.
+      sql += ` ORDER BY ledger ASC, COALESCE(tx_hash, '') ASC,
+               COALESCE(op_index, 0) ASC, COALESCE(event_index, 0) ASC
+               LIMIT ?`;
+      params.push(pageSize + 1);
+
+      const rows = this.db.prepare(sql).all(...params) as EventRow[];
+      const hasMore = rows.length > pageSize;
+      const pageRows = hasMore ? rows.slice(0, pageSize) : rows;
+
+      let nextCursor: string | null = null;
+      if (hasMore && pageRows.length > 0) {
+        const last = pageRows[pageRows.length - 1];
+        nextCursor = encodeCursor({
+          ledger: last.ledger,
+          tx_hash: last.tx_hash ?? "",
+          op_index: last.op_index ?? 0,
+          event_index: last.event_index ?? 0,
+        });
+      }
+
+      span.setAttribute("db.rows.count", pageRows.length);
+      return { events: pageRows.map(parseRow), nextCursor };
+    });
+  }
+
+  /**
+   * Fetch a single job's events by job id, bounded by `limit` (clamped to
+   * {@link MAX_PAGE_LIMIT}).  Returns `null` when no events reference the job.
+   */
+  getJobById(
+    jobId: string | number,
+    limit?: number,
+  ): { job_id: string; events: ParsedEventRow[] } | null {
+    return withSpan("db.events.getJobById", (span) => {
+      span.setAttribute("db.system", "sqlite");
+      span.setAttribute("job.id", String(jobId));
+      const pageSize = clampPageLimit(limit);
+      const id = String(jobId);
+      const rows = this.db
+        .prepare(
+          `SELECT * FROM events
+           WHERE json_extract(payload, '$.job_id') = ?
+              OR json_extract(payload, '$.jobId')  = ?
+              OR json_extract(payload, '$.job')    = ?
+           ORDER BY ledger ASC, COALESCE(tx_hash, '') ASC,
+                    COALESCE(op_index, 0) ASC, COALESCE(event_index, 0) ASC
+           LIMIT ?`,
+        )
+        .all(id, id, id, pageSize) as EventRow[];
+      if (rows.length === 0) return null;
+      span.setAttribute("db.rows.count", rows.length);
+      return { job_id: id, events: rows.map(parseRow) };
     });
   }
 }
