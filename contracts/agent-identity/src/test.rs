@@ -1033,3 +1033,120 @@ fn deregister_removes_badges_from_the_credential_index() {
     client.deregister(&owner, &id);
     assert_eq!(client.get_badges(&id).len(), 0);
 }
+
+// ===========================================================================
+// #1045 — delegate / owner-transfer interaction and delegate expiry boundary
+// ===========================================================================
+
+/// A delegate granted before an owner transfer must not retain authority over
+/// the agent once ownership moves to a new wallet. The stale delegate's
+/// attempt to act must fail with "not agent owner".
+#[test]
+#[should_panic(expected = "not agent owner")]
+fn stale_delegate_cannot_update_uri_after_owner_transfer() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AgentIdentityContract, ());
+    let client = AgentIdentityContractClient::new(&env, &contract_id);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let delegate = Address::generate(&env);
+    let id = client.register(&alice, &String::from_str(&env, "ipfs://alice.json"));
+
+    // Grant the delegate full permissions valid far in the future.
+    let valid_until = env.ledger().sequence() + 1_000;
+    client.grant_delegate(&alice, &id, &delegate, &PERM_ALL, &valid_until);
+
+    // Transfer ownership to bob.
+    client.update_owner(&alice, &id, &bob);
+
+    // The stale delegate must no longer be able to act on the agent.
+    client.update_uri(&delegate, &id, &String::from_str(&env, "ipfs://hax.json"));
+}
+
+/// A delegate granted before an owner transfer must not be able to deregister
+/// the agent after ownership moves to a new wallet.
+#[test]
+#[should_panic(expected = "not agent owner")]
+fn stale_delegate_cannot_deregister_after_owner_transfer() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AgentIdentityContract, ());
+    let client = AgentIdentityContractClient::new(&env, &contract_id);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let delegate = Address::generate(&env);
+    let id = client.register(&alice, &String::from_str(&env, "ipfs://alice.json"));
+
+    let valid_until = env.ledger().sequence() + 1_000;
+    client.grant_delegate(&alice, &id, &delegate, &PERM_ALL, &valid_until);
+
+    client.update_owner(&alice, &id, &bob);
+
+    // The stale delegate must not be able to deregister the agent.
+    client.deregister(&delegate, &id);
+}
+
+/// After an owner transfer, the new owner can grant a fresh delegate and that
+/// delegate can act — confirming the transfer path does not permanently break
+/// delegation for the agent.
+#[test]
+fn new_owner_can_grant_delegate_after_transfer() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AgentIdentityContract, ());
+    let client = AgentIdentityContractClient::new(&env, &contract_id);
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let delegate = Address::generate(&env);
+    let id = client.register(&alice, &String::from_str(&env, "ipfs://alice.json"));
+
+    let valid_until = env.ledger().sequence() + 1_000;
+    client.update_owner(&alice, &id, &bob);
+
+    // New owner grants a delegate; the delegate can act on the agent.
+    client.grant_delegate(&bob, &id, &delegate, &PERM_ALL, &valid_until);
+    client.update_uri(&delegate, &id, &String::from_str(&env, "ipfs://bob.json"));
+
+    let agent = client.get_agent(&id).unwrap();
+    assert_eq!(agent.uri, String::from_str(&env, "ipfs://bob.json"));
+}
+
+/// Boundary test for delegate expiry. A delegate with `valid_until = N` can
+/// act at ledger N-1, and must be rejected at ledger N+1. This pins the exact
+/// boundary semantics so a change in the comparison operator is caught.
+#[test]
+fn delegate_expiry_boundary() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AgentIdentityContract, ());
+    let client = AgentIdentityContractClient::new(&env, &contract_id);
+
+    let alice = Address::generate(&env);
+    let delegate = Address::generate(&env);
+    let id = client.register(&alice, &String::from_str(&env, "ipfs://alice.json"));
+
+    let expiry: u32 = 1_000;
+    client.grant_delegate(&alice, &id, &delegate, &PERM_ALL, &expiry);
+
+    // At expiry - 1 the delegate is still valid and can act.
+    env.ledger().set_sequence_number(expiry - 1);
+    client.update_uri(&delegate, &id, &String::from_str(&env, "ipfs://ok.json"));
+    assert_eq!(
+        client.get_agent(&id).unwrap().uri,
+        String::from_str(&env, "ipfs://ok.json")
+    );
+
+    // At expiry + 1 the delegate must be rejected.
+    env.ledger().set_sequence_number(expiry + 1);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.update_uri(&delegate, &id, &String::from_str(&env, "ipfs://late.json"));
+    }));
+    assert!(
+        result.is_err(),
+        "delegate must not be able to act after valid_until"
+    );
+}

@@ -117,6 +117,9 @@ enum DataKey {
     Admin,
     /// Storage key for a delegate record: (agent_id, delegate_address). (#696)
     Delegate(u64, Address),
+    /// Ordered list of delegate addresses for an agent, so ownership changes
+    /// can invalidate them all. (#1045)
+    DelegateIndex(u64),
     /// Storage key for a capability badge: (agent_id, tag). (#701)
     Badges(u64, Symbol),
     /// Admin-managed allowlist of addresses permitted to mint badges. (#701)
@@ -438,6 +441,19 @@ impl AgentIdentityContract {
         }
         env.storage().persistent().remove(&DataKey::BadgeTags(id));
 
+        // #1045 — Clear any delegates bound to the deregistered agent.
+        let delegates: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DelegateIndex(id))
+            .unwrap_or_else(|| Vec::new(&env));
+        for delegate in delegates.iter() {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::Delegate(id, delegate));
+        }
+        env.storage().persistent().remove(&DataKey::DelegateIndex(id));
+
         let count: u32 = env
             .storage()
             .instance()
@@ -492,7 +508,23 @@ impl AgentIdentityContract {
             .persistent()
             .extend_ttl(&DataKey::Agent(id), LEDGER_THRESHOLD, LEDGER_BUMP);
 
+        // #1045 — Invalidate all delegates granted by the previous owner so a
+        // stale delegate cannot act on the agent after ownership changes. The
+        // new owner must re-grant any delegates they wish to use.
+        let old_delegates: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DelegateIndex(id))
+            .unwrap_or_else(|| Vec::new(&env));
+        for delegate in old_delegates.iter() {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::Delegate(id, delegate));
+        }
+        env.storage().persistent().remove(&DataKey::DelegateIndex(id));
+
         OwnerTransferred {
+=======
             version: EVENT_VERSION,
             old_owner: caller,
             new_owner,
@@ -559,6 +591,29 @@ impl AgentIdentityContract {
             .persistent()
             .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
 
+        // #1045 — Track the delegate address so an ownership change can
+        // invalidate every delegate granted by the previous owner.
+        let index_key = DataKey::DelegateIndex(agent_id);
+        let mut delegates: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&index_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        let mut present = false;
+        for existing in delegates.iter() {
+            if existing == delegate {
+                present = true;
+                break;
+            }
+        }
+        if !present {
+            delegates.push_back(delegate.clone());
+            env.storage().persistent().set(&index_key, &delegates);
+            env.storage()
+                .persistent()
+                .extend_ttl(&index_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+        }
+
         DelegateGranted {
             version: EVENT_VERSION,
             owner,
@@ -592,6 +647,28 @@ impl AgentIdentityContract {
             env.storage().persistent().remove(&key);
         }
 
+        // #1045 — Drop the address from the delegate index as well.
+        let index_key = DataKey::DelegateIndex(agent_id);
+        let delegates: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&index_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        let mut remaining: Vec<Address> = Vec::new(&env);
+        for existing in delegates.iter() {
+            if existing != delegate {
+                remaining.push_back(existing);
+            }
+        }
+        if remaining.is_empty() {
+            env.storage().persistent().remove(&index_key);
+        } else {
+            env.storage().persistent().set(&index_key, &remaining);
+            env.storage()
+                .persistent()
+                .extend_ttl(&index_key, LEDGER_THRESHOLD, LEDGER_BUMP);
+        }
+
         DelegateRevoked {
             version: EVENT_VERSION,
             owner,
@@ -610,7 +687,7 @@ impl AgentIdentityContract {
         let key = DataKey::Delegate(agent_id, delegate);
         let record: Option<Delegate> = env.storage().persistent().get(&key);
         match record {
-            Some(ref d) if d.valid_until >= env.ledger().timestamp() => {
+            Some(ref d) if d.valid_until > env.ledger().timestamp() => {
                 env.storage()
                     .persistent()
                     .extend_ttl(&key, LEDGER_THRESHOLD, LEDGER_BUMP);
@@ -653,7 +730,9 @@ impl AgentIdentityContract {
             None => panic_with_error!(&env, Error::Unauthorized),
             Some(d) => {
                 let now = env.ledger().timestamp();
-                if d.valid_until < now {
+                // #1045 — Expired at the exact boundary: a delegate is valid
+                // only while `now < valid_until`.
+                if now >= d.valid_until {
                     panic_with_error!(&env, Error::DelegateExpired);
                 }
                 if d.permissions & required_permission == 0 {

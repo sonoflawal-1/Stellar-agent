@@ -1,5 +1,12 @@
 export * from "./types.js";
 export * from "./events.js";
+// #1048 — typed event decoding: exhaustive BearEvent union + assertNever helper
+export {
+  decodeBearEvent,
+  assertNever,
+  type BearEvent,
+  type BearEventType,
+} from "./events.js";
 export * from "./subscribeJob.js";
 export * from "./errors.js";
 export { formatAmount, parseAmount, isValidMetadataUri } from "./format.js";
