@@ -20,6 +20,53 @@ jobs:
       - run: npm run build
       - run: npm test
 
+  sdk-entrypoints:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [node, browser, workerd, deno]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Build SDK
+        run: npm run build
+      - name: Smoke test (node)
+        if: matrix.runtime == 'node'
+        run: node scripts/sdk-entrypoint-smoke.mjs node
+      - name: Smoke test (browser bundler)
+        if: matrix.runtime == 'browser'
+        run: node scripts/sdk-entrypoint-smoke.mjs browser
+      - name: Smoke test (workerd / miniflare)
+        if: matrix.runtime == 'workerd'
+        run: node scripts/sdk-entrypoint-smoke.mjs workerd
+      - name: Install Deno
+        if: matrix.runtime == 'deno'
+        uses: denoland/setup-deno@v1
+        with:
+          deno-version: v1.x
+      - name: Smoke test (deno)
+        if: matrix.runtime == 'deno'
+        run: deno run --allow-read --allow-env --allow-net scripts/sdk-entrypoint-smoke.mjs deno
+
+  sdk-edge-imports:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Build SDK
+        run: npm run build
+      - name: Check edge/browser bundles for Node built-in imports
+        run: node scripts/check-edge-node-imports.mjs
+
   react-package:
     runs-on: ubuntu-latest
     steps:

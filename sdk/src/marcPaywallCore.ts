@@ -559,6 +559,254 @@ export interface MarcPaywallCoreOptions {
    * Sent as a `Bearer` token in the `Authorization` header.
    */
   facilitatorApiKey?: string;
+  /**
+   * Allowlist of Stellar addresses that a 402 challenge is permitted to
+   * request payment to. When set, any challenge whose `payTo` is not in this
+   * list is rejected before any signing or network payment occurs.
+   *
+   * **Security:** Strongly recommended in production. Without it, a malicious
+   * or compromised server can direct payment to an arbitrary address.
+   */
+  allowedPayees?: string[];
+  /**
+   * Allowlist of payment assets (token contract addresses, well-known aliases
+   * such as `"native"`, or `"USDC"`) that a 402 challenge may request. When
+   * set, any challenge whose `asset` is not in this list is rejected before
+   * any signing or network payment occurs.
+   *
+   * **Security:** Strongly recommended in production. Without it, a malicious
+   * or compromised server can request payment in an arbitrary token.
+   */
+  allowedAssets?: string[];
+  /**
+   * Maximum amount (inclusive) that a 402 challenge may request, expressed in
+   * the same units as the challenge's `amount` field (typically raw stroops as
+   * a decimal string). Challenges requesting more are rejected before any
+   * signing or network payment occurs.
+   */
+  maxAmount?: string;
+  /**
+   * Minimum amount (inclusive) that a 402 challenge may request, expressed in
+   * the same units as the challenge's `amount` field. Challenges requesting
+   * less are rejected before any signing or network payment occurs.
+   */
+  minAmount?: string;
+}
+
+/**
+ * A single payment requirement parsed from an x402 `402 Payment Required`
+ * challenge (the `accepts` array of the response body).
+ */
+export interface X402Challenge {
+  /** Stellar address the challenge requests payment to. */
+  payTo?: string;
+  /** Asset (token contract address, alias, or `"native"`) requested. */
+  asset?: string;
+  /** Amount requested, as a decimal string in the asset's base units. */
+  amount?: string;
+  /** CAIP-2 network identifier the challenge applies to. */
+  network?: string;
+  /** Additional challenge fields are preserved verbatim. */
+  [key: string]: unknown;
+}
+
+/**
+ * Error thrown when a 402 challenge fails allowlist validation.
+ *
+ * Thrown *before* any signing or network payment occurs, guaranteeing that a
+ * rejected challenge never results in a payment being made.
+ */
+export class ChallengeRejectedError extends Error {
+  /** The field that failed validation (`payTo`, `asset`, or `amount`). */
+  readonly field: "payTo" | "asset" | "amount";
+  /** The offending value from the challenge. */
+  readonly value: string | undefined;
+  /** The configured allowlist or bound that rejected the value. */
+  readonly allowed: readonly string[] | string | undefined;
+
+  constructor(
+    field: "payTo" | "asset" | "amount",
+    value: string | undefined,
+    allowed: readonly string[] | string | undefined,
+    message?: string,
+  ) {
+    super(
+      message ??
+        `x402 challenge rejected: ${field} ${JSON.stringify(value)} is not permitted`,
+    );
+    this.name = "ChallengeRejectedError";
+    this.field = field;
+    this.value = value;
+    this.allowed = allowed;
+  }
+}
+
+let warnedNoAllowlist = false;
+
+/**
+ * Emit a one-time warning when no payee/asset allowlist is configured.
+ *
+ * Called from the challenge validation path so operators are alerted to the
+ * risk of a malicious server redirecting payments.
+ */
+export function warnIfNoAllowlist(options: MarcPaywallCoreOptions): void {
+  if (warnedNoAllowlist) {
+    return;
+  }
+  if (!options.allowedPayees && !options.allowedAssets) {
+    warnedNoAllowlist = true;
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[marc] No allowedPayees/allowedAssets configured. A malicious server " +
+        "could request payment to an arbitrary address or token. Configure " +
+        "allowlists in production.",
+    );
+  }
+}
+
+/** Reset the one-time no-allowlist warning (for tests). */
+export function resetAllowlistWarning(): void {
+  warnedNoAllowlist = false;
+}
+
+function normalizeAsset(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function compareDecimalStrings(a: string, b: string): number {
+  const parse = (s: string): { neg: boolean; int: string; frac: string } => {
+    const trimmed = s.trim();
+    const neg = trimmed.startsWith("-");
+    const unsigned = neg ? trimmed.slice(1) : trimmed;
+    const [intPart = "0", fracPart = ""] = unsigned.split(".");
+    return {
+      neg,
+      int: intPart.replace(/^0+(?=\d)/, "") || "0",
+      frac: fracPart.replace(/0+$/, ""),
+    };
+  };
+  const pa = parse(a);
+  const pb = parse(b);
+  if (pa.neg !== pb.neg) {
+    return pa.neg ? -1 : 1;
+  }
+  const sign = pa.neg ? -1 : 1;
+  if (pa.int.length !== pb.int.length) {
+    return (pa.int.length < pb.int.length ? -1 : 1) * sign;
+  }
+  if (pa.int !== pb.int) {
+    return (pa.int < pb.int ? -1 : 1) * sign;
+  }
+  const maxFrac = Math.max(pa.frac.length, pb.frac.length);
+  const fa = pa.frac.padEnd(maxFrac, "0");
+  const fb = pb.frac.padEnd(maxFrac, "0");
+  if (fa === fb) {
+    return 0;
+  }
+  return (fa < fb ? -1 : 1) * sign;
+}
+
+/**
+ * Validate a single parsed x402 challenge against the configured allowlists
+ * and amount bounds.
+ *
+ * Throws {@link ChallengeRejectedError} on the first violation. Callers must
+ * invoke this *before* signing or submitting any payment so that a rejected
+ * challenge never results in a network payment.
+ *
+ * @param challenge - A parsed challenge from the 402 response `accepts` array.
+ * @param options - Paywall options carrying the allowlists and bounds.
+ * @throws {ChallengeRejectedError} If the challenge is not permitted.
+ */
+export function validateChallenge(
+  challenge: X402Challenge,
+  options: MarcPaywallCoreOptions,
+): void {
+  warnIfNoAllowlist(options);
+
+  if (options.allowedPayees) {
+    const payTo = challenge.payTo;
+    if (
+      typeof payTo !== "string" ||
+      !options.allowedPayees.includes(payTo)
+    ) {
+      throw new ChallengeRejectedError(
+        "payTo",
+        payTo,
+        options.allowedPayees,
+        `x402 challenge rejected: payTo ${JSON.stringify(payTo)} is not in allowedPayees`,
+      );
+    }
+  }
+
+  if (options.allowedAssets) {
+    const asset = challenge.asset;
+    const normalized =
+      typeof asset === "string" ? normalizeAsset(asset) : undefined;
+    const allowed = options.allowedAssets.map(normalizeAsset);
+    if (normalized === undefined || !allowed.includes(normalized)) {
+      throw new ChallengeRejectedError(
+        "asset",
+        asset,
+        options.allowedAssets,
+        `x402 challenge rejected: asset ${JSON.stringify(asset)} is not in allowedAssets`,
+      );
+    }
+  }
+
+  if (options.maxAmount !== undefined) {
+    const amount = challenge.amount;
+    if (
+      typeof amount !== "string" ||
+      compareDecimalStrings(amount, options.maxAmount) > 0
+    ) {
+      throw new ChallengeRejectedError(
+        "amount",
+        amount,
+        options.maxAmount,
+        `x402 challenge rejected: amount ${JSON.stringify(amount)} exceeds maxAmount ${options.maxAmount}`,
+      );
+    }
+  }
+
+  if (options.minAmount !== undefined) {
+    const amount = challenge.amount;
+    if (
+      typeof amount !== "string" ||
+      compareDecimalStrings(amount, options.minAmount) < 0
+    ) {
+      throw new ChallengeRejectedError(
+        "amount",
+        amount,
+        options.minAmount,
+        `x402 challenge rejected: amount ${JSON.stringify(amount)} is below minAmount ${options.minAmount}`,
+      );
+    }
+  }
+}
+
+/**
+ * Validate every challenge in a parsed 402 response body against the
+ * configured allowlists and amount bounds.
+ *
+ * @param body - Parsed JSON body of the 402 response.
+ * @param options - Paywall options carrying the allowlists and bounds.
+ * @returns The validated challenges.
+ * @throws {ChallengeRejectedError} If any challenge is not permitted.
+ */
+export function validateChallenges(
+  body: unknown,
+  options: MarcPaywallCoreOptions,
+): X402Challenge[] {
+  const accepts = (body as { accepts?: unknown } | null | undefined)?.accepts;
+  if (!Array.isArray(accepts)) {
+    return [];
+  }
+  const challenges = accepts as X402Challenge[];
+  for (const challenge of challenges) {
+    validateChallenge(challenge, options);
+  }
+  return challenges;
 }
 
 /**

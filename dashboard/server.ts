@@ -633,7 +633,53 @@ function handleRouteError(err: unknown, res: Response): void {
 const MAX_AUDIT_ENTRIES = 500;
 const AUDIT_LOG_PATH = process.env.AUDIT_LOG_PATH ?? path.join(__dirname, "audit.jsonl");
 const AUDIT_LOG_MAX_FILES = 3;
-const AUDIT_SALT = process.env.AUDIT_SALT ?? crypto.randomBytes(32).toString("hex");
+
+// ── #959: Stable audit salt ──────────────────────────────────────────────────
+// IP hashes in the audit log must be comparable across restarts, so the salt
+// cannot be regenerated per process. Resolution order:
+//   1. AUDIT_SALT env var (explicit operator configuration).
+//   2. In production, the env var is required — fail fast rather than silently
+//      degrading audit correlation.
+//   3. Otherwise, a salt file persisted with 0600 permissions, generated on
+//      first run.
+//   4. If the file cannot be read or written, fall back to an ephemeral salt
+//      and log a loud warning.
+const AUDIT_SALT_PATH = process.env.AUDIT_SALT_PATH ?? path.join(__dirname, "audit.salt");
+
+function resolveAuditSalt(): string {
+  const fromEnv = process.env.AUDIT_SALT;
+  if (fromEnv && fromEnv.trim()) return fromEnv.trim();
+
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(
+      "AUDIT_SALT must be set in production so audit IP hashes are stable across restarts",
+    );
+  }
+
+  try {
+    if (fs.existsSync(AUDIT_SALT_PATH)) {
+      const persisted = fs.readFileSync(AUDIT_SALT_PATH, "utf8").trim();
+      if (persisted) return persisted;
+    }
+    const generated = crypto.randomBytes(32).toString("hex");
+    fs.writeFileSync(AUDIT_SALT_PATH, generated, { mode: 0o600 });
+    try {
+      fs.chmodSync(AUDIT_SALT_PATH, 0o600);
+    } catch {
+      // Best effort: mode may already be correct or unsupported on this FS.
+    }
+    console.log(`[audit] generated persistent audit salt at ${AUDIT_SALT_PATH}`);
+    return generated;
+  } catch (err) {
+    console.warn(
+      `[audit] WARNING: using an ephemeral audit salt — IP hashes will NOT be comparable across restarts. ` +
+        `Set AUDIT_SALT or fix ${AUDIT_SALT_PATH}: ${(err as Error).message}`,
+    );
+    return crypto.randomBytes(32).toString("hex");
+  }
+}
+
+const AUDIT_SALT = resolveAuditSalt();
 
 const auditQuerySchema = z.object({
   page: z.coerce.number().int().positive().default(1),

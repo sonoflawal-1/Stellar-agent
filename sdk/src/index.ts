@@ -14,6 +14,8 @@ export {
   BudgetExceededError,
   PaymentRejectedError,
   InsufficientFundsError,
+  // #956 — 402 challenge validation against payee/asset allowlists
+  ChallengeValidationError,
 } from "./errors.js";
 export { formatAmount, parseAmount, isValidMetadataUri } from "./format.js";
 // #952 — multi-token amount helpers using on-chain decimals
@@ -57,11 +59,14 @@ export {
   marcFetch,
   marcFetchStream,
   parsePaymentRequiredHeader,
+  // #956 — validate 402 challenges against payee/asset allowlists
+  validatePaymentRequirement,
   type MarcFetchOptions,
   type MarcStreamOptions,
   type StreamChunk,
   type PaymentStatus,
   type ParsedPaymentRequirement,
+  type ChallengeAllowlistOptions,
 } from "./marcFetch.js";
 
 // Core configuration types (framework-agnostic)

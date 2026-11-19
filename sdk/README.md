@@ -207,6 +207,32 @@ app.use(
 | `timeoutMs`          | `number?`                         | Per-request timeout in milliseconds                                         |
 | `maxPaymentAttempts` | `number?`                         | Max 402-retry attempts (default: `1`)                                       |
 | `fetchImpl`          | `typeof fetch?`                   | Custom fetch implementation (tests / adapters)                              |
+| `allowedPayees`      | `string[]?`                       | Allowlist of payee addresses accepted from 402 challenges                   |
+| `allowedAssets`      | `string[]?`                       | Allowlist of asset (token) contract addresses accepted from 402 challenges  |
+| `maxAmount`          | `bigint?`                         | Maximum amount (smallest token units) accepted from a 402 challenge         |
+
+#### Payment challenge validation (safe defaults)
+
+A malicious server can return a 402 challenge that asks for payment to an
+arbitrary address or token. `marcFetch` validates every challenge against the
+configured allowlists **before** signing or submitting any payment; a rejected
+challenge throws and **no network payment is made**.
+
+```typescript
+const fetch402 = marcFetch({
+  signer: keypair,
+  network: "testnet",
+  allowedPayees: ["GPAYEE...", "GOTHERPAYEE..."],
+  allowedAssets: [TESTNET.usdcToken],
+  maxAmount: 5_000_000n, // never pay more than 5 USDC per request
+});
+```
+
+> **Security:** Always configure `allowedPayees` and `allowedAssets` in
+> production. When neither is set, the SDK emits a warning and accepts any
+> payee/asset from the challenge — this permissive mode is intended only for
+> local development and tests.
+=======
 
 ### Network presets
 

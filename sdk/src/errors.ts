@@ -252,6 +252,44 @@ export class PaymentPendingTimeoutError extends Error {
 }
 
 /**
+ * Thrown when a 402 payment challenge fails client-side allowlist validation
+ * (#956): the requested `payTo`, `asset`, or `amount` is not permitted by the
+ * configured `allowedPayees` / `allowedAssets` / `maxAmount` policy.
+ *
+ * The challenge is rejected before any payment is constructed or submitted, so
+ * no network payment is made.
+ */
+export class ChallengeRejectedError extends Error {
+  /** The request URL whose 402 challenge was rejected. */
+  readonly url: string;
+  /** Which challenge field failed validation. */
+  readonly field: "payTo" | "asset" | "amount";
+  /** The value supplied by the (untrusted) server challenge. */
+  readonly value: string;
+  /** Human-readable reason for the rejection. */
+  readonly reason: string;
+
+  constructor(
+    url: string,
+    field: "payTo" | "asset" | "amount",
+    value: string,
+    reason: string,
+    message?: string,
+  ) {
+    const msg =
+      message ||
+      `402 challenge for ${url} rejected: ${field} "${value}" is not allowed (${reason})`;
+    super(msg);
+    this.name = "ChallengeRejectedError";
+    this.url = url;
+    this.field = field;
+    this.value = value;
+    this.reason = reason;
+    Object.setPrototypeOf(this, ChallengeRejectedError.prototype);
+  }
+}
+
+/**
  * Extract an on-chain Soroban contract error code from a message or error string if present.
  *
  * Handles standard Soroban host error strings such as:

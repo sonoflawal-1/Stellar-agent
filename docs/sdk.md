@@ -274,6 +274,40 @@ const paidFetch = marcFetch({
 When a limit is unset, that check is disabled. Budget checks are enforced
 atomically, so concurrent requests cannot collectively exceed `maxPerWindow`.
 
+### Payee and asset allowlist
+
+A malicious server can answer with a 402 challenge that asks you to pay an
+arbitrary address in an arbitrary token. Budget limits alone do not prevent
+this: a cheap payment to an attacker-controlled address still drains funds.
+`marcFetch` therefore validates every 402 challenge against optional
+allowlists **before any payment is signed or submitted**.
+
+```typescript
+const paidFetch = marcFetch({
+  signer: keypair,
+  rpcUrl: TESTNET.rpcUrl,
+  allowedPayees: [seller.publicKey()], // only pay these recipients
+  allowedAssets: [TESTNET.usdcToken], // only pay in these tokens
+});
+```
+
+| Option          | Type       | Default     | Description                                                                 |
+| --------------- | ---------- | ----------- | --------------------------------------------------------------------------- |
+| `allowedPayees` | `string[]` | unset (off) | Recipient addresses (`payTo`) a challenge may request payment to.           |
+| `allowedAssets` | `string[]` | unset (off) | Token contract addresses a challenge may request payment in.                |
+
+A challenge whose `payTo` is not in `allowedPayees`, or whose asset is not in
+`allowedAssets`, is rejected with a `PaymentRejectedError` (see below) and **no
+network payment is made**. Matching is exact and case-sensitive; pass the
+canonical `G...`/`C...` addresses.
+
+> **Safe defaults:** when neither allowlist is configured, `marcFetch` logs a
+> warning on the first 402 challenge it handles, because it will pay any
+> recipient in any token (subject only to budget limits). For autonomous agents
+> always set both `allowedPayees` and `allowedAssets` — ideally to a single
+> known seller and `TESTNET.usdcToken` — and keep `maxPerRequest`/`maxPerWindow`
+> as a second line of defence.
+
 ### Typed errors
 
 All failure modes surface as typed errors so callers can branch on them:
@@ -281,7 +315,7 @@ All failure modes surface as typed errors so callers can branch on them:
 | Error class                 | When it is thrown                                                              |
 | --------------------------- | ------------------------------------------------------------------------------ |
 | `BudgetExceededError`       | A payment would exceed `maxPerRequest` or `maxPerWindow`.                      |
-| `PaymentRejectedError`      | The server rejects the payment proof (e.g. invalid/expired proof).             |
+| `PaymentRejectedError`      | The server rejects the payment proof (e.g. invalid/expired proof), or the 402 challenge's `payTo`/asset is outside the configured allowlists (no payment is made). |
 | `InsufficientFundsError`    | The signer's balance cannot cover the required payment.                        |
 | `MarcPaymentTimeoutError`   | The payment transaction does not confirm within the timeout (tx pending).      |
 

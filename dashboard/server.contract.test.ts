@@ -5,7 +5,7 @@ import { createServer, type Server } from 'node:http';
 import { AddressInfo } from 'node:net';
 import { parse as parseYaml } from 'yaml';
 import OpenApiResponseValidator from 'openapi-response-validator';
-import { createDashboardServer } from './server';
+import { createDashboardServer, createDashboardApp } from './server';
 
 interface OpenApiDocument {
   openapi: string;
@@ -99,6 +99,69 @@ function documentedOperations(): Array<{
   return ops;
 }
 
+const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete'] as const;
+
+/**
+ * Introspects the Express app's registered routes. Express stores routes on
+ * the router stack; each layer exposes `route` (with `path` and `methods`)
+ * for concrete routes, or `name === 'router'` for mounted sub-routers.
+ */
+function registeredRoutes(): Array<{ path: string; method: string }> {
+  const app = createDashboardApp() as any;
+  const routes: Array<{ path: string; method: string }> = [];
+
+  const walk = (stack: any[], prefix: string): void => {
+    for (const layer of stack ?? []) {
+      if (layer.route) {
+        const routePath = `${prefix}${layer.route.path}`.replace(/\/+$/, '') || '/';
+        for (const method of Object.keys(layer.route.methods ?? {})) {
+          if (layer.route.methods[method]) {
+            routes.push({ path: routePath, method: method.toLowerCase() });
+          }
+        }
+      } else if (layer.name === 'router' && layer.handle?.stack) {
+        // Best-effort prefix extraction from the mounted router's regexp.
+        const match = layer.regexp?.source?.match(/\\\/([^\\]+)/);
+        const mountPath = match ? `/${match[1]}` : '';
+        walk(layer.handle.stack, `${prefix}${mountPath}`);
+      }
+    }
+  };
+
+  walk(app._router?.stack ?? app.router?.stack ?? [], '');
+  return routes;
+}
+
+/**
+ * Normalizes an Express route path (e.g. `/items/:id`) into the OpenAPI
+ * template form (e.g. `/items/{id}`).
+ */
+function toOpenApiTemplate(routePath: string): string {
+  return routePath.replace(/:([A-Za-z0-9_]+)/g, '{$1}');
+}
+
+/**
+ * Returns true when the given (path, method) is documented in the OpenAPI
+ * document, either directly or via a documented path template.
+ */
+function isDocumented(path: string, method: string): boolean {
+  const methods = openApiDoc.paths[path];
+  if (methods && methods[method]) {
+    return true;
+  }
+  // Fall back to template matching for parameterized paths.
+  for (const [template, templateMethods] of Object.entries(openApiDoc.paths)) {
+    if (!templateMethods[method]) continue;
+    const pattern = new RegExp(
+      `^${template.replace(/\{[^}]+\}/g, '[^/]+').replace(/\//g, '\\/')}$`,
+    );
+    if (pattern.test(path)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 beforeAll(async () => {
   openApiDoc = loadOpenApi();
   server = createDashboardServer();
@@ -130,6 +193,59 @@ describe('dashboard API contract (docs/openapi.yaml)', () => {
       ops.map((op) => `${op.method.toUpperCase()} ${op.path}`),
     );
     expect(covered.size).toBe(ops.length);
+  });
+
+  it('documents every Express route registered on the app', () => {
+    const routes = registeredRoutes();
+    expect(routes.length).toBeGreaterThan(0);
+
+    const undocumented = routes
+      .filter((route) => !isDocumented(toOpenApiTemplate(route.path), route.method))
+      .map((route) => `${route.method.toUpperCase()} ${route.path}`);
+
+    expect(
+      undocumented,
+      `Undocumented Express routes found (add them to docs/openapi.yaml):\n${undocumented.join('\n')}`,
+    ).toEqual([]);
+  });
+
+  it('exposes every unversioned route under the /api/v1 alias', () => {
+    const routes = registeredRoutes();
+    const unversioned = routes.filter(
+      (route) => route.path.startsWith('/api/') && !route.path.startsWith('/api/v1/'),
+    );
+    expect(unversioned.length).toBeGreaterThan(0);
+
+    const missingAlias = unversioned
+      .filter((route) => {
+        const aliasPath = route.path.replace(/^\/api\//, '/api/v1/');
+        return !routes.some(
+          (candidate) =>
+            candidate.method === route.method && candidate.path === aliasPath,
+        );
+      })
+      .map((route) => `${route.method.toUpperCase()} ${route.path}`);
+
+    expect(
+      missingAlias,
+      `Routes missing a /api/v1 alias:\n${missingAlias.join('\n')}`,
+    ).toEqual([]);
+  });
+
+  it('documents the /api/v1 alias routes in the OpenAPI document', () => {
+    const routes = registeredRoutes().filter((route) =>
+      route.path.startsWith('/api/v1/'),
+    );
+    expect(routes.length).toBeGreaterThan(0);
+
+    const undocumented = routes
+      .filter((route) => !isDocumented(toOpenApiTemplate(route.path), route.method))
+      .map((route) => `${route.method.toUpperCase()} ${route.path}`);
+
+    expect(
+      undocumented,
+      `Undocumented /api/v1 routes found (add them to docs/openapi.yaml):\n${undocumented.join('\n')}`,
+    ).toEqual([]);
   });
 
   describe.each(
@@ -173,6 +289,13 @@ describe('dashboard API contract (docs/openapi.yaml)', () => {
   });
 
   describe('negative validation (proves the validator catches drift)', () => {
+    it('fails the route coverage check when a route is undocumented', () => {
+      // Simulate an undocumented route by checking a path that is not present
+      // in the OpenAPI document. This proves the coverage assertion would fail
+      // on drift rather than silently passing.
+      expect(isDocumented('/__contract_test_undocumented__', 'get')).toBe(false);
+    });
+
     it('fails validation when a response violates the documented schema', () => {
       const ops = documentedOperations();
       const op = ops.find((o) => o.method === 'get');
