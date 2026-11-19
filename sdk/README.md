@@ -166,6 +166,95 @@ install link (`https://www.freighter.app/`) so apps can surface a helpful prompt
 | `forceClose(participant, channelId)`                                   | Settle after the 24-hour challenge period       |
 | `getJob(jobId)`                                                       | Fetch a `Job` record                          |
 | `feeBps()`                                                            | Read the current protocol fee in basis points |
+| `watchJob(jobId, { signal })`                                         | Async iterator over job events (see below)    |
+| `simulate.createJob(...)`                                             | Dry-run a write; returns fees, events, errors |
+
+### Watching a job with an async iterator
+
+`watchJob` returns an async iterator built on the same polling core as
+`subscribeJob`, so it composes with `for await` and `AbortSignal`:
+
+```typescript
+const controller = new AbortController();
+setTimeout(() => controller.abort(), 60_000); // stop after a minute
+
+try {
+  for await (const ev of commerce.watchJob(jobId, { signal: controller.signal })) {
+    console.log(ev.type, ev.ledger);
+    if (ev.type === "job_completed") break;
+  }
+} catch (err) {
+  if ((err as Error).name !== "AbortError") throw err;
+}
+```
+
+Aborting the signal ends the iterator (it throws an `AbortError`-named error
+unless you `break` first).
+
+### Dry-run simulations (`client.simulate.*`)
+
+Every write method has a simulation-only counterpart under `client.simulate`
+that does **not** send a transaction and does **not** require a funded signer:
+
+```typescript
+const quote = await commerce.simulate.createJob(
+  clientAddress, // address only — no keypair or balance needed
+  provider,
+  evaluator,
+  TESTNET.usdcToken,
+  10_000_000n,
+  "Analyse Q3 sales data",
+);
+
+quote.fee; // resource fee (stroops) the write would cost
+quote.events; // events the write would emit
+quote.result; // decoded return value (e.g. the new jobId)
+```
+
+If the contract would reject the call, the simulation throws a
+`BearContractError` with the decoded error name and code instead of raw
+`Error(Contract, #n)` text.
+
+### Contract errors: `CONTRACT_ERRORS` and `BearContractError`
+
+The SDK exports a `CONTRACT_ERRORS` map generated from each contract's `Error`
+enum (a drift test fails the build if the map and the contract diverge), plus a
+`BearContractError` class attached to every thrown contract error:
+
+```typescript
+import { CONTRACT_ERRORS, BearContractError } from "marc-stellar-sdk";
+
+CONTRACT_ERRORS.commerce[3]; // => "JobNotFound" (name for code 3)
+
+try {
+  await commerce.complete(evaluator, jobId);
+} catch (err) {
+  if (err instanceof BearContractError) {
+    console.error(err.name, err.code); // e.g. "JobNotFound", 3
+  }
+}
+```
+
+### RPC failover and retries
+
+Pass `rpcUrls` to any client to rotate endpoints on failure. Requests retry
+with jittered exponential backoff on HTTP 429 and 5xx responses, moving to the
+next endpoint each time. `maxRetries` controls the total number of retries
+(default: `3`).
+
+```typescript
+const commerce = new CommerceClient({
+  ...TESTNET,
+  rpcUrls: [
+    "https://soroban-testnet.stellar.org",
+    "https://rpc-testnet.example.com",
+  ],
+  maxRetries: 5,
+});
+```
+
+`rpcUrl` (singular) still works and is treated as a single-entry `rpcUrls`.
+=======
 
 ### `marcPaywall(opts)` — Express middleware
 

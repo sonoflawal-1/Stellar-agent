@@ -12,6 +12,10 @@ export type SubscribeJobOptions = {
   eventSourceFactory?: (url: string) => JobEventSource;
 };
 
+export type WatchJobOptions = SubscribeJobOptions & {
+  signal?: AbortSignal;
+};
+
 /**
  * Subscribe to indexed lifecycle events for a single job through the dashboard SSE endpoint.
  * The returned function closes the stream.
@@ -49,4 +53,61 @@ export function subscribeJob(
     source.addEventListener(eventType, onEvent);
   }
   return () => source.close();
+}
+
+/**
+ * Iterate indexed lifecycle events for a single job as an async iterator.
+ * Built on {@link subscribeJob}; the iterator ends when the provided
+ * `AbortSignal` aborts (or when the consumer breaks out of the loop).
+ */
+export async function* watchJobEvents(
+  jobId: bigint | number | string,
+  options: WatchJobOptions = {},
+): AsyncGenerator<JobStreamEvent, void, unknown> {
+  const { signal } = options;
+  if (signal?.aborted) {
+    return;
+  }
+
+  const queue: JobStreamEvent[] = [];
+  let notify: (() => void) | null = null;
+  let closed = false;
+
+  const wake = () => {
+    const resolve = notify;
+    notify = null;
+    resolve?.();
+  };
+
+  const close = subscribeJob(
+    jobId,
+    (event) => {
+      queue.push(event);
+      wake();
+    },
+    options,
+  );
+
+  const onAbort = () => {
+    closed = true;
+    close();
+    wake();
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
+
+  try {
+    while (!closed) {
+      if (queue.length > 0) {
+        yield queue.shift() as JobStreamEvent;
+        continue;
+      }
+      await new Promise<void>((resolve) => {
+        notify = resolve;
+      });
+    }
+  } finally {
+    closed = true;
+    signal?.removeEventListener("abort", onAbort);
+    close();
+  }
 }

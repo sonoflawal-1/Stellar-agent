@@ -30,11 +30,33 @@ const cfg: MarcConfig = {
 | Field               | Type     | Description                                                            |
 | ------------------- | -------- | ---------------------------------------------------------------------- |
 | `rpcUrl`            | string   | Soroban RPC endpoint                                                   |
+| `rpcUrls`           | string[] | Optional list of RPC endpoints to rotate through on failure            |
+| `maxRetries`        | number   | Optional retry count for 429/5xx responses (default: 3)                |
 | `networkPassphrase` | string   | Stellar network passphrase                                             |
 | `identityContract`  | string   | Agent Identity contract address                                        |
 | `commerceContract`  | string   | Agentic Commerce contract address                                      |
 | `usdcToken`         | string   | USDC SAC token address                                                 |
 | `onTx`              | function | Optional callback fired with tx hash after each successful transaction |
+
+### RPC failover and retries
+
+When `rpcUrls` is provided, the client rotates through the endpoints on
+transient failures. Requests that fail with HTTP 429 or 5xx are retried with
+jittered exponential backoff, up to `maxRetries` attempts per endpoint.
+
+```typescript
+const cfg: MarcConfig = {
+  ...TESTNET,
+  rpcUrls: [
+    "https://soroban-testnet.stellar.org",
+    "https://rpc-failover.example.com",
+  ],
+  maxRetries: 5, // default: 3
+};
+```
+
+If `rpcUrls` is omitted, `rpcUrl` is used as the single endpoint and retries
+still apply.
 
 ---
 
@@ -164,6 +186,85 @@ Get the current fee in basis points (100 = 1%).
 ```typescript
 const fee = await commerce.feeBps(); // 100
 ```
+
+### `watchJob(jobId, options?)`
+
+Watch a job for state changes as an async iterator. Built on the same polling
+core as `subscribeJob`, but composes with `for await`.
+
+```typescript
+const controller = new AbortController();
+
+for await (const ev of commerce.watchJob(jobId, {
+  signal: controller.signal,
+})) {
+  console.log(ev.status); // "Funded" | "Submitted" | "Completed" | "Cancelled"
+  if (ev.status === "Completed") break;
+}
+
+// Aborting the signal ends the iterator cleanly.
+controller.abort();
+```
+
+| Option   | Type             | Description                                          |
+| -------- | ---------------- | ---------------------------------------------------- |
+| `signal` | `AbortSignal`    | Optional signal; aborting it ends the iterator       |
+| `pollMs` | `number`         | Optional polling interval in milliseconds            |
+
+### Dry-run simulation (`simulate`)
+
+Every write method has a simulation-only counterpart under `commerce.simulate`.
+These build and simulate the transaction without signing or submitting it, so
+they do not require a funded signer. Each returns the resource fees, the events
+the call would emit, and any contract error (as a typed `BearContractError`).
+
+```typescript
+const result = await commerce.simulate.createJob(
+  clientAddress, // address only — no keypair needed
+  providerAddress,
+  evaluatorAddress,
+  TESTNET.usdcToken,
+  10_000_000n,
+  "Build a landing page for Brew & Co",
+);
+
+// {
+//   fee: "100",                 // resource fee (stroops)
+//   events: [...],              // expected contract events
+//   error: null,                // or a BearContractError
+// }
+```
+
+Available dry-run methods mirror the write surface: `simulate.createJob`,
+`simulate.submit`, `simulate.complete`, `simulate.cancel`, and
+`simulate.register` / `simulate.updateUri` / `simulate.deregister` on
+`IdentityClient`.
+
+---
+
+## Contract errors
+
+Contract failures surface as `BearContractError` with a decoded `.name` and
+`.code` instead of raw `Error(Contract, #n)` text. The `CONTRACT_ERRORS` map
+covers every code in the contract `Error` enum.
+
+```typescript
+import { BearContractError, CONTRACT_ERRORS } from "marc-stellar-sdk";
+
+try {
+  await commerce.complete(evaluatorKeypair, jobId);
+} catch (err) {
+  if (err instanceof BearContractError) {
+    console.error(err.code, err.name); // e.g. 3, "JobNotSubmitted"
+  }
+}
+
+// Look up a code directly:
+CONTRACT_ERRORS[3]; // "JobNotSubmitted"
+```
+
+A drift test fails the build if the contract `Error` enum gains a variant that
+is missing from `CONTRACT_ERRORS`.
 
 ---
 
