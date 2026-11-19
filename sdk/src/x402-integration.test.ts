@@ -163,6 +163,155 @@ test("x402 integration: verifies complete payment roundtrip between buyer and mo
   }
 });
 
+test("x402 integration: returnReceipt returns a receipt matching ledger data", async () => {
+  // Ledger stub: record what the facilitator settles so we can compare.
+  const settledLedger: Array<{
+    txHash: string;
+    amount: string;
+    token: string;
+    payTo: string;
+    ledger: number;
+  }> = [];
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.endsWith("/supported")) {
+      return new Response(
+        JSON.stringify({
+          kinds: [{ x402Version: 2, scheme: "exact", network: "stellar:testnet" }],
+          extensions: [],
+          signers: {},
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    if (url.endsWith("/verify")) {
+      return new Response(
+        JSON.stringify({
+          isValid: true,
+          payer: "GBUYERMOCKTESTKEYPAIR1234567890",
+          extensions: {},
+          extra: {},
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    if (url.endsWith("/settle")) {
+      const txHash = "mock_stellar_tx_hash_receipt";
+      const amount = "1000000";
+      const token = "USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
+      const payTo = "GSELLERMOCKTESTKEYPAIR1234567890";
+      const ledger = 1234567;
+      settledLedger.push({ txHash, amount, token, payTo, ledger });
+      return new Response(
+        JSON.stringify({
+          success: true,
+          payer: "GBUYERMOCKTESTKEYPAIR1234567890",
+          transaction: txHash,
+          network: "stellar:testnet",
+          amount,
+          asset: token,
+          payTo,
+          ledger,
+          extensions: {},
+          extra: {},
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    return originalFetch(input, init);
+  }) as typeof fetch;
+
+  const sellerKeypair = Keypair.random();
+  const buyerKeypair = Keypair.random();
+
+  const app = express();
+  app.use(express.json());
+
+  const paywall = marcPaywall({
+    payTo: sellerKeypair.publicKey(),
+    price: "$0.01",
+    network: "stellar:testnet",
+  });
+
+  app.get(
+    "/api/resource",
+    (req, res, next) => {
+      paywall(req, res, next);
+    },
+    (_req, res) => {
+      res.status(200).json({
+        status: "ok",
+        resource: "premium-agent-output",
+        access: "granted",
+      });
+    },
+  );
+
+  const server = await new Promise<http.Server>((resolve) => {
+    const s = app.listen(0, "127.0.0.1", () => resolve(s));
+  });
+
+  const address = server.address() as { port: number };
+  const resourceUrl = `http://127.0.0.1:${address.port}/api/resource`;
+
+  try {
+    const clientFetch = marcFetch({
+      signer: buyerKeypair,
+      network: "testnet",
+      maxPaymentAttempts: 2,
+      returnReceipt: true,
+    });
+
+    const result = await clientFetch(resourceUrl);
+
+    // With returnReceipt: true, marcFetch returns { response, receipt }.
+    assert.ok(
+      result && typeof result === "object" && "response" in result && "receipt" in result,
+      "marcFetch with returnReceipt must return { response, receipt }",
+    );
+
+    const { response, receipt } = result as {
+      response: Response;
+      receipt: {
+        txHash: string;
+        amount: string;
+        token: string;
+        payTo: string;
+        ledger: number;
+      };
+    };
+
+    assert.equal(response.status, 200, "Paid request must return HTTP 200 OK");
+    const data = (await response.json()) as { status: string; resource: string; access: string };
+    assert.equal(data.status, "ok");
+    assert.equal(data.resource, "premium-agent-output");
+    assert.equal(data.access, "granted");
+
+    // Receipt must be present and typed.
+    assert.ok(receipt, "Receipt must be returned");
+    assert.equal(typeof receipt.txHash, "string");
+    assert.equal(typeof receipt.amount, "string");
+    assert.equal(typeof receipt.token, "string");
+    assert.equal(typeof receipt.payTo, "string");
+    assert.equal(typeof receipt.ledger, "number");
+
+    // Receipt must match the ledger data recorded by the facilitator stub.
+    assert.equal(settledLedger.length, 1, "Facilitator must settle exactly once");
+    const ledgerEntry = settledLedger[0];
+    assert.equal(receipt.txHash, ledgerEntry.txHash, "Receipt txHash must match ledger");
+    assert.equal(receipt.amount, ledgerEntry.amount, "Receipt amount must match ledger");
+    assert.equal(receipt.token, ledgerEntry.token, "Receipt token must match ledger");
+    assert.equal(receipt.payTo, ledgerEntry.payTo, "Receipt payTo must match ledger");
+    assert.equal(receipt.ledger, ledgerEntry.ledger, "Receipt ledger must match ledger");
+  } finally {
+    restoreFetch();
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => (err ? reject(err) : resolve()));
+    });
+  }
+});
+
 test("x402 integration: concurrent replay attack with same X-Payment header is prevented", async () => {
   // Count facilitator calls so we can assert single settlement.
   let verifyCalls = 0;
