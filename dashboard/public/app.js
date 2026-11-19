@@ -3610,6 +3610,126 @@
     setMetaTag("property", "og:url", window.location.href);
   }
 
+  // ── Agent metadata schema validation (#975) ──
+  // Mirrors docs/agent-metadata-schema-v1.json.  The server validates too, but
+  // the dashboard re-checks so a malformed profile renders a warning banner
+  // instead of crashing the view.
+  var AGENT_METADATA_SCHEMA = {
+    type: "object",
+    required: ["name", "description"],
+    properties: {
+      name: { type: "string", minLength: 1, maxLength: 120 },
+      description: { type: "string", minLength: 1, maxLength: 2000 },
+      version: { type: "string" },
+      tags: { type: "array", items: { type: "string" }, maxItems: 32 },
+      capabilities: { type: "array", items: { type: "string" }, maxItems: 32 },
+      pricing: { type: ["string", "object", "number"] },
+      image: { type: "string" },
+      website: { type: "string" },
+      contact: { type: "string" },
+    },
+    additionalProperties: true,
+  };
+
+  function schemaTypeOf(value) {
+    if (value === null) return "null";
+    if (Array.isArray(value)) return "array";
+    return typeof value;
+  }
+
+  function validateAgentMetadata(metadata) {
+    var errors = [];
+    var schema = AGENT_METADATA_SCHEMA;
+    if (schemaTypeOf(metadata) !== "object") {
+      return { valid: false, errors: ["metadata must be a JSON object"] };
+    }
+    var required = schema.required || [];
+    for (var r = 0; r < required.length; r++) {
+      if (metadata[required[r]] == null) errors.push('missing required field "' + required[r] + '"');
+    }
+    var props = schema.properties || {};
+    Object.keys(props).forEach(function (key) {
+      if (metadata[key] == null) return;
+      var rule = props[key];
+      var actual = schemaTypeOf(metadata[key]);
+      var allowed = Array.isArray(rule.type) ? rule.type : [rule.type];
+      if (allowed.indexOf(actual) === -1) {
+        errors.push('field "' + key + '" must be ' + allowed.join(" or ") + " (got " + actual + ")");
+        return;
+      }
+      if (actual === "string") {
+        if (rule.minLength != null && metadata[key].length < rule.minLength) {
+          errors.push('field "' + key + '" is shorter than ' + rule.minLength + " characters");
+        }
+        if (rule.maxLength != null && metadata[key].length > rule.maxLength) {
+          errors.push('field "' + key + '" is longer than ' + rule.maxLength + " characters");
+        }
+      }
+      if (actual === "array") {
+        if (rule.maxItems != null && metadata[key].length > rule.maxItems) {
+          errors.push('field "' + key + '" has more than ' + rule.maxItems + " items");
+        }
+        if (rule.items && rule.items.type) {
+          for (var i = 0; i < metadata[key].length; i++) {
+            if (schemaTypeOf(metadata[key][i]) !== rule.items.type) {
+              errors.push('field "' + key + '[' + i + ']" must be ' + rule.items.type);
+            }
+          }
+        }
+      }
+    });
+    return { valid: errors.length === 0, errors: errors };
+  }
+
+  // Parses the agent's metadata JSON, tolerating malformed input.
+  function parseAgentMetadata(agent) {
+    var raw = agent && (agent.metadata != null ? agent.metadata : agent.metadataJson);
+    if (raw == null) return { present: false, data: null, parseError: null };
+    if (typeof raw === "object") return { present: true, data: raw, parseError: null };
+    try {
+      return { present: true, data: JSON.parse(String(raw)), parseError: null };
+    } catch (e) {
+      return { present: true, data: null, parseError: "Metadata is not valid JSON" };
+    }
+  }
+
+  function renderMetadataWarning(parseError, validation) {
+    var messages = [];
+    if (parseError) messages.push(parseError);
+    if (validation && validation.errors) messages = messages.concat(validation.errors);
+    if (messages.length === 0) return "";
+    var items = "";
+    for (var i = 0; i < messages.length && i < 8; i++) {
+      items += "<li>" + escapeHtml(String(messages[i])) + "</li>";
+    }
+    return (
+      '<div class="metadata-warning" role="alert" style="margin:16px 0;padding:12px 16px;border-radius:8px;' +
+      'border:1px solid #b45309;background:rgba(180,83,9,.12);color:var(--text)">' +
+      '<strong>⚠️ Metadata failed schema validation</strong>' +
+      '<div style="font-size:13px;color:var(--text-muted);margin-top:4px">' +
+      "This profile may render incorrectly. The raw metadata is shown below.</div>" +
+      '<ul style="margin:8px 0 0 18px;font-size:13px">' + items + "</ul></div>"
+    );
+  }
+
+  function renderReputation(reputation) {
+    if (!reputation || typeof reputation !== "object") return "";
+    var completed = reputation.completedJobs != null ? reputation.completedJobs : reputation.completed;
+    var total = reputation.totalJobs != null ? reputation.totalJobs : reputation.total;
+    var rating = reputation.rating != null ? reputation.rating : reputation.averageRating;
+    var disputes = reputation.disputes;
+    var rows = "";
+    if (completed != null) rows += '<div class="reputation-stat"><span class="reputation-label">Completed jobs</span><span class="reputation-value">' + escapeHtml(String(completed)) + "</span></div>";
+    if (total != null) rows += '<div class="reputation-stat"><span class="reputation-label">Total jobs</span><span class="reputation-value">' + escapeHtml(String(total)) + "</span></div>";
+    if (rating != null) rows += '<div class="reputation-stat"><span class="reputation-label">Rating</span><span class="reputation-value">' + escapeHtml(String(rating)) + "</span></div>";
+    if (disputes != null) rows += '<div class="reputation-stat"><span class="reputation-label">Disputes</span><span class="reputation-value">' + escapeHtml(String(disputes)) + "</span></div>";
+    if (!rows) return "";
+    return (
+      '<div class="agent-profile-section"><div class="agent-profile-heading">Reputation</div>' +
+      '<div class="reputation-grid">' + rows + "</div></div>"
+    );
+  }
+
   async function renderAgentProfile(id) {
     setPage(
       '<div class="page-header"><div class="page-title">Agent Profile</div></div>' +
@@ -3648,7 +3768,7 @@
       badges = [];
     }
 
-    // Recent job history for this agent
+    // Recent job history for this agent (indexer-backed)
     var jobs = [];
     try {
       jobs = (await api("/jobs?agent=" + encodeURIComponent(String(id)), { _silent: true })) || [];
@@ -3657,9 +3777,39 @@
       jobs = [];
     }
 
+    // Reputation from the indexer (best-effort — never blocks the profile)
+    var reputation = agent.reputation || null;
+    if (!reputation) {
+      try {
+        reputation = await api("/agents/" + encodeURIComponent(String(id)) + "/reputation", { _silent: true });
+      } catch (e) {
+        reputation = null;
+      }
+    }
+
+    // Metadata JSON validated against docs/agent-metadata-schema-v1.json
+    var parsedMeta = parseAgentMetadata(agent);
+    var validation = { valid: true, errors: [] };
+    if (parsedMeta.present && !parsedMeta.parseError) {
+      validation = validateAgentMetadata(parsedMeta.data);
+    }
+    var metadataWarningHtml = renderMetadataWarning(parsedMeta.parseError, validation);
+    var metadataHtml = "";
+    if (parsedMeta.present) {
+      var metaText = parsedMeta.data != null ? JSON.stringify(parsedMeta.data, null, 2) : String(agent.metadata != null ? agent.metadata : agent.metadataJson);
+      metadataHtml =
+        '<div class="agent-profile-section"><div class="agent-profile-heading">Metadata</div>' +
+        '<pre class="agent-metadata-json" style="white-space:pre-wrap;word-break:break-word;font-size:12px;' +
+        'max-height:320px;overflow:auto;padding:12px;border-radius:8px;background:var(--bg-elevated,#111)">' +
+        escapeHtml(metaText) + "</pre></div>";
+    }
+
     var shareUrl = window.location.origin + window.location.pathname + "#/agent/" + id;
     var capabilities = Array.isArray(agent.tags) ? agent.tags : [];
-    var pricing = agent.pricing || agent.price || null;
+    if (capabilities.length === 0 && parsedMeta.data && Array.isArray(parsedMeta.data.capabilities)) {
+      capabilities = parsedMeta.data.capabilities;
+    }
+    var pricing = agent.pricing || agent.price || (parsedMeta.data && parsedMeta.data.pricing) || null;
 
     var capabilitiesHtml = "";
     if (capabilities.length > 0) {
@@ -3674,7 +3824,7 @@
     if (pricing) {
       pricingHtml =
         '<div class="agent-profile-section"><div class="agent-profile-heading">Pricing</div>' +
-        '<div class="agent-profile-pricing">' + escapeHtml(String(pricing)) + "</div></div>";
+        '<div class="agent-profile-pricing">' + escapeHtml(typeof pricing === "object" ? JSON.stringify(pricing) : String(pricing)) + "</div></div>";
     }
 
     var historyHtml = '<div class="agent-profile-section"><div class="agent-profile-heading">Recent Jobs</div>';
@@ -3695,6 +3845,8 @@
     }
     historyHtml += "</div>";
 
+    var bio = agent.description || (parsedMeta.data && parsedMeta.data.description) || agent.uri || "No bio provided.";
+
     setPage(
       '<div class="agent-profile">' +
         '<div class="agent-profile-banner"></div>' +
@@ -3709,11 +3861,14 @@
         '<button class="btn btn-secondary" onclick="window.__copyShareLink(\'' + escapeAttr(shareUrl) + "')\">Copy Link</button>" +
         "</div></div>" +
         renderBadgeChips(badges) +
+        metadataWarningHtml +
         '<div class="agent-profile-section"><div class="agent-profile-heading">Bio</div>' +
-        '<div class="agent-profile-bio">' + escapeHtml(agent.description || agent.uri || "No bio provided.") + "</div></div>" +
+        '<div class="agent-profile-bio">' + escapeHtml(bio) + "</div></div>" +
+        renderReputation(reputation) +
         pricingHtml +
         capabilitiesHtml +
         historyHtml +
+        metadataHtml +
         "</div>",
     );
   }
@@ -3724,6 +3879,193 @@
 
   window.__hireAgent = function (agentId) {
     window.__showCreateJob({ provider: agentId });
+  };
+
+  // ── Network switcher (#976) ──
+  // Presets come from /api/network; switching clears client caches, asks the
+  // server to drop its caches and (for mainnet) requires explicit confirmation.
+  var networkPresets = null;
+  var networkPresetsPromise = null;
+
+  function getNetworkPresets() {
+    if (networkPresets) return Promise.resolve(networkPresets);
+    if (networkPresetsPromise) return networkPresetsPromise;
+    networkPresetsPromise = (async function () {
+      var presets = null;
+      try {
+        var data = await api("/network", { _silent: true });
+        presets = (data && (data.presets || data.networks)) || data || null;
+      } catch (e) {
+        presets = null;
+      }
+      // Fall back to the built-in presets when the endpoint is unavailable.
+      if (!presets || typeof presets !== "object" || Array.isArray(presets)) {
+        presets = NETWORK_PRESETS;
+      }
+      networkPresets = presets;
+      return presets;
+    })();
+    try {
+      await networkPresetsPromise;
+    } finally {
+      networkPresetsPromise = null;
+    }
+    return networkPresets;
+  }
+
+  function presetFor(networkId) {
+    if (networkPresets && networkPresets[networkId]) return networkPresets[networkId];
+    return NETWORK_PRESETS[networkId] || null;
+  }
+
+  function clearClientCaches() {
+    state.stats = null;
+    state.wallets = null;
+    state.agents = null;
+    state.jobs = null;
+    state.history = null;
+    state.jobTotal = 0;
+    state.jobHasNext = false;
+    state.agentTotal = 0;
+    state.walletBalances = null;
+    try {
+      if (typeof sse !== "undefined" && sse && sse.source) {
+        try { sse.source.close(); } catch (e) {}
+        sse.source = null;
+        sse.live = false;
+      }
+    } catch (e) {}
+  }
+
+  function renderNetworkMismatchBanner() {
+    var existing = document.getElementById("network-mismatch-banner");
+    if (existing) existing.remove();
+    if (!wallet.connected || !wallet.network) return;
+    var active = state.network || "testnet";
+    if (wallet.network === active) return;
+    var banner = document.createElement("div");
+    banner.id = "network-mismatch-banner";
+    banner.className = "network-mismatch-banner";
+    banner.setAttribute("role", "alert");
+    banner.style.cssText =
+      "margin:0 0 16px;padding:12px 16px;border-radius:8px;border:1px solid #b45309;" +
+      "background:rgba(180,83,9,.12);display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap";
+    banner.innerHTML =
+      '<span>⚠️ Your wallet is on <strong>' +
+      escapeHtml(wallet.network === "mainnet" ? "Mainnet" : wallet.network) +
+      "</strong> but the dashboard is set to <strong>" +
+      escapeHtml(active === "mainnet" ? "Mainnet" : active) +
+      "</strong>. Signing may fail.</span>" +
+      '<button type="button" class="btn btn-secondary" id="network-mismatch-switch">Switch dashboard network</button>';
+    var page = document.getElementById("page");
+    if (page && page.parentNode) page.parentNode.insertBefore(banner, page);
+    var btn = document.getElementById("network-mismatch-switch");
+    if (btn) {
+      btn.addEventListener("click", function () {
+        window.__openNetworkSwitcher();
+      });
+    }
+  }
+
+  function updateNetworkBadge() {
+    var nb = document.getElementById("network-badge");
+    if (!nb) return;
+    var active = state.network || "testnet";
+    var preset = presetFor(active);
+    nb.innerHTML =
+      '<span class="badge-dot"></span>' +
+      escapeHtml(preset && preset.label ? preset.label : active);
+  }
+
+  async function switchNetwork(networkId, opts) {
+    var options = opts || {};
+    var presets = await getNetworkPresets();
+    var preset = presets[networkId] || NETWORK_PRESETS[networkId];
+    if (!preset) {
+      toast("Unknown network: " + networkId, "error");
+      return false;
+    }
+    if (networkId === "mainnet" && !options.confirmed) {
+      var confirmed = await confirmMainnetSwitch();
+      if (!confirmed) return false;
+    }
+    // 1. Clear client-side caches so no stale data leaks across networks.
+    clearClientCaches();
+    // 2. Persist the selection.
+    state.network = networkId;
+    try { localStorage.setItem("bear-network", networkId); } catch (e) {}
+    // 3. Ask the server to drop its caches for the new network.
+    try {
+      await api("/network/cache", {
+        method: "POST",
+        body: { network: networkId },
+        _silent: true,
+      });
+    } catch (e) {
+      // Non-fatal — the server may not implement cache clearing yet.
+    }
+    // 4. Re-render the current view with fresh data.
+    updateNetworkBadge();
+    renderNetworkMismatchBanner();
+    toast("Switched to " + (preset.label || networkId));
+    navigate();
+    return true;
+  }
+
+  function confirmMainnetSwitch() {
+    return new Promise(function (resolve) {
+      var overlay = showModal(
+        '<h2 class="modal-title">Switch to Mainnet?</h2>' +
+          '<p style="color:var(--text-muted);margin-bottom:16px">Mainnet uses <strong>real funds</strong>. ' +
+          "Transactions signed on Mainnet are irreversible. Make sure you understand the risks before continuing.</p>" +
+          '<div class="modal-actions">' +
+          '<button class="btn btn-secondary" id="mainnet-cancel">Cancel</button>' +
+          '<button class="btn btn-primary" id="mainnet-confirm">Yes, switch to Mainnet</button>' +
+          "</div>",
+      );
+      var done = function (value) {
+        try { if (overlay) overlay.remove(); } catch (e) {}
+        resolve(value);
+      };
+      var cancelBtn = document.getElementById("mainnet-cancel");
+      var confirmBtn = document.getElementById("mainnet-confirm");
+      if (cancelBtn) cancelBtn.addEventListener("click", function () { done(false); });
+      if (confirmBtn) confirmBtn.addEventListener("click", function () { done(true); });
+    });
+  }
+
+  window.__openNetworkSwitcher = async function () {
+    var presets = await getNetworkPresets();
+    var active = state.network || "testnet";
+    var ids = Object.keys(presets);
+    var cards = "";
+    for (var i = 0; i < ids.length; i++) {
+      var id = ids[i];
+      var p = presets[id] || {};
+      var isActive = id === active;
+      cards +=
+        '<button type="button" class="network-preset-card' + (isActive ? " active" : "") + '" ' +
+        'data-network="' + escapeAttr(id) + '" ' +
+        'onclick="window.__selectNetwork(\'' + escapeAttr(id) + "')\">" +
+        '<span class="network-preset-name">' + escapeHtml(p.label || id) + "</span>" +
+        (p.realFunds ? '<span class="network-preset-warning">Real funds</span>' : "") +
+        (isActive ? '<span class="network-preset-active">Active</span>' : "") +
+        "</button>";
+    }
+    showModal(
+      '<h2 class="modal-title">Switch Network</h2>' +
+        '<p style="color:var(--text-muted);margin-bottom:16px">Switching networks clears cached data and re-fetches from the indexer.</p>' +
+        '<div class="network-preset-grid">' + cards + "</div>" +
+        '<div class="modal-actions">' +
+        '<button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button>' +
+        "</div>",
+    );
+  };
+
+  window.__selectNetwork = async function (networkId) {
+    var overlay = document.querySelector(".modal-overlay");
+    if (overlay) overlay.remove();
+    await switchNetwork(networkId);
   };
 
   // ── Router ──
@@ -4076,7 +4418,13 @@
   connectEventStream();
 
   // Initial render
+  state.network = readPersistedNetwork();
   renderNetworkBadge();
+  updateNetworkBadge();
+  getNetworkPresets().then(function () {
+    updateNetworkBadge();
+    renderNetworkMismatchBanner();
+  });
   navigate();
 
   // Sync the refresh-interval dropdown to the restored/default interval
