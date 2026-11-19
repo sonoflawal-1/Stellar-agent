@@ -49,6 +49,21 @@
         </svg>
       </button>
     </div>
+    <!-- Wallet/network mismatch banner (#976) -->
+    <div class="wallet-network-mismatch-banner" id="wallet-network-mismatch-banner" role="alert" hidden>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" />
+        <path d="M12 9v4M12 17h.01" />
+      </svg>
+      <span class="wallet-network-mismatch-text" id="wallet-network-mismatch-text">
+        Your wallet is connected to a different network than the dashboard.
+      </span>
+      <button class="wallet-network-mismatch-dismiss" id="wallet-network-mismatch-dismiss" type="button" aria-label="Dismiss network mismatch warning">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M18 6 6 18M6 6l12 12" />
+        </svg>
+      </button>
+    </div>
     <!-- Sidebar -->
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-header">
@@ -252,9 +267,36 @@
           <label class="notif-pref-label" for="notif-toggle">Desktop notifications</label>
           <input type="checkbox" id="notif-toggle" class="notif-toggle" onchange="window.__setNotificationsEnabled(this.checked)" />
         </div>
-        <div class="testnet-badge" id="network-badge">
-          <span class="badge-dot"></span>
-          Unknown Network
+        <!-- Network switcher (#976) -->
+        <div class="network-switcher" id="network-switcher">
+          <button
+            class="network-switcher-btn"
+            id="network-switcher-btn"
+            type="button"
+            aria-haspopup="menu"
+            aria-expanded="false"
+            aria-controls="network-switcher-menu"
+          >
+            <span class="badge-dot" id="network-badge-dot"></span>
+            <span class="network-switcher-label" id="network-badge">Unknown Network</span>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+          </button>
+          <div class="network-switcher-menu" id="network-switcher-menu" role="menu" aria-labelledby="network-switcher-btn" hidden>
+            <button class="network-switcher-item" type="button" role="menuitemradio" aria-checked="false" data-network="testnet">
+              <span class="network-switcher-item-name">Testnet</span>
+              <span class="network-switcher-item-desc">Stellar test network</span>
+            </button>
+            <button class="network-switcher-item" type="button" role="menuitemradio" aria-checked="false" data-network="futurenet">
+              <span class="network-switcher-item-name">Futurenet</span>
+              <span class="network-switcher-item-desc">Upcoming protocol features</span>
+            </button>
+            <button class="network-switcher-item network-switcher-item-danger" type="button" role="menuitemradio" aria-checked="false" data-network="mainnet">
+              <span class="network-switcher-item-name">Mainnet</span>
+              <span class="network-switcher-item-desc">Real funds — requires confirmation</span>
+            </button>
+          </div>
         </div>
         <!-- SSE connection status pill (#581) — desktop sidebar -->
         <div class="sse-status-pill sse-status-sidebar" id="sse-status-pill-desktop" aria-live="polite" aria-label="SSE connection status">
@@ -721,6 +763,61 @@
         </div>
       </div>
     </div>
+
+    <!-- Network switch confirmation modal (#976) -->
+    <div class="modal-overlay" id="network-switch-modal" role="dialog" aria-modal="true" aria-labelledby="network-switch-modal-title" hidden>
+      <div class="modal network-switch-modal">
+        <div class="modal-header">
+          <h2 class="modal-title" id="network-switch-modal-title">Switch Network</h2>
+          <button class="modal-close" id="network-switch-modal-close" type="button" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <p class="network-switch-message" id="network-switch-message">
+            Switching networks will clear cached data and reload the dashboard.
+          </p>
+          <div class="network-switch-mainnet-warning" id="network-switch-mainnet-warning" role="alert" hidden>
+            <strong>Warning:</strong> Mainnet uses real funds. Transactions cannot be undone.
+          </div>
+          <label class="network-switch-confirm-row" id="network-switch-confirm-row" hidden>
+            <input type="checkbox" id="network-switch-mainnet-confirm" />
+            <span>I understand this will use real funds on Mainnet.</span>
+          </label>
+          <div class="modal-actions">
+            <button type="button" class="btn btn-secondary" id="network-switch-cancel">Cancel</button>
+            <button type="button" class="btn btn-primary" id="network-switch-confirm" disabled>Switch Network</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Agent detail view container (#975) -->
+    <section class="agent-detail-view" id="agent-detail-view" aria-label="Agent profile" hidden>
+      <div class="agent-detail-header">
+        <button class="btn btn-secondary agent-detail-back" id="agent-detail-back" type="button">Back to agents</button>
+        <h1 class="agent-detail-name" id="agent-detail-name">Agent</h1>
+        <div class="agent-detail-address sim-mono" id="agent-detail-address"></div>
+      </div>
+      <div class="agent-detail-metadata-warning" id="agent-detail-metadata-warning" role="alert" hidden>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" />
+          <path d="M12 9v4M12 17h.01" />
+        </svg>
+        <div class="agent-detail-metadata-warning-body">
+          <span class="agent-detail-metadata-warning-title">Metadata failed schema validation</span>
+          <ul class="agent-detail-metadata-warning-list" id="agent-detail-metadata-warning-list"></ul>
+        </div>
+      </div>
+      <div class="agent-detail-grid">
+        <section class="agent-detail-panel" aria-labelledby="agent-detail-reputation-title">
+          <h2 class="agent-detail-panel-title" id="agent-detail-reputation-title">Reputation</h2>
+          <div class="agent-detail-reputation" id="agent-detail-reputation"></div>
+        </section>
+        <section class="agent-detail-panel" aria-labelledby="agent-detail-history-title">
+          <h2 class="agent-detail-panel-title" id="agent-detail-history-title">Job History</h2>
+          <ul class="agent-detail-history" id="agent-detail-history"></ul>
+        </section>
+      </div>
+    </section>
 
     <!-- Dispute evidence card (job detail view) (#753) -->
     <template id="dispute-evidence-card-template">

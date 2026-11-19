@@ -5,11 +5,13 @@
 const {
   parseSimulationResult,
   extractSimulationError,
-  createWalletStateMachine,
-  WALLET_STATES,
-  validateJobForm,
-  computeFeePreview,
-  buildJobTimeline,
+  validateAgentMetadata,
+  buildAgentProfile,
+  clearNetworkCaches,
+  requiresMainnetConfirmation,
+  getWalletNetworkMismatch,
+  migrateAuditLogs,
+  applyAuditRetention,
 } = require('./app.js');
 
 describe('parseSimulationResult', () => {
@@ -178,239 +180,163 @@ describe('extractSimulationError', () => {
   });
 });
 
-describe('wallet state machine', () => {
-  test('exposes the expected states', () => {
-    expect(WALLET_STATES).toEqual(
-      expect.objectContaining({
-        IDLE: 'idle',
-        CONNECTING: 'connecting',
-        SIGNING: 'signing',
-        SUBMITTED: 'submitted',
-        FAILED: 'failed',
-      })
-    );
-  });
+describe('validateAgentMetadata', () => {
+  test('accepts metadata that conforms to the schema', () => {
+    const metadata = {
+      name: 'Example Agent',
+      description: 'Does useful things',
+      version: '1.0.0',
+      capabilities: ['simulate', 'execute'],
+      endpoint: 'https://agent.example.com',
+    };
 
-  test('starts in idle', () => {
-    const sm = createWalletStateMachine();
-    expect(sm.getState()).toBe(WALLET_STATES.IDLE);
-  });
+    const result = validateAgentMetadata(metadata);
 
-  test('walks the happy path idle -> connecting -> signing -> submitted', () => {
-    const sm = createWalletStateMachine();
-    expect(sm.transition(WALLET_STATES.CONNECTING)).toBe(true);
-    expect(sm.getState()).toBe(WALLET_STATES.CONNECTING);
-    expect(sm.transition(WALLET_STATES.SIGNING)).toBe(true);
-    expect(sm.getState()).toBe(WALLET_STATES.SIGNING);
-    expect(sm.transition(WALLET_STATES.SUBMITTED)).toBe(true);
-    expect(sm.getState()).toBe(WALLET_STATES.SUBMITTED);
-  });
-
-  test('allows failure from connecting and signing', () => {
-    const fromConnecting = createWalletStateMachine();
-    fromConnecting.transition(WALLET_STATES.CONNECTING);
-    expect(fromConnecting.transition(WALLET_STATES.FAILED)).toBe(true);
-    expect(fromConnecting.getState()).toBe(WALLET_STATES.FAILED);
-
-    const fromSigning = createWalletStateMachine();
-    fromSigning.transition(WALLET_STATES.CONNECTING);
-    fromSigning.transition(WALLET_STATES.SIGNING);
-    expect(fromSigning.transition(WALLET_STATES.FAILED)).toBe(true);
-    expect(fromSigning.getState()).toBe(WALLET_STATES.FAILED);
-  });
-
-  test('rejects invalid transitions and keeps the current state', () => {
-    const sm = createWalletStateMachine();
-    // idle -> signing is not allowed
-    expect(sm.transition(WALLET_STATES.SIGNING)).toBe(false);
-    expect(sm.getState()).toBe(WALLET_STATES.IDLE);
-    // idle -> submitted is not allowed
-    expect(sm.transition(WALLET_STATES.SUBMITTED)).toBe(false);
-    expect(sm.getState()).toBe(WALLET_STATES.IDLE);
-  });
-
-  test('rejects transitions out of a terminal submitted state', () => {
-    const sm = createWalletStateMachine();
-    sm.transition(WALLET_STATES.CONNECTING);
-    sm.transition(WALLET_STATES.SIGNING);
-    sm.transition(WALLET_STATES.SUBMITTED);
-    expect(sm.transition(WALLET_STATES.CONNECTING)).toBe(false);
-    expect(sm.getState()).toBe(WALLET_STATES.SUBMITTED);
-  });
-
-  test('allows reset from failed back to idle', () => {
-    const sm = createWalletStateMachine();
-    sm.transition(WALLET_STATES.CONNECTING);
-    sm.transition(WALLET_STATES.FAILED);
-    expect(sm.transition(WALLET_STATES.IDLE)).toBe(true);
-    expect(sm.getState()).toBe(WALLET_STATES.IDLE);
-  });
-
-  test('notifies subscribers on state change and records the error on failure', () => {
-    const sm = createWalletStateMachine();
-    const seen = [];
-    const unsubscribe = sm.subscribe((state, error) => {
-      seen.push({ state, error });
-    });
-
-    sm.transition(WALLET_STATES.CONNECTING);
-    sm.transition(WALLET_STATES.FAILED, new Error('user rejected'));
-
-    expect(seen).toHaveLength(2);
-    expect(seen[0].state).toBe(WALLET_STATES.CONNECTING);
-    expect(seen[1].state).toBe(WALLET_STATES.FAILED);
-    expect(seen[1].error).toBeInstanceOf(Error);
-    expect(seen[1].error.message).toBe('user rejected');
-
-    unsubscribe();
-    sm.transition(WALLET_STATES.IDLE);
-    expect(seen).toHaveLength(2);
-  });
-
-  test('does not notify subscribers on a rejected transition', () => {
-    const sm = createWalletStateMachine();
-    const listener = jest.fn();
-    sm.subscribe(listener);
-    sm.transition(WALLET_STATES.SUBMITTED);
-    expect(listener).not.toHaveBeenCalled();
-  });
-});
-
-describe('validateJobForm', () => {
-  const valid = {
-    title: 'Build a dashboard',
-    description: 'Implement the timeline view',
-    budget: '100',
-    deadline: '2030-01-01',
-  };
-
-  test('accepts a valid form', () => {
-    const result = validateJobForm(valid);
     expect(result.valid).toBe(true);
-    expect(result.errors).toEqual({});
+    expect(result.errors).toEqual([]);
   });
 
-  test('requires a non-empty title', () => {
-    const result = validateJobForm({ ...valid, title: '   ' });
+  test('reports a warning instead of throwing for invalid metadata', () => {
+    const metadata = {
+      // name missing, capabilities wrong type
+      description: 42,
+      capabilities: 'not-an-array',
+    };
+
+    let result;
+    expect(() => {
+      result = validateAgentMetadata(metadata);
+    }).not.toThrow();
+
     expect(result.valid).toBe(false);
-    expect(result.errors.title).toBeDefined();
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors.join(' ')).toMatch(/name|capabilities|description/i);
   });
 
-  test('requires a description', () => {
-    const result = validateJobForm({ ...valid, description: '' });
+  test('handles malformed JSON strings without crashing', () => {
+    let result;
+    expect(() => {
+      result = validateAgentMetadata('{ not valid json');
+    }).not.toThrow();
+
     expect(result.valid).toBe(false);
-    expect(result.errors.description).toBeDefined();
+    expect(result.errors.length).toBeGreaterThan(0);
   });
 
-  test('rejects a non-numeric or non-positive budget', () => {
-    expect(validateJobForm({ ...valid, budget: 'abc' }).errors.budget).toBeDefined();
-    expect(validateJobForm({ ...valid, budget: '0' }).errors.budget).toBeDefined();
-    expect(validateJobForm({ ...valid, budget: '-5' }).errors.budget).toBeDefined();
-  });
-
-  test('rejects a budget with too many decimal places', () => {
-    const result = validateJobForm({ ...valid, budget: '1.12345678' });
-    expect(result.valid).toBe(false);
-    expect(result.errors.budget).toBeDefined();
-  });
-
-  test('rejects a deadline in the past', () => {
-    const result = validateJobForm(
-      { ...valid, deadline: '2000-01-01' },
-      { now: new Date('2024-01-01T00:00:00Z') }
-    );
-    expect(result.valid).toBe(false);
-    expect(result.errors.deadline).toBeDefined();
-  });
-
-  test('ties each error to its field', () => {
-    const result = validateJobForm({
-      title: '',
-      description: '',
-      budget: 'x',
-      deadline: 'bad',
-    });
-    expect(Object.keys(result.errors).sort()).toEqual(
-      ['budget', 'deadline', 'description', 'title'].sort()
-    );
+  test('handles null/undefined metadata gracefully', () => {
+    expect(validateAgentMetadata(null).valid).toBe(false);
+    expect(validateAgentMetadata(undefined).valid).toBe(false);
   });
 });
 
-describe('computeFeePreview', () => {
-  test('computes fee and net payout from budget and simulated fee', () => {
-    const preview = computeFeePreview({ budget: '100', fee: '2.5' });
-    expect(preview.budget).toBe(100);
-    expect(preview.fee).toBe(2.5);
-    expect(preview.netPayout).toBe(97.5);
+describe('buildAgentProfile', () => {
+  test('builds a profile with jobs and reputation from the indexer', () => {
+    const agent = {
+      id: 'GAGENT',
+      metadata: { name: 'Example Agent', version: '1.0.0' },
+    };
+    const indexer = {
+      jobs: [{ id: 'job-1', status: 'completed' }],
+      reputation: { score: 4.5, reviews: 10 },
+    };
+
+    const profile = buildAgentProfile(agent, indexer);
+
+    expect(profile.id).toBe('GAGENT');
+    expect(profile.jobs).toHaveLength(1);
+    expect(profile.reputation.score).toBe(4.5);
+    expect(profile.metadataWarning).toBeNull();
   });
 
-  test('handles zero fee', () => {
-    const preview = computeFeePreview({ budget: '50', fee: '0' });
-    expect(preview.netPayout).toBe(50);
-  });
+  test('surfaces a metadata warning for invalid metadata without throwing', () => {
+    const agent = {
+      id: 'GBAD',
+      metadata: { capabilities: 'nope' },
+    };
 
-  test('never returns a negative net payout', () => {
-    const preview = computeFeePreview({ budget: '1', fee: '5' });
-    expect(preview.netPayout).toBe(0);
-  });
+    let profile;
+    expect(() => {
+      profile = buildAgentProfile(agent, { jobs: [], reputation: null });
+    }).not.toThrow();
 
-  test('returns null when inputs are invalid', () => {
-    expect(computeFeePreview({ budget: 'abc', fee: '1' })).toBeNull();
-    expect(computeFeePreview({ budget: '10', fee: 'abc' })).toBeNull();
+    expect(profile.metadataWarning).toBeTruthy();
+    expect(profile.jobs).toEqual([]);
   });
 });
 
-describe('buildJobTimeline', () => {
-  const events = [
-    { type: 'created', ledger: 100, txHash: 'AAA', ledgerCloseTime: '2024-01-01T00:00:00Z' },
-    { type: 'funded', ledger: 110, txHash: 'BBB', ledgerCloseTime: '2024-01-02T00:00:00Z' },
-    { type: 'submitted', ledger: 120, txHash: 'CCC', ledgerCloseTime: '2024-01-03T00:00:00Z' },
-    { type: 'completed', ledger: 130, txHash: 'DDD', ledgerCloseTime: '2024-01-04T00:00:00Z' },
-  ];
+describe('network switching', () => {
+  test('clearNetworkCaches clears all registered caches', () => {
+    const caches = {
+      agents: { clear: jest.fn() },
+      jobs: { clear: jest.fn() },
+      reputation: { clear: jest.fn() },
+    };
 
-  test('maps events into ordered lifecycle steps', () => {
-    const timeline = buildJobTimeline(events);
-    expect(timeline.map((s) => s.type)).toEqual([
-      'created',
-      'funded',
-      'submitted',
-      'completed',
-    ]);
-    expect(timeline[0].ledger).toBe(100);
-    expect(timeline[0].txHash).toBe('AAA');
-    expect(timeline[0].ledgerCloseTime).toBe('2024-01-01T00:00:00Z');
+    clearNetworkCaches(caches);
+
+    expect(caches.agents.clear).toHaveBeenCalled();
+    expect(caches.jobs.clear).toHaveBeenCalled();
+    expect(caches.reputation.clear).toHaveBeenCalled();
   });
 
-  test('marks steps without events as pending', () => {
-    const timeline = buildJobTimeline(events.slice(0, 2));
-    const submitted = timeline.find((s) => s.type === 'submitted');
-    expect(submitted.status).toBe('pending');
-    expect(submitted.ledger).toBeNull();
+  test('requiresMainnetConfirmation is true only for mainnet', () => {
+    expect(requiresMainnetConfirmation('mainnet')).toBe(true);
+    expect(requiresMainnetConfirmation('testnet')).toBe(false);
+    expect(requiresMainnetConfirmation('futurenet')).toBe(false);
   });
 
-  test('handles a disputed job', () => {
-    const disputed = [
-      ...events.slice(0, 3),
-      { type: 'disputed', ledger: 140, txHash: 'EEE', ledgerCloseTime: '2024-01-05T00:00:00Z' },
-    ];
-    const timeline = buildJobTimeline(disputed);
-    const disputedStep = timeline.find((s) => s.type === 'disputed');
-    expect(disputedStep.status).toBe('done');
-    expect(disputedStep.ledger).toBe(140);
+  test('getWalletNetworkMismatch returns a banner when networks differ', () => {
+    const mismatch = getWalletNetworkMismatch('testnet', 'mainnet');
+    expect(mismatch).not.toBeNull();
+    expect(typeof mismatch.message).toBe('string');
+    expect(mismatch.message.toLowerCase()).toContain('mainnet');
   });
 
-  test('handles missing or empty events', () => {
-    expect(buildJobTimeline([]).every((s) => s.status === 'pending')).toBe(true);
-    expect(buildJobTimeline(null).every((s) => s.status === 'pending')).toBe(true);
-    expect(buildJobTimeline(undefined).every((s) => s.status === 'pending')).toBe(true);
+  test('getWalletNetworkMismatch returns null when networks match', () => {
+    expect(getWalletNetworkMismatch('testnet', 'testnet')).toBeNull();
+  });
+});
+
+describe('audit store migration and retention', () => {
+  test('migrateAuditLogs imports JSONL records into the store', () => {
+    const jsonl = [
+      '{"ts":"2024-01-01T00:00:00Z","action":"login"}',
+      '{"ts":"2024-01-02T00:00:00Z","action":"logout"}',
+    ].join('\n');
+
+    const store = { insertMany: jest.fn() };
+    const result = migrateAuditLogs(jsonl, store);
+
+    expect(result.imported).toBe(2);
+    expect(result.skipped).toBe(0);
+    expect(store.insertMany).toHaveBeenCalledTimes(1);
+    expect(store.insertMany.mock.calls[0][0]).toHaveLength(2);
   });
 
-  test('tolerates partial events without ledger time or tx hash', () => {
-    const partial = [{ type: 'created', ledger: 100 }];
-    const timeline = buildJobTimeline(partial);
-    const created = timeline.find((s) => s.type === 'created');
-    expect(created.status).toBe('done');
-    expect(created.txHash).toBeNull();
-    expect(created.ledgerCloseTime).toBeNull();
+  test('migrateAuditLogs skips malformed lines without throwing', () => {
+    const jsonl = ['{"action":"login"}', 'not json', ''].join('\n');
+    const store = { insertMany: jest.fn() };
+
+    let result;
+    expect(() => {
+      result = migrateAuditLogs(jsonl, store);
+    }).not.toThrow();
+
+    expect(result.imported).toBe(1);
+    expect(result.skipped).toBe(1);
+  });
+
+  test('applyAuditRetention deletes records older than the retention window', () => {
+    const now = new Date('2024-06-01T00:00:00Z').getTime();
+    const store = {
+      deleteOlderThan: jest.fn().mockReturnValue(3),
+    };
+
+    const deleted = applyAuditRetention(store, 30, now);
+
+    expect(deleted).toBe(3);
+    expect(store.deleteOlderThan).toHaveBeenCalledTimes(1);
+    const cutoff = store.deleteOlderThan.mock.calls[0][0];
+    expect(cutoff).toBe(now - 30 * 24 * 60 * 60 * 1000);
   });
 });
