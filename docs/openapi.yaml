@@ -122,6 +122,46 @@ paths:
           description: Agent removed
         '404':
           $ref: '#/components/responses/NotFound'
+  /api/agents/{id}/detail:
+    parameters:
+      - $ref: '#/components/parameters/AgentId'
+    get:
+      tags: [Agents]
+      summary: Get a rich agent profile
+      description: |
+        Returns the agent's reputation, job history and raw metadata. The
+        metadata is validated against `docs/agent-metadata-schema-v1.json`;
+        invalid metadata is reported via `metadataValid: false` and
+        `metadataErrors` rather than failing the request.
+      responses:
+        '200':
+          description: Agent profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentDetail'
+              example:
+                id: agent_01HXYZ
+                name: oracle-1
+                status: active
+                createdAt: '2024-01-01T00:00:00Z'
+                reputation:
+                  score: 87.5
+                  completedJobs: 120
+                  failedJobs: 3
+                jobs:
+                  - id: task_01HABC
+                    agentId: agent_01HXYZ
+                    status: completed
+                    createdAt: '2024-01-02T00:00:00Z'
+                metadata:
+                  name: oracle-1
+                  version: '1.0.0'
+                  capabilities: [summarize]
+                metadataValid: true
+                metadataErrors: []
+        '404':
+          $ref: '#/components/responses/NotFound'
   /api/agents/{id}/heartbeat:
     post:
       tags: [Agents]
@@ -317,16 +357,48 @@ paths:
               schema:
                 type: array
                 items:
-                  type: object
-                  properties:
-                    level:
-                      type: string
-                    message:
-                      type: string
-                    timestamp:
-                      type: string
-                      format: date-time
-                  required: [level, message, timestamp]
+                  $ref: '#/components/schemas/LogEntry'
+  /api/audit/export:
+    get:
+      tags: [Config]
+      summary: Export the audit log as JSONL
+      description: |
+        Streams the audit log as newline-delimited JSON (one `AuditEntry`
+        object per line). The response body is `application/x-ndjson`.
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - name: since
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Audit log entries as JSONL
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+              example: |
+                {"timestamp":"2024-01-01T00:00:00Z","level":"info","action":"agent.register","actor":"admin","message":"registered oracle-1"}
+  /api/cache/clear:
+    post:
+      tags: [Config]
+      summary: Clear server-side caches
+      description: |
+        Flushes cached indexer data. Called by the dashboard network switcher
+        when changing networks so stale data from the previous network is not
+        served.
+      responses:
+        '200':
+          description: Caches cleared
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CacheClearResponse'
+              example:
+                cleared: true
+                keys: 42
 components:
   securitySchemes:
     ApiKeyAuth:
@@ -418,6 +490,82 @@ components:
           type: string
           format: uri
       required: [name, endpoint]
+    AgentReputation:
+      type: object
+      properties:
+        score:
+          type: number
+        completedJobs:
+          type: integer
+        failedJobs:
+          type: integer
+      required: [score, completedJobs, failedJobs]
+    AgentDetail:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum: [active, inactive, degraded]
+        endpoint:
+          type: string
+          format: uri
+        createdAt:
+          type: string
+          format: date-time
+        reputation:
+          $ref: '#/components/schemas/AgentReputation'
+        jobs:
+          type: array
+          items:
+            $ref: '#/components/schemas/Task'
+        metadata:
+          type: object
+          additionalProperties: true
+        metadataValid:
+          type: boolean
+        metadataErrors:
+          type: array
+          items:
+            type: string
+      required: [id, name, status, createdAt, reputation, jobs, metadataValid]
+    LogEntry:
+      type: object
+      properties:
+        level:
+          type: string
+        message:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+      required: [level, message, timestamp]
+    AuditEntry:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        level:
+          type: string
+        action:
+          type: string
+        actor:
+          type: string
+        message:
+          type: string
+      required: [timestamp, level, action, message]
+    CacheClearResponse:
+      type: object
+      properties:
+        cleared:
+          type: boolean
+        keys:
+          type: integer
+      required: [cleared]
     Task:
       type: object
       properties:

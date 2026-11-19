@@ -56,6 +56,12 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { getReadOnlyDb } from "../../indexer/src/db.js";
 import { eventHub, type SorobanEvent } from "../../indexer/src/events.js";
 import { getJobEventType, matchesJobEvent } from "./lib/jobEvents.js";
+import {
+  createAuditStore,
+  type AuditStore,
+  type AuditEntry,
+} from "./lib/auditStore.js";
+import { validateAgentMetadata } from "./lib/agentMetadata.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -610,18 +616,8 @@ function handleRouteError(err: unknown, res: Response): void {
   res.status(500).json({ error: (err as Error).message });
 }
 
-type AuditEntry = {
-  at: string;
-  method: string;
-  path: string;
-  wallet?: string;
-  statusCode: number;
-  ipHash?: string;
-};
-
 const MAX_AUDIT_ENTRIES = 500;
 const AUDIT_LOG_PATH = process.env.AUDIT_LOG_PATH ?? path.join(__dirname, "audit.jsonl");
-const AUDIT_LOG_MAX_BYTES = 10 * 1024 * 1024;
 const AUDIT_LOG_MAX_FILES = 3;
 const AUDIT_SALT = process.env.AUDIT_SALT ?? crypto.randomBytes(32).toString("hex");
 
@@ -635,60 +631,66 @@ function hashIp(ip: string | undefined): string | undefined {
   return crypto.createHash("sha256").update(ip + AUDIT_SALT).digest("hex");
 }
 
-// Rotated files are AUDIT_LOG_PATH.1 (newest) … AUDIT_LOG_PATH.<MAX_FILES - 1> (oldest).
-function auditLogFiles(): string[] {
+// ── #969: SQLite-backed audit log with retention ─────────────────────────────
+// Entries are persisted to a WAL-mode SQLite database instead of rotated JSONL
+// files. Existing JSONL files (including rotated .1/.2 siblings) are migrated
+// into the database on startup, and a retention job prunes old rows.
+const AUDIT_DB_PATH = process.env.AUDIT_DB_PATH ?? path.join(__dirname, "audit.sqlite");
+const AUDIT_RETENTION_DAYS = Number(process.env.AUDIT_RETENTION_DAYS ?? 90);
+const AUDIT_RETENTION_INTERVAL_MS = Number(
+  process.env.AUDIT_RETENTION_INTERVAL_MS ?? 6 * 60 * 60 * 1000,
+);
+
+const auditStore: AuditStore = createAuditStore({
+  dbPath: AUDIT_DB_PATH,
+  retentionDays: AUDIT_RETENTION_DAYS,
+});
+
+// Migrate any legacy JSONL files (current + rotated) into SQLite, then rename
+// them so the migration is not repeated on the next startup.
+function migrateLegacyAuditLogs(): void {
   const files = [AUDIT_LOG_PATH];
   for (let i = 1; i < AUDIT_LOG_MAX_FILES; i++) files.push(`${AUDIT_LOG_PATH}.${i}`);
-  return files;
-}
-
-function rotateAuditLog(): void {
-  const files = auditLogFiles();
-  for (let i = files.length - 1; i > 0; i--) {
-    if (fs.existsSync(files[i - 1])) fs.renameSync(files[i - 1], files[i]);
-  }
-}
-
-function appendAuditEntry(entry: AuditEntry): void {
-  const line = JSON.stringify(entry) + "\n";
-  try {
-    if (
-      fs.existsSync(AUDIT_LOG_PATH) &&
-      fs.statSync(AUDIT_LOG_PATH).size + Buffer.byteLength(line) > AUDIT_LOG_MAX_BYTES
-    ) {
-      rotateAuditLog();
-    }
-    fs.appendFileSync(AUDIT_LOG_PATH, line);
-  } catch (err) {
-    console.warn("[audit] failed to persist entry:", (err as Error).message);
-  }
-}
-
-/** All persisted audit entries, oldest first. */
-function readAuditLog(): AuditEntry[] {
-  const entries: AuditEntry[] = [];
-  for (const file of auditLogFiles().reverse()) {
+  for (const file of files.reverse()) {
     if (!fs.existsSync(file)) continue;
-    for (const line of fs.readFileSync(file, "utf8").split("\n")) {
-      if (!line.trim()) continue;
-      try {
-        entries.push(JSON.parse(line) as AuditEntry);
-      } catch {
-        // Skip a partially written line.
+    try {
+      const entries: AuditEntry[] = [];
+      for (const line of fs.readFileSync(file, "utf8").split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          entries.push(JSON.parse(line) as AuditEntry);
+        } catch {
+          // Skip a partially written line.
+        }
       }
+      if (entries.length > 0) auditStore.insertMany(entries);
+      fs.renameSync(file, `${file}.migrated`);
+      console.log(`[audit] migrated ${entries.length} entries from ${path.basename(file)}`);
+    } catch (err) {
+      console.warn(`[audit] failed to migrate ${file}:`, (err as Error).message);
     }
   }
-  return entries;
 }
 
-const auditTrail: AuditEntry[] = (() => {
+try {
+  migrateLegacyAuditLogs();
+} catch (err) {
+  console.warn("[audit] migration failed:", (err as Error).message);
+}
+
+// Retention job: prune rows older than the configured retention window.
+function runAuditRetention(): void {
   try {
-    return readAuditLog().slice(-MAX_AUDIT_ENTRIES);
+    const removed = auditStore.prune();
+    if (removed > 0) console.log(`[audit] retention pruned ${removed} entries`);
   } catch (err) {
-    console.warn("[audit] failed to load persisted entries:", (err as Error).message);
-    return [];
+    console.warn("[audit] retention job failed:", (err as Error).message);
   }
-})();
+}
+
+runAuditRetention();
+const auditRetentionTimer = setInterval(runAuditRetention, AUDIT_RETENTION_INTERVAL_MS);
+auditRetentionTimer.unref?.();
 
 function auditAdminAction(req: Request, res: Response, next: NextFunction) {
   const path = req.originalUrl || req.url;
@@ -701,11 +703,11 @@ function auditAdminAction(req: Request, res: Response, next: NextFunction) {
       statusCode: res.statusCode,
       ipHash: hashIp(req.ip),
     };
-    auditTrail.push(entry);
-    if (auditTrail.length > MAX_AUDIT_ENTRIES) {
-      auditTrail.splice(0, auditTrail.length - MAX_AUDIT_ENTRIES);
+    try {
+      auditStore.insert(entry);
+    } catch (err) {
+      console.warn("[audit] failed to persist entry:", (err as Error).message);
     }
-    appendAuditEntry(entry);
   });
   next();
 }
@@ -1076,6 +1078,21 @@ app.get("/api/demo-mode", (_req, res) => {
   });
 });
 
+// POST /api/network/clear-cache — clear server-side caches on network switch (#976)
+// The dashboard calls this when the user confirms a network switch so stale
+// data from the previous network is not served.
+app.post("/api/network/clear-cache", (_req, res) => {
+  try {
+    statsCache = null;
+    tokenDecimalsCache.clear();
+    invalidateAgents();
+    invalidateJobs();
+    res.json({ cleared: true });
+  } catch (err: unknown) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
 // GET /api/network — active network + available presets for the switcher (#761).
 // The active network is resolved from the `x-bear-network` header so the client
 // can confirm which preset its requests are being served against.
@@ -1310,21 +1327,35 @@ app.get("/api/stats/historical", async (_req, res) => {
 });
 
 app.get("/api/audit-trail", requireAuth, (_req, res) => {
-  res.json(auditTrail.slice().reverse());
+  try {
+    res.json(auditStore.recent(MAX_AUDIT_ENTRIES));
+  } catch (err: unknown) {
+    handleRouteError(err, res);
+  }
 });
 
 // GET /api/admin/audit — paginated persisted audit entries, newest first
 app.get("/api/admin/audit", requireAuth, (req, res) => {
   try {
     const { page, pageSize } = auditQuerySchema.parse(req.query);
-    const entries = readAuditLog().reverse();
-    const start = (page - 1) * pageSize;
-    res.json({
-      items: entries.slice(start, start + pageSize),
-      page,
-      pageSize,
-      total: entries.length,
-    });
+    const { items, total } = auditStore.page(page, pageSize);
+    res.json({ items, page, pageSize, total });
+  } catch (err: unknown) {
+    handleRouteError(err, res);
+  }
+});
+
+// GET /api/admin/audit/export — JSONL export for compatibility with old tooling
+app.get("/api/admin/audit/export", requireAuth, (_req, res) => {
+  try {
+    const entries = auditStore.all();
+    const body = entries.map((entry) => JSON.stringify(entry)).join("\n") + (entries.length ? "\n" : "");
+    res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="audit-export-${Date.now()}.jsonl"`,
+    );
+    res.send(body);
   } catch (err: unknown) {
     handleRouteError(err, res);
   }
@@ -1561,6 +1592,90 @@ app.get("/api/agents", async (req, res) => {
     res.json({ ...agents, items: serialize(agents.items) });
   } catch (err: unknown) {
     res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// GET /api/agents/:id — rich agent profile (#975)
+// Returns the agent record, its metadata (validated against the v1 schema),
+// reputation and job history from the indexer. Invalid metadata yields a
+// `warning` field rather than an error so the profile still renders.
+app.get("/api/agents/:id", async (req, res) => {
+  try {
+    const agentId = String(req.params.id);
+    const agents = (await tracedDb("getAllAgents", () => getAllAgents())) as unknown as Array<
+      Record<string, unknown>
+    >;
+    const agent = agents.find(
+      (a) =>
+        String(a.id ?? "") === agentId ||
+        String(a.owner ?? a.address ?? a.publicKey ?? "") === agentId,
+    );
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+
+    // Metadata may be embedded on the record or fetched from its URI.
+    let metadata: unknown = agent.metadata ?? null;
+    if (!metadata && typeof agent.uri === "string" && agent.uri.startsWith("data:")) {
+      try {
+        const payload = agent.uri.slice(agent.uri.indexOf(",") + 1);
+        metadata = JSON.parse(
+          agent.uri.includes(";base64,")
+            ? Buffer.from(payload, "base64").toString("utf8")
+            : decodeURIComponent(payload),
+        );
+      } catch {
+        metadata = null;
+      }
+    }
+
+    const validation = validateAgentMetadata(metadata);
+
+    const owner = String(agent.owner ?? agent.address ?? agent.publicKey ?? "");
+    const jobs = (await tracedDb("getAllJobs", () => getAllJobs())) as unknown as Array<
+      Record<string, unknown>
+    >;
+    const agentJobs = jobs.filter(
+      (job) =>
+        String(job.provider ?? job.seller ?? "") === owner ||
+        String(job.client ?? job.buyer ?? "") === owner,
+    );
+
+    let completed = 0;
+    let disputed = 0;
+    let totalEarned = 0n;
+    for (const job of agentJobs) {
+      const status = typeof job.status === "string" ? job.status : "";
+      if (status === "Completed") {
+        completed += 1;
+        if (String(job.provider ?? job.seller ?? "") === owner) {
+          try {
+            totalEarned += BigInt(job.budget as string | number | bigint);
+          } catch {
+            // ignore malformed budgets
+          }
+        }
+      } else if (status === "Disputed") {
+        disputed += 1;
+      }
+    }
+
+    res.json({
+      agent: serialize(agent),
+      metadata,
+      metadataValid: validation.valid,
+      ...(validation.valid ? {} : { warning: validation.error }),
+      reputation: {
+        completedJobs: completed,
+        disputedJobs: disputed,
+        totalJobs: agentJobs.length,
+        totalEarned: totalEarned.toString(),
+      },
+      jobs: serialize(agentJobs.slice(0, 50)),
+    });
+  } catch (err: unknown) {
+    handleRouteError(err, res);
   }
 });
 
@@ -2388,4 +2503,4 @@ wss.on("connection", (socket: WebSocket) => {
   sendJson({ type: "hello", message: "connected" });
 });
 
-export { app, matchmaking, httpServer, wss, readOnlyDb };
+export { app, matchmaking, httpServer, wss, readOnlyDb, auditStore };

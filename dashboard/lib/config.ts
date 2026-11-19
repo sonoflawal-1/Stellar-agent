@@ -173,6 +173,20 @@ export function getConfigForNetwork(networkId?: string | null): MarcConfig {
 
 export const DEMO_MODE = process.env.DEMO_MODE === "true";
 
+// Audit log storage (SQLite, WAL mode) with retention and JSONL migration.
+// - AUDIT_DB_PATH: path to the SQLite database file (default: data/audit.sqlite).
+// - AUDIT_RETENTION_DAYS: entries older than this many days are pruned by the
+//   retention job (default: 30). Set to 0 to disable pruning.
+// - AUDIT_LEGACY_JSONL_DIR: directory containing legacy JSONL audit files that
+//   are imported on startup (default: data/audit). Imported files are renamed
+//   with a `.migrated` suffix so migration runs only once.
+export const auditDbPath = process.env.AUDIT_DB_PATH ?? "data/audit.sqlite";
+export const auditRetentionDays = Math.max(
+  0,
+  Number(process.env.AUDIT_RETENTION_DAYS ?? 30) || 0,
+);
+export const auditLegacyJsonlDir = process.env.AUDIT_LEGACY_JSONL_DIR ?? "data/audit";
+
 // SEP-0010 (Stellar Web Authentication) configuration.
 // The server signing keypair signs challenge transactions; wallets verify the
 // home_domain and server signature before prompting the user to sign.
