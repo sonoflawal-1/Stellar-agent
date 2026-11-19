@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import '@testing-library/jest-dom';
+import { axe } from 'jest-axe';
 
 import { WalletConnectButton } from './WalletConnectButton';
 
@@ -267,6 +268,61 @@ describe('WalletConnectButton', () => {
       const focusable = within(dialog).getAllByRole('button');
       expect(focusable.length).toBeGreaterThan(0);
       await waitFor(() => expect(focusable[0]).toHaveFocus());
+    });
+
+    it('announces the connecting state via a live region', async () => {
+      const user = userEvent.setup();
+      render(<WalletConnectButton />);
+
+      await user.click(screen.getByRole('button', { name: /connect wallet/i }));
+      const dialog = await screen.findByRole('dialog');
+      await user.click(within(dialog).getByRole('button', { name: /freighter/i }));
+
+      const liveRegion = screen.getByRole('status');
+      expect(liveRegion).toHaveAttribute('aria-live', 'polite');
+      await waitFor(() => expect(liveRegion).toHaveTextContent(/connecting/i));
+    });
+
+    it('announces the connected address via a live region', async () => {
+      setConnected();
+      render(<WalletConnectButton />);
+
+      const liveRegion = screen.getByRole('status');
+      expect(liveRegion).toHaveAttribute('aria-live', 'polite');
+      await waitFor(() => expect(liveRegion).toHaveTextContent(/connected/i));
+      expect(liveRegion).toHaveTextContent(CONNECTED_ADDRESS);
+    });
+
+    it('exposes an accessible name including the connected address on the trigger', () => {
+      setConnected();
+      render(<WalletConnectButton />);
+
+      const button = screen.getByRole('button', { name: new RegExp(CONNECTED_ADDRESS) });
+      expect(button).toBeInTheDocument();
+    });
+
+    it('has no axe violations in the disconnected state', async () => {
+      const { container } = render(<WalletConnectButton />);
+      const results = await axe(container);
+      expect(results).toHaveNoViolations();
+    });
+
+    it('has no axe violations in the connected state', async () => {
+      setConnected();
+      const { container } = render(<WalletConnectButton />);
+      const results = await axe(container);
+      expect(results).toHaveNoViolations();
+    });
+
+    it('has no axe violations with the wallet selection modal open', async () => {
+      const user = userEvent.setup();
+      const { container } = render(<WalletConnectButton />);
+
+      await user.click(screen.getByRole('button', { name: /connect wallet/i }));
+      await screen.findByRole('dialog');
+
+      const results = await axe(container);
+      expect(results).toHaveNoViolations();
     });
   });
 

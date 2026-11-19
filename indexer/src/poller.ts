@@ -199,6 +199,17 @@ export class SorobanEventPoller {
     return this.reorgCount;
   }
 
+  /** Last ledger persisted by the poller, or null if nothing indexed yet. */
+  getLastIndexedLedger(): number | null {
+    return this.store.getLastIndexedLedger();
+  }
+
+  /** Current chain tip as reported by Soroban RPC. */
+  async getLatestLedger(): Promise<number> {
+    const res = await this.rpc.getLatestLedger();
+    return res.sequence;
+  }
+
   /**
    * Fetch the hash of a ledger. Prefers `rpc.getLedger` when available and
    * falls back to the `previousLedgerHash` reported on getEvents responses.

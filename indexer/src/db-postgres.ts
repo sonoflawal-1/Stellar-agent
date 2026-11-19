@@ -70,6 +70,13 @@ const DEFAULT_IDLE_TIMEOUT = 30_000;
 const DEFAULT_CONNECTION_TIMEOUT = 10_000;
 
 /**
+ * Advisory lock key used to serialize migrations across replicas. Shared with
+ * the standalone migration runner (indexer/src/migrate.ts) so both paths
+ * contend on the same lock.
+ */
+export const MIGRATION_ADVISORY_LOCK_KEY = 731_000_001;
+
+/**
  * Idempotent migration scripts. Each statement is safe to run multiple times.
  * Kept inline so the adapter is self-contained; the same SQL is mirrored under
  * indexer/migrations/postgres/ for tooling that prefers external files.
@@ -208,7 +215,7 @@ export class PostgresAdapter implements DatabaseAdapter {
     try {
       await client.query('BEGIN');
       // Advisory lock keyed on a constant to serialize migrations across replicas.
-      await client.query('SELECT pg_advisory_xact_lock($1)', [731_000_001]);
+      await client.query('SELECT pg_advisory_xact_lock($1)', [MIGRATION_ADVISORY_LOCK_KEY]);
       for (const statement of POSTGRES_MIGRATIONS) {
         await client.query(statement);
       }

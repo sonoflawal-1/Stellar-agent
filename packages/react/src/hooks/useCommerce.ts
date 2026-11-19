@@ -1,9 +1,10 @@
 'use client';
 
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import type { Keypair } from '@stellar/stellar-sdk';
 import type { CommerceClient, Signer, WalletSigner } from 'marc-stellar-sdk';
 import { useWallet } from './useWallet';
+import { useTransaction, type TransactionStatus } from './useTransaction';
 
 export interface CreateJobParams {
   provider: string;
@@ -43,6 +44,8 @@ export interface UseCommerceOptions {
 }
 
 export interface UseCommerceResult {
+  /** Unified lifecycle status of the most recent commerce transaction. */
+  status: TransactionStatus;
   /** True while any commerce transaction is in-flight on-chain. */
   isPending: boolean;
   /** Transaction hash from the most recent successful operation, or null. */
@@ -87,9 +90,8 @@ export function useCommerce(options: UseCommerceOptions = {}): UseCommerceResult
   const { client: clientProp, signer: signerProp } = options;
   const wallet = useWallet();
 
-  const [isPending, setIsPending] = useState(false);
-  const [txHash, setTxHash] = useState<string | null>(null);
-  const [error, setError] = useState<Error | null>(null);
+  const transaction = useTransaction();
+  const { status, isPending, txHash, error, reset } = transaction;
 
   const clientRef = useRef<CommerceClient | null>(clientProp ?? null);
   const latestTxHashRef = useRef<string | null>(null);
@@ -100,7 +102,6 @@ export function useCommerce(options: UseCommerceOptions = {}): UseCommerceResult
     const ambientClient = new sdk.CommerceClient({
       onTx: (hash: string) => {
         latestTxHashRef.current = hash;
-        setTxHash(hash);
       },
     });
     clientRef.current = ambientClient;
@@ -131,11 +132,6 @@ export function useCommerce(options: UseCommerceOptions = {}): UseCommerceResult
     [ambientSigner, signerProp],
   );
 
-  const reset = useCallback(() => {
-    setError(null);
-    setTxHash(null);
-  }, []);
-
   const createJob = useCallback(
     async (
       paramsOrProvider: CreateJobParams | string | Signer,
@@ -144,11 +140,9 @@ export function useCommerce(options: UseCommerceOptions = {}): UseCommerceResult
       description?: string,
       token?: string,
     ): Promise<CreateJobResult> => {
-      setIsPending(true);
-      setError(null);
       latestTxHashRef.current = null;
 
-      try {
+      return transaction.run(async () => {
         const client = await getClient();
 
         let finalClient: Signer;
@@ -202,20 +196,12 @@ export function useCommerce(options: UseCommerceOptions = {}): UseCommerceResult
           finalDescription,
         );
 
-        const currentHash = latestTxHashRef.current ?? (txHash || `0x${Date.now().toString(16)}`);
-        setTxHash(currentHash);
-
+        const currentHash = latestTxHashRef.current ?? `0x${Date.now().toString(16)}`;
         const res: CreateJobResult = { jobId, txHash: currentHash };
         return res;
-      } catch (err) {
-        const normalized = err instanceof Error ? err : new Error(String(err));
-        setError(normalized);
-        throw normalized;
-      } finally {
-        setIsPending(false);
-      }
+      });
     },
-    [getClient, resolveSigner, txHash],
+    [getClient, resolveSigner, transaction],
   );
 
   const submitJob = useCallback(
@@ -225,11 +211,9 @@ export function useCommerce(options: UseCommerceOptions = {}): UseCommerceResult
       deliverableHash?: Uint8Array,
       provider?: Signer,
     ): Promise<{ txHash: string | null }> => {
-      setIsPending(true);
-      setError(null);
       latestTxHashRef.current = null;
 
-      try {
+      return transaction.run(async () => {
         const client = await getClient();
         let finalProvider: Signer;
         let finalJobId: bigint;
@@ -254,18 +238,11 @@ export function useCommerce(options: UseCommerceOptions = {}): UseCommerceResult
         }
 
         await client.submit(finalProvider, finalJobId, finalDeliverable, finalHash);
-        const currentHash = latestTxHashRef.current ?? (txHash || `0x${Date.now().toString(16)}`);
-        setTxHash(currentHash);
+        const currentHash = latestTxHashRef.current ?? `0x${Date.now().toString(16)}`;
         return { txHash: currentHash };
-      } catch (err) {
-        const normalized = err instanceof Error ? err : new Error(String(err));
-        setError(normalized);
-        throw normalized;
-      } finally {
-        setIsPending(false);
-      }
+      });
     },
-    [getClient, resolveSigner, txHash],
+    [getClient, resolveSigner, transaction],
   );
 
   const completeJob = useCallback(
@@ -274,11 +251,9 @@ export function useCommerce(options: UseCommerceOptions = {}): UseCommerceResult
       expectedHash?: Uint8Array,
       evaluator?: Signer,
     ): Promise<{ txHash: string | null }> => {
-      setIsPending(true);
-      setError(null);
       latestTxHashRef.current = null;
 
-      try {
+      return transaction.run(async () => {
         const client = await getClient();
         let finalEvaluator: Signer;
         let finalJobId: bigint;
@@ -300,18 +275,11 @@ export function useCommerce(options: UseCommerceOptions = {}): UseCommerceResult
         }
 
         await client.complete(finalEvaluator, finalJobId, finalHash);
-        const currentHash = latestTxHashRef.current ?? (txHash || `0x${Date.now().toString(16)}`);
-        setTxHash(currentHash);
+        const currentHash = latestTxHashRef.current ?? `0x${Date.now().toString(16)}`;
         return { txHash: currentHash };
-      } catch (err) {
-        const normalized = err instanceof Error ? err : new Error(String(err));
-        setError(normalized);
-        throw normalized;
-      } finally {
-        setIsPending(false);
-      }
+      });
     },
-    [getClient, resolveSigner, txHash],
+    [getClient, resolveSigner, transaction],
   );
 
   const cancelJob = useCallback(
@@ -319,11 +287,9 @@ export function useCommerce(options: UseCommerceOptions = {}): UseCommerceResult
       paramsOrJobId: CancelJobParams | bigint | string | number,
       clientSigner?: Signer,
     ): Promise<{ txHash: string | null }> => {
-      setIsPending(true);
-      setError(null);
       latestTxHashRef.current = null;
 
-      try {
+      return transaction.run(async () => {
         const client = await getClient();
         let finalClient: Signer;
         let finalJobId: bigint;
@@ -342,18 +308,11 @@ export function useCommerce(options: UseCommerceOptions = {}): UseCommerceResult
         }
 
         await client.cancel(finalClient, finalJobId);
-        const currentHash = latestTxHashRef.current ?? (txHash || `0x${Date.now().toString(16)}`);
-        setTxHash(currentHash);
+        const currentHash = latestTxHashRef.current ?? `0x${Date.now().toString(16)}`;
         return { txHash: currentHash };
-      } catch (err) {
-        const normalized = err instanceof Error ? err : new Error(String(err));
-        setError(normalized);
-        throw normalized;
-      } finally {
-        setIsPending(false);
-      }
+      });
     },
-    [getClient, resolveSigner, txHash],
+    [getClient, resolveSigner, transaction],
   );
 
   const estimateGasFee = useCallback(
@@ -391,6 +350,7 @@ export function useCommerce(options: UseCommerceOptions = {}): UseCommerceResult
   );
 
   return {
+    status,
     isPending,
     txHash,
     error,

@@ -17,6 +17,13 @@ export type { UseJobOptions, UseJobResult } from './hooks/useJob';
 export { useCreateJob } from './hooks/useCreateJob';
 export type { UseCreateJobResult } from './hooks/useCreateJob';
 
+export { useTransaction } from './hooks/useTransaction';
+export type {
+  TransactionStatus,
+  UseTransactionResult,
+  UseTransactionOptions,
+} from './hooks/useTransaction';
+
 export { useCommerce } from './hooks/useCommerce';
 export type {
   UseCommerceOptions,
