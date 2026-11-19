@@ -226,6 +226,117 @@ test("marcPaywall re-delivers the cached response for a retried settled payment"
   }
 });
 
+test("marcPaywall rejects a challenge whose payTo is outside allowedPayees without paying", async () => {
+  stubFacilitatorFetch();
+  try {
+    const allowedPayee = Keypair.random().publicKey();
+    const maliciousPayee = Keypair.random().publicKey();
+    const handler = marcPaywall({
+      payTo: allowedPayee,
+      price: "$0.01",
+      allowedPayees: [allowedPayee],
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const validate = (handler as any).validateChallenge;
+    assert.equal(typeof validate, "function", "handler should expose validateChallenge");
+
+    const result = validate({ payTo: maliciousPayee, asset: "native", amount: "10000" });
+    assert.equal(result.ok, false);
+    assert.match(String(result.reason), /payee|payTo/i);
+    await flush();
+  } finally {
+    restoreFetch();
+  }
+});
+
+test("marcPaywall rejects a challenge whose asset is outside allowedAssets without paying", async () => {
+  stubFacilitatorFetch();
+  try {
+    const payee = Keypair.random().publicKey();
+    const allowedAsset = "USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
+    const maliciousAsset = "EVIL:GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+    const handler = marcPaywall({
+      payTo: payee,
+      price: "$0.01",
+      allowedAssets: [allowedAsset],
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const validate = (handler as any).validateChallenge;
+    const result = validate({ payTo: payee, asset: maliciousAsset, amount: "10000" });
+    assert.equal(result.ok, false);
+    assert.match(String(result.reason), /asset/i);
+    await flush();
+  } finally {
+    restoreFetch();
+  }
+});
+
+test("marcPaywall rejects a challenge whose amount exceeds the configured maximum", async () => {
+  stubFacilitatorFetch();
+  try {
+    const payee = Keypair.random().publicKey();
+    const handler = marcPaywall({
+      payTo: payee,
+      price: "$0.01",
+      maxAmount: "10000",
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const validate = (handler as any).validateChallenge;
+    const result = validate({ payTo: payee, asset: "native", amount: "999999999" });
+    assert.equal(result.ok, false);
+    assert.match(String(result.reason), /amount/i);
+    await flush();
+  } finally {
+    restoreFetch();
+  }
+});
+
+test("marcPaywall accepts a challenge that satisfies the allowlist", async () => {
+  stubFacilitatorFetch();
+  try {
+    const payee = Keypair.random().publicKey();
+    const asset = "USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
+    const handler = marcPaywall({
+      payTo: payee,
+      price: "$0.01",
+      allowedPayees: [payee],
+      allowedAssets: [asset],
+      maxAmount: "10000",
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const validate = (handler as any).validateChallenge;
+    const result = validate({ payTo: payee, asset, amount: "10000" });
+    assert.equal(result.ok, true);
+    await flush();
+  } finally {
+    restoreFetch();
+  }
+});
+
+test("marcPaywall warns when no allowlist is configured", async () => {
+  stubFacilitatorFetch();
+  const originalWarn = console.warn;
+  const warnings: unknown[][] = [];
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args);
+  };
+  try {
+    marcPaywall({ payTo: Keypair.random().publicKey(), price: "$0.01" });
+    assert.ok(
+      warnings.some((args) => args.some((a) => /allowlist|allowedPayees|allowedAssets/i.test(String(a)))),
+      "expected a warning about the missing allowlist",
+    );
+    await flush();
+  } finally {
+    console.warn = originalWarn;
+    restoreFetch();
+  }
+});
+
 test("marcPaywall expires settled transactions after one hour", async () => {
   stubFacilitatorFetch();
   try {

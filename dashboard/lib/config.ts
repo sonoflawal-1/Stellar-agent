@@ -1,4 +1,7 @@
 import "dotenv/config";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { randomBytes } from "node:crypto";
 import { Keypair, StrKey } from "@stellar/stellar-sdk";
 import { TESTNET, type MarcConfig } from "marc-stellar-sdk";
 import { z } from "zod";
@@ -240,6 +243,86 @@ export const auditRetentionDays = Math.max(
   Number(process.env.AUDIT_RETENTION_DAYS ?? 30) || 0,
 );
 export const auditLegacyJsonlDir = process.env.AUDIT_LEGACY_JSONL_DIR ?? "data/audit";
+
+// Salt used to hash client IPs before they are written to the audit log.
+// - AUDIT_SALT: explicit salt (highest priority).
+// - AUDIT_SALT_FILE: path to a persisted salt file (default: data/audit-salt).
+//   The file is created with 0600 permissions on first run so hashes stay
+//   stable across restarts.
+// - In production (NODE_ENV=production) an explicit AUDIT_SALT is required;
+//   otherwise startup fails rather than silently using an ephemeral salt.
+// - Outside production, if no salt can be persisted, a random per-process salt
+//   is used and a warning is logged because hashes will not be comparable
+//   across restarts.
+export const auditSaltFile = process.env.AUDIT_SALT_FILE ?? "data/audit-salt";
+
+export interface AuditSaltResult {
+  salt: string;
+  /** True when the salt is random per process and not persisted. */
+  ephemeral: boolean;
+}
+
+let cachedAuditSalt: AuditSaltResult | null = null;
+
+function readOrCreateSaltFile(filePath: string): string | null {
+  try {
+    const existing = readFileSync(filePath, "utf8").trim();
+    if (existing) return existing;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      // Fall through to (re)create the file below.
+    }
+  }
+  try {
+    mkdirSync(dirname(filePath), { recursive: true });
+    const generated = randomBytes(32).toString("hex");
+    writeFileSync(filePath, `${generated}\n`, { mode: 0o600, flag: "wx" });
+    chmodSync(filePath, 0o600);
+    return generated;
+  } catch (error) {
+    // Another process may have created the file concurrently; try reading it.
+    try {
+      const existing = readFileSync(filePath, "utf8").trim();
+      if (existing) return existing;
+    } catch {
+      // Ignore and report failure below.
+    }
+    return null;
+  }
+}
+
+/**
+ * Resolve the audit IP-hash salt, persisting a generated salt to
+ * `auditSaltFile` (0600) when no explicit salt is configured.
+ */
+export function resolveAuditSalt(): AuditSaltResult {
+  if (cachedAuditSalt) return cachedAuditSalt;
+
+  const explicit = process.env.AUDIT_SALT?.trim();
+  if (explicit) {
+    cachedAuditSalt = { salt: explicit, ephemeral: false };
+    return cachedAuditSalt;
+  }
+
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(
+      "AUDIT_SALT must be set in production so audit IP hashes are stable across restarts.",
+    );
+  }
+
+  const persisted = readOrCreateSaltFile(auditSaltFile);
+  if (persisted) {
+    cachedAuditSalt = { salt: persisted, ephemeral: false };
+    return cachedAuditSalt;
+  }
+
+  console.warn(
+    `[audit] AUDIT_SALT is not set and ${auditSaltFile} could not be persisted; ` +
+      "using a random per-process salt. Audit IP hashes will NOT be comparable across restarts.",
+  );
+  cachedAuditSalt = { salt: randomBytes(32).toString("hex"), ephemeral: true };
+  return cachedAuditSalt;
+}
 
 // SEP-0010 (Stellar Web Authentication) configuration.
 // The server signing keypair signs challenge transactions; wallets verify the

@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -335,6 +336,77 @@ export class AuditStore {
   close(): void {
     this.stopRetentionJob();
     this.db.close();
+  }
+}
+
+export interface AuditSaltOptions {
+  /** Explicit salt value (e.g. from process.env.AUDIT_SALT). */
+  salt?: string;
+  /** File used to persist a generated salt when no explicit salt is given. */
+  saltFilePath: string;
+  /** When true, refuse to fall back to an ephemeral salt. */
+  production?: boolean;
+  /** Logger used for warnings; defaults to console. */
+  logger?: { warn: (message: string) => void };
+}
+
+export interface AuditSaltResult {
+  salt: Buffer;
+  /** True when the salt is not persisted and changes on each process start. */
+  ephemeral: boolean;
+}
+
+/**
+ * Resolve the salt used for hashing IP addresses in audit entries.
+ *
+ * - If an explicit salt is provided it is used as-is.
+ * - Otherwise a salt is read from `saltFilePath`, or generated and persisted
+ *   with 0600 permissions on first run so hashes stay stable across restarts.
+ * - In production, a missing salt is a hard error instead of an ephemeral one.
+ * - When an ephemeral salt is unavoidable, a warning is logged.
+ */
+export function resolveAuditSalt(options: AuditSaltOptions): AuditSaltResult {
+  const logger = options.logger ?? console;
+
+  if (options.salt) {
+    return { salt: Buffer.from(options.salt, 'utf-8'), ephemeral: false };
+  }
+
+  try {
+    if (fs.existsSync(options.saltFilePath)) {
+      const stored = fs.readFileSync(options.saltFilePath, 'utf-8').trim();
+      if (stored) {
+        return { salt: Buffer.from(stored, 'utf-8'), ephemeral: false };
+      }
+    }
+  } catch {
+    // Fall through to generation / error handling below.
+  }
+
+  if (options.production) {
+    throw new Error(
+      'AUDIT_SALT is not set and no persisted salt file was found; refusing to start in production with an ephemeral salt'
+    );
+  }
+
+  const generated = crypto.randomBytes(32).toString('hex');
+  try {
+    const dir = path.dirname(options.saltFilePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(options.saltFilePath, generated, { mode: 0o600 });
+    try {
+      fs.chmodSync(options.saltFilePath, 0o600);
+    } catch {
+      // Best effort; some filesystems do not support chmod.
+    }
+    return { salt: Buffer.from(generated, 'utf-8'), ephemeral: false };
+  } catch {
+    logger.warn(
+      'AUDIT_SALT is not set and the salt file could not be written; using an ephemeral salt. IP hashes will not be comparable across restarts.'
+    );
+    return { salt: crypto.randomBytes(32), ephemeral: true };
   }
 }
 

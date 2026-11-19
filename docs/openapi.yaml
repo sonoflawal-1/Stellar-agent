@@ -6,6 +6,14 @@ info:
     Machine-readable OpenAPI 3.1 specification for the Bear Protocol dashboard API.
     All routes are served by `dashboard/server.ts` and require an API key unless
     otherwise noted.
+
+    ## Versioning
+
+    Every route is available under the versioned prefix `/api/v1` (e.g.
+    `/api/v1/agents`). The unversioned `/api` prefix is kept as a deprecated
+    alias for one release and will be removed afterwards; clients should
+    migrate to `/api/v1` before then. The paths below are documented under the
+    unversioned prefix and apply identically to `/api/v1`.
   license:
     name: MIT
 servers:
@@ -13,6 +21,11 @@ servers:
     description: Local development
   - url: https://api.bearprotocol.xyz
     description: Production
+  - url: http://localhost:3000/api/v1
+    description: Local development (versioned)
+  - url: https://api.bearprotocol.xyz/api/v1
+    description: Production (versioned)
+=======
 security:
   - ApiKeyAuth: []
 tags:
@@ -501,6 +514,201 @@ paths:
               example:
                 cleared: true
                 keys: 42
+  /api/events:
+    get:
+      tags: [Events]
+      summary: List indexed protocol events
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/CursorLimit'
+        - name: type
+          in: query
+          schema:
+            type: string
+        - name: agentId
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: A cursor-paginated page of events
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /api/reputation:
+    get:
+      tags: [Reputation]
+      summary: List reputation entries
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/CursorLimit'
+        - name: agentId
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: A cursor-paginated page of reputation entries
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReputationPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /api/jobs:
+    get:
+      tags: [Jobs]
+      summary: List indexed jobs
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/CursorLimit'
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [open, assigned, completed, failed, cancelled]
+        - name: agentId
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: A cursor-paginated page of jobs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /api/jobs/{id}:
+    parameters:
+      - $ref: '#/components/parameters/JobId'
+    get:
+      tags: [Jobs]
+      summary: Get an indexed job by id
+      responses:
+        '200':
+          description: Job found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/webhooks:
+    get:
+      tags: [Webhooks]
+      summary: List webhook subscriptions
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/CursorLimit'
+      responses:
+        '200':
+          description: A cursor-paginated page of webhook subscriptions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookSubscriptionPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+    post:
+      tags: [Webhooks]
+      summary: Create a webhook subscription
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookSubscriptionCreate'
+      responses:
+        '201':
+          description: Subscription created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookSubscription'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /api/webhooks/{id}:
+    parameters:
+      - $ref: '#/components/parameters/WebhookSubscriptionId'
+    get:
+      tags: [Webhooks]
+      summary: Get a webhook subscription by id
+      responses:
+        '200':
+          description: Subscription found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookSubscription'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Webhooks]
+      summary: Update a webhook subscription
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookSubscriptionUpdate'
+      responses:
+        '200':
+          description: Subscription updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookSubscription'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Webhooks]
+      summary: Delete a webhook subscription
+      responses:
+        '204':
+          description: Subscription removed
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/webhooks/{id}/rotate-secret:
+    post:
+      tags: [Webhooks]
+      summary: Rotate a webhook subscription signing secret
+      parameters:
+        - $ref: '#/components/parameters/WebhookSubscriptionId'
+      responses:
+        '200':
+          description: Secret rotated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookSecretRotation'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /api/webhooks/{id}/deliveries:
+    get:
+      tags: [Webhooks]
+      summary: List delivery attempts for a webhook subscription
+      parameters:
+        - $ref: '#/components/parameters/WebhookSubscriptionId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/CursorLimit'
+      responses:
+        '200':
+          description: A cursor-paginated page of delivery attempts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookDeliveryPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
 components:
   securitySchemes:
     ApiKeyAuth:
@@ -910,6 +1118,18 @@ components:
           maxItems: 100
           items:
             $ref: '#/components/schemas/ReputationEntry'
+        nextCursor:
+          type: string
+          nullable: true
+      required: [items]
+    JobPage:
+      type: object
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/Job'
         nextCursor:
           type: string
           nullable: true
