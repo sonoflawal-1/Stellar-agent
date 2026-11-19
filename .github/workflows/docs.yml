@@ -80,14 +80,35 @@ jobs:
           path: target/doc
           if-no-files-found: error
 
+  build-gas-docs:
+    name: Generate gas baseline docs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Generate docs/gas.md from .gas-baseline.json
+        run: node scripts/generate-gas-docs.mjs
+
+      - name: Upload gas docs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gas-docs
+          path: docs/gas.md
+          if-no-files-found: error
+
   merge-and-deploy:
     name: Merge docs and deploy to GitHub Pages
     runs-on: ubuntu-latest
     needs:
       - build-typedoc
       - build-rustdoc
-    # Only publish on pushes to main; other triggers (e.g. PRs) keep artifact-only behavior.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      - build-gas-docs
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -106,6 +127,12 @@ jobs:
         with:
           name: rustdoc-html
           path: site/rust
+
+      - name: Download gas docs artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: gas-docs
+          path: site/gas
 
       - name: Merge documentation outputs
         run: |
@@ -269,6 +296,10 @@ jobs:
                   <h2>Rust Contracts</h2>
                   <span>rustdoc reference for all Soroban crates and structs.</span>
                 </a>
+                <a class="card" href="gas/">
+                  <h2>Gas Baselines</h2>
+                  <span>Per-entrypoint gas and resource baselines.</span>
+                </a>
                 <a class="card" href="search/">
                   <h2>Search</h2>
                   <span>Combined search index across all documentation.</span>
@@ -278,6 +309,87 @@ jobs:
           </body>
           </html>
           EOF
+
+          # Render the per-entrypoint gas baseline table as HTML for the site.
+          node - <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+
+          const mdPath = 'site/gas/gas.md';
+          const md = fs.readFileSync(mdPath, 'utf8');
+
+          function escapeHtml(s) {
+            return s
+              .replace(/&/g, '&amp;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;')
+              .replace(/"/g, '&quot;');
+          }
+
+          function inline(s) {
+            return escapeHtml(s).replace(/`([^`]+)`/g, '<code>$1</code>');
+          }
+
+          const lines = md.split(/\r?\n/);
+          const html = [];
+          let i = 0;
+          while (i < lines.length) {
+            const line = lines[i];
+            if (/^\s*\|/.test(line) && i + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) {
+              const parseRow = (row) =>
+                row.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+              const headers = parseRow(line);
+              i += 2;
+              const rows = [];
+              while (i < lines.length && /^\s*\|/.test(lines[i])) {
+                rows.push(parseRow(lines[i]));
+                i += 1;
+              }
+              html.push('<table>');
+              html.push('<thead><tr>' + headers.map((h) => `<th>${inline(h)}</th>`).join('') + '</tr></thead>');
+              html.push('<tbody>');
+              for (const row of rows) {
+                html.push('<tr>' + row.map((c) => `<td>${inline(c)}</td>`).join('') + '</tr>');
+              }
+              html.push('</tbody></table>');
+              continue;
+            }
+            if (/^#{1,6}\s/.test(line)) {
+              const level = line.match(/^#+/)[0].length;
+              html.push(`<h${level}>${inline(line.replace(/^#{1,6}\s+/, ''))}</h${level}>`);
+            } else if (line.trim() === '') {
+              html.push('');
+            } else {
+              html.push(`<p>${inline(line)}</p>`);
+            }
+            i += 1;
+          }
+
+          fs.writeFileSync(
+            'site/gas/index.html',
+            `<!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>Gas Baselines - marc-stellar-sdk Docs</title>
+            <style>
+              body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; background: #f8fafc; color: #0f172a; }
+              main { max-width: 960px; margin: 0 auto; padding: 1.5rem; }
+              table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.9rem; }
+              th, td { border: 1px solid #e2e8f0; padding: 0.4rem 0.6rem; text-align: left; }
+              th { background: #e2e8f0; }
+              code { background: #f1f5f9; padding: 0.1rem 0.3rem; border-radius: 4px; }
+            </style>
+          </head>
+          <body>
+            <main>
+          ${html.join('\n')}
+            </main>
+          </body>
+          </html>`
+          );
+          NODE
 
           # Prevent Jekyll processing on GitHub Pages.
           touch site/.nojekyll
