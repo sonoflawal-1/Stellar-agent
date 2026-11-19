@@ -99,6 +99,130 @@ export class MarcPaymentTimeoutError extends Error {
 }
 
 /**
+ * Error thrown when the signer's balance is insufficient to cover the payment
+ * required by the server (HTTP 402 challenge). No funds are sent in this case.
+ */
+export class InsufficientFundsError extends Error {
+  /** Required amount in the smallest token unit, if known. */
+  readonly required?: string;
+  /** Available balance in the smallest token unit, if known. */
+  readonly available?: string;
+
+  constructor(message: string, required?: string, available?: string) {
+    super(message);
+    this.name = "InsufficientFundsError";
+    this.required = required;
+    this.available = available;
+    Object.setPrototypeOf(this, InsufficientFundsError.prototype);
+  }
+}
+
+/**
+ * Error thrown when the server rejects the submitted payment proof (e.g. it
+ * returns 402 again with an explicit rejection reason, or a 4xx indicating the
+ * proof was invalid). Distinct from {@link MarcPaymentTimeoutError}, which
+ * indicates settlement simply did not complete in time.
+ */
+export class PaymentRejectedError extends Error {
+  /** HTTP status code returned by the server when rejecting the proof. */
+  readonly status?: number;
+  /** The last response received from the server, if any. */
+  readonly lastResponse?: Response;
+
+  constructor(message: string, status?: number, lastResponse?: Response) {
+    super(message);
+    this.name = "PaymentRejectedError";
+    this.status = status;
+    this.lastResponse = lastResponse;
+    Object.setPrototypeOf(this, PaymentRejectedError.prototype);
+  }
+}
+
+/**
+ * Error thrown when a payment proof header exceeds the maximum allowed size.
+ * Prevents sending oversized headers that servers or proxies would reject.
+ */
+export class PaymentHeaderTooLargeError extends Error {
+  /** Size of the header value in bytes. */
+  readonly size: number;
+  /** Maximum allowed size in bytes. */
+  readonly maxSize: number;
+
+  constructor(message: string, size: number, maxSize: number) {
+    super(message);
+    this.name = "PaymentHeaderTooLargeError";
+    this.size = size;
+    this.maxSize = maxSize;
+    Object.setPrototypeOf(this, PaymentHeaderTooLargeError.prototype);
+  }
+}
+
+/**
+ * Error thrown when a payment would exceed the configured budget guard limits
+ * (`maxPerRequest` or `maxPerWindow`). No funds are sent when this is thrown.
+ */
+export class BudgetExceededError extends Error {
+  /** Which limit was violated. */
+  readonly limit: "perRequest" | "perWindow";
+  /** The amount that would have been spent, in the smallest token unit. */
+  readonly attempted: bigint;
+  /** The limit that was exceeded, in the smallest token unit. */
+  readonly max: bigint;
+
+  constructor(message: string, limit: "perRequest" | "perWindow", attempted: bigint, max: bigint) {
+    super(message);
+    this.name = "BudgetExceededError";
+    this.limit = limit;
+    this.attempted = attempted;
+    this.max = max;
+    Object.setPrototypeOf(this, BudgetExceededError.prototype);
+  }
+}
+
+/**
+ * Payment receipt describing what was paid for a successful {@link marcFetch}
+ * call. Populated when `returnReceipt` is enabled.
+ */
+export interface PaymentReceipt {
+  /** Stellar transaction hash of the settled payment. */
+  txHash: string;
+  /** Amount paid, in the smallest token unit (e.g. stroops). */
+  amount: string;
+  /** Asset identifier (token contract address or `"native"`). */
+  token: string;
+  /** Recipient address the payment was sent to. */
+  payTo: string;
+  /** Ledger sequence in which the payment was included, if known. */
+  ledger?: number;
+}
+
+/**
+ * Result returned by {@link marcFetch} when `returnReceipt` is enabled.
+ */
+export interface MarcFetchResult {
+  /** The final HTTP response from the paid request. */
+  response: Response;
+  /** Receipt describing the settled payment. */
+  receipt: PaymentReceipt;
+}
+
+/** Default rolling budget window: one hour. */
+export const DEFAULT_BUDGET_WINDOW_MS = 3_600_000;
+
+/** Default maximum size (in bytes) of a serialized payment proof header. */
+export const DEFAULT_MAX_PAYMENT_HEADER_BYTES = 16_384;
+
+/**
+ * Internal record of a settled (or reserved) payment for rolling-window
+ * budget accounting.
+ * @internal
+ */
+interface BudgetEntry {
+  at: number;
+  amount: bigint;
+}
+
+/**
  * Configuration options for {@link marcFetch}.
  *
  * Controls the Stellar keypair used for signing, the network target,
@@ -127,6 +251,40 @@ export interface MarcFetchOptions {
   retryBackoff?: number;
   /** Optional custom fetch implementation. Defaults to the global `fetch`. Used by tests and adapters. */
   fetchImpl?: typeof fetch;
+  /**
+   * When `true`, {@link marcFetch} resolves to a {@link MarcFetchResult}
+   * `{ response, receipt }` instead of a bare `Response`. Default: `false`
+   * (preserves the existing `Response` return shape).
+   */
+  returnReceipt?: boolean;
+  /**
+   * Maximum amount allowed for a single payment, in the smallest token unit.
+   * When exceeded, a {@link BudgetExceededError} is thrown and no funds are sent.
+   * Default: unlimited.
+   */
+  maxPerRequest?: string | bigint;
+  /**
+   * Maximum cumulative amount allowed within the rolling window
+   * (`windowMs`), in the smallest token unit. When exceeded, a
+   * {@link BudgetExceededError} is thrown and no funds are sent.
+   * Default: unlimited.
+   */
+  maxPerWindow?: string | bigint;
+  /**
+   * Length of the rolling budget window in milliseconds.
+   * Default: `3_600_000` (one hour).
+   */
+  windowMs?: number;
+  /**
+   * Optional hook invoked when a budget limit is exceeded, before the
+   * {@link BudgetExceededError} is thrown. Useful for alerting.
+   */
+  onBudgetExceeded?: (err: BudgetExceededError) => void;
+  /**
+   * Maximum size (in bytes) of the serialized payment proof header.
+   * Default: `16384`. Exceeding it throws {@link PaymentHeaderTooLargeError}.
+   */
+  maxPaymentHeaderBytes?: number;
 }
 
 /**
@@ -232,7 +390,77 @@ export function marcFetch(opts: MarcFetchOptions) {
     retryDelay = 500,
     retryBackoff = 2,
     fetchImpl,
+    returnReceipt = false,
+    maxPerRequest,
+    maxPerWindow,
+    windowMs = DEFAULT_BUDGET_WINDOW_MS,
+    onBudgetExceeded,
+    maxPaymentHeaderBytes = DEFAULT_MAX_PAYMENT_HEADER_BYTES,
   } = opts;
+
+  const maxPerRequestBig =
+    maxPerRequest === undefined ? undefined : BigInt(maxPerRequest);
+  const maxPerWindowBig =
+    maxPerWindow === undefined ? undefined : BigInt(maxPerWindow);
+
+  // Rolling-window budget accounting. `budgetChain` serialises all
+  // check-and-reserve operations so concurrent calls cannot race past the
+  // limits (atomicity across concurrent requests).
+  const budgetEntries: BudgetEntry[] = [];
+  let budgetChain: Promise<unknown> = Promise.resolve();
+
+  const pruneBudget = (now: number) => {
+    const cutoff = now - windowMs;
+    while (budgetEntries.length > 0 && budgetEntries[0].at < cutoff) {
+      budgetEntries.shift();
+    }
+  };
+
+  const windowTotal = () =>
+    budgetEntries.reduce((sum, e) => sum + e.amount, 0n);
+
+  /**
+   * Atomically check the budget for `amount` and, if allowed, reserve it in
+   * the rolling window. Throws {@link BudgetExceededError} on violation.
+   */
+  const reserveBudget = (amount: bigint): Promise<void> => {
+    const run = async () => {
+      const now = Date.now();
+      pruneBudget(now);
+
+      if (maxPerRequestBig !== undefined && amount > maxPerRequestBig) {
+        const err = new BudgetExceededError(
+          `Payment of ${amount} exceeds maxPerRequest of ${maxPerRequestBig}`,
+          "perRequest",
+          amount,
+          maxPerRequestBig,
+        );
+        onBudgetExceeded?.(err);
+        throw err;
+      }
+
+      if (maxPerWindowBig !== undefined) {
+        const projected = windowTotal() + amount;
+        if (projected > maxPerWindowBig) {
+          const err = new BudgetExceededError(
+            `Payment of ${amount} would bring window total to ${projected}, exceeding maxPerWindow of ${maxPerWindowBig}`,
+            "perWindow",
+            amount,
+            maxPerWindowBig,
+          );
+          onBudgetExceeded?.(err);
+          throw err;
+        }
+      }
+
+      budgetEntries.push({ at: now, amount });
+    };
+
+    const next = budgetChain.then(run, run);
+    // Keep the chain alive even if this reservation rejects.
+    budgetChain = next.catch(() => undefined);
+    return next;
+  };
 
   const caip2 = network === "pubnet" ? STELLAR_PUBNET_CAIP2 : STELLAR_TESTNET_CAIP2;
 
@@ -332,10 +560,28 @@ export function marcFetch(opts: MarcFetchOptions) {
     }
   }
 
-  return async (input: RequestInfo | URL, init?: RequestInit) => {
+  const finalize = (response: Response, receipt: PaymentReceipt | undefined) => {
+    if (returnReceipt) {
+      if (!receipt) {
+        // No payment was required; return an empty receipt for type safety.
+        return {
+          response,
+          receipt: { txHash: "", amount: "0", token: "", payTo: "" },
+        } satisfies MarcFetchResult;
+      }
+      return { response, receipt } satisfies MarcFetchResult;
+    }
+    return response;
+  };
+
+  return async (
+    input: RequestInfo | URL,
+    init?: RequestInit,
+  ): Promise<Response | MarcFetchResult> => {
     let attempts = 0;
     let paymentTriggered = false;
     let requestInit = init;
+    let receipt: PaymentReceipt | undefined;
 
     while (attempts < maxPaymentAttempts) {
       attempts += 1;
@@ -345,7 +591,7 @@ export function marcFetch(opts: MarcFetchOptions) {
           if (paymentTriggered && onPayment && response.ok) {
             onPayment("settled");
           }
-          return response;
+          return finalize(response, receipt);
         }
 
         paymentTriggered = true;
@@ -355,6 +601,24 @@ export function marcFetch(opts: MarcFetchOptions) {
           response.headers.get("x-payment-requirements") ||
           response.headers.get("PAYMENT-REQUIRED") ||
           response.headers.get("payment-required");
+
+        // Parse the requirement so we can enforce the budget guard before
+        // any funds are sent.
+        const requirement = reqHeader ? parsePaymentRequiredHeader(reqHeader) : { amount: "", asset: "" };
+        let requiredAmount: bigint | undefined;
+        if (requirement.amount !== "") {
+          try {
+            requiredAmount = BigInt(requirement.amount);
+          } catch {
+            requiredAmount = undefined;
+          }
+        }
+
+        if (requiredAmount !== undefined) {
+          // Throws BudgetExceededError (and invokes onBudgetExceeded) on
+          // violation. Atomic across concurrent calls.
+          await reserveBudget(requiredAmount);
+        }
 
         if (onPayment) {
           onPayment("signing");
@@ -384,7 +648,27 @@ export function marcFetch(opts: MarcFetchOptions) {
           if (onPayment) {
             onPayment("failed");
           }
+          const msg = (err as Error)?.message ?? "";
+          if (/insufficient|balance|underfunded/i.test(msg)) {
+            throw new InsufficientFundsError(
+              `Insufficient funds to pay ${requirement.amount} ${requirement.asset}: ${msg}`,
+              requirement.amount || undefined,
+            );
+          }
           throw err;
+        }
+
+        // Enforce header size limit before sending.
+        const proofBytes = new TextEncoder().encode(signedProof).length;
+        if (proofBytes > maxPaymentHeaderBytes) {
+          if (onPayment) {
+            onPayment("failed");
+          }
+          throw new PaymentHeaderTooLargeError(
+            `Payment proof header is ${proofBytes} bytes, exceeding limit of ${maxPaymentHeaderBytes}`,
+            proofBytes,
+            maxPaymentHeaderBytes,
+          );
         }
 
         if (onPayment) {
@@ -427,7 +711,22 @@ export function marcFetch(opts: MarcFetchOptions) {
             if (onPayment && retryResponse.ok) {
               onPayment("settled");
             }
-            return retryResponse;
+            if (retryResponse.ok) {
+              receipt = buildReceipt(retryResponse, requirement, signedProof);
+            }
+            return finalize(retryResponse, receipt);
+          }
+          // A 4xx other than 402 indicates the server explicitly rejected the
+          // proof (e.g. 400/401/403/422) rather than a settlement lag.
+          if (retryResponse.status >= 400 && retryResponse.status < 500) {
+            if (onPayment) {
+              onPayment("failed");
+            }
+            throw new PaymentRejectedError(
+              `Server rejected payment proof with HTTP ${retryResponse.status}`,
+              retryResponse.status,
+              retryResponse,
+            );
           }
           lastResponse = retryResponse;
           if (retry < retries) {
@@ -456,6 +755,71 @@ export function marcFetch(opts: MarcFetchOptions) {
 
     throw new Error(`Payment failed after ${maxPaymentAttempts} attempt(s)`);
   };
+}
+
+/**
+ * Build a {@link PaymentReceipt} from a successful paid response.
+ *
+ * Prefers settlement metadata returned by the server (via `X-PAYMENT-RESPONSE`
+ * or `X-PAYMENT-RECEIPT` headers) and falls back to the parsed requirement and
+ * the locally-signed proof.
+ *
+ * @internal
+ */
+function buildReceipt(
+  response: Response,
+  requirement: ParsedPaymentRequirement,
+  signedProof: string,
+): PaymentReceipt {
+  let txHash = "";
+  let ledger: number | undefined;
+  let amount = requirement.amount;
+  let token = requirement.asset;
+  let payTo = "";
+
+  const settlementHeader =
+    response.headers.get("X-PAYMENT-RESPONSE") ||
+    response.headers.get("x-payment-response") ||
+    response.headers.get("X-PAYMENT-RECEIPT") ||
+    response.headers.get("x-payment-receipt");
+
+  if (settlementHeader) {
+    try {
+      const decoded = decodeBase64(settlementHeader);
+      const parsed = JSON.parse(decoded) as {
+        txHash?: string;
+        transaction?: string;
+        amount?: string;
+        asset?: string;
+        token?: string;
+        payTo?: string;
+        payToAddress?: string;
+        ledger?: number;
+        ledgerSequence?: number;
+      };
+      txHash = parsed.txHash ?? parsed.transaction ?? "";
+      if (parsed.amount) amount = parsed.amount;
+      token = parsed.token ?? parsed.asset ?? token;
+      payTo = parsed.payTo ?? parsed.payToAddress ?? "";
+      ledger = parsed.ledger ?? parsed.ledgerSequence;
+    } catch {
+      // Ignore malformed settlement headers; fall back to local data.
+    }
+  }
+
+  if (!txHash && signedProof) {
+    try {
+      const proof = JSON.parse(signedProof) as {
+        payload?: { txHash?: string; transaction?: string };
+        txHash?: string;
+      };
+      txHash = proof.payload?.txHash ?? proof.payload?.transaction ?? proof.txHash ?? "";
+    } catch {
+      // Ignore malformed proof.
+    }
+  }
+
+  return { txHash, amount, token, payTo, ledger };
 }
 
 // ---------------------------------------------------------------------------

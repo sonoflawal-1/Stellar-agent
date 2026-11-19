@@ -210,9 +210,74 @@ async function callLlm(messages: LlmMessage[]): Promise<string> {
     : callOpenAi(messages);
 }
 
-function extractJson(raw: string): unknown {
+/**
+ * Error thrown when LLM output cannot be parsed or fails shape validation.
+ * Callers can catch this to return a controlled error instead of crashing.
+ */
+export class LlmParseError extends Error {
+  /** The raw model output that failed to parse (if available). */
+  readonly raw?: string;
+  /** The underlying cause, if any (e.g. a SyntaxError or ZodError). */
+  readonly cause?: unknown;
+
+  constructor(message: string, options: { raw?: string; cause?: unknown } = {}) {
+    super(message);
+    this.name = "LlmParseError";
+    this.raw = options.raw;
+    this.cause = options.cause;
+  }
+}
+
+/**
+ * Extract and parse a JSON value from raw LLM output. Tolerates surrounding
+ * prose by locating the first `{...}` block. Throws LlmParseError on failure.
+ */
+export function extractJson(raw: string): unknown {
+  if (typeof raw !== "string" || raw.trim().length === 0) {
+    throw new LlmParseError("LLM output was empty", { raw });
+  }
   const match = raw.match(/\{[\s\S]*\}/);
-  return JSON.parse(match ? match[0] : raw);
+  const candidate = match ? match[0] : raw;
+  try {
+    return JSON.parse(candidate);
+  } catch (cause) {
+    throw new LlmParseError("LLM output was not valid JSON", { raw, cause });
+  }
+}
+
+/**
+ * Parse raw LLM output and validate it against a Zod schema. Throws
+ * LlmParseError (with the raw output attached) when parsing or validation fails.
+ */
+export function parseLlmJson<T>(raw: string, schema: z.ZodType<T>): T {
+  const json = extractJson(raw);
+  const result = schema.safeParse(json);
+  if (!result.success) {
+    throw new LlmParseError(
+      `LLM output failed validation: ${result.error.issues
+        .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+        .join("; ")}`,
+      { raw, cause: result.error },
+    );
+  }
+  return result.data;
+}
+
+/**
+ * Validate an already-parsed value against a Zod schema, throwing LlmParseError
+ * on failure. Useful for shape validators shared across agents.
+ */
+export function validateLlmShape<T>(value: unknown, schema: z.ZodType<T>): T {
+  const result = schema.safeParse(value);
+  if (!result.success) {
+    throw new LlmParseError(
+      `LLM output failed validation: ${result.error.issues
+        .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+        .join("; ")}`,
+      { cause: result.error },
+    );
+  }
+  return result.data;
 }
 
 /**
@@ -229,7 +294,7 @@ export async function classifyTask(prompt: string): Promise<TaskClassification> 
     },
     { role: "user", content: prompt },
   ]);
-  return TaskClassificationSchema.parse(extractJson(raw));
+  return parseLlmJson(raw, TaskClassificationSchema);
 }
 
 /**

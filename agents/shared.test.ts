@@ -19,6 +19,10 @@ import {
   TaskQueue,
   submitDeliverable,
   computeDeliverableHash,
+  extractJsonObject,
+  parseLlmJson,
+  parseNamerResponse,
+  parseResearcherResponse,
 } from "./shared.js";
 
 test("makeSellerResponse - returns standard response format with success true and execution_time_ms >= 0", () => {
@@ -1025,4 +1029,212 @@ test("submitDeliverable - computes hash, stores content and calls the contract",
   assert.equal(submitted?.hash, computeDeliverableHash(bytes));
   assert.equal(result.hash, computeDeliverableHash(bytes));
   assert.equal(result.txHash, "tx-1");
+});
+
+// ---------------------------------------------------------------------------
+// LLM output parsing helpers (pure functions, no network)
+// ---------------------------------------------------------------------------
+
+test("extractJsonObject - extracts a JSON object from surrounding prose", () => {
+  const text = 'Sure! Here is the result:\n{"name":"Acme","score":9}\nHope that helps.';
+  const extracted = extractJsonObject(text);
+  assert.equal(extracted, '{"name":"Acme","score":9}');
+});
+
+test("extractJsonObject - extracts a JSON object from a fenced code block", () => {
+  const text = '```json\n{"name":"Acme"}\n```';
+  assert.equal(extractJsonObject(text), '{"name":"Acme"}');
+});
+
+test("extractJsonObject - returns null for empty string", () => {
+  assert.equal(extractJsonObject(""), null);
+});
+
+test("extractJsonObject - returns null for whitespace-only string", () => {
+  assert.equal(extractJsonObject("   \n\t "), null);
+});
+
+test("extractJsonObject - returns null for non-JSON input", () => {
+  assert.equal(extractJsonObject("I cannot help with that request."), null);
+});
+
+test("extractJsonObject - returns null for truncated JSON", () => {
+  assert.equal(extractJsonObject('{"name":"Acme","score":'), null);
+});
+
+test("parseLlmJson - parses a valid JSON object", () => {
+  const result = parseLlmJson('{"name":"Acme","score":9}');
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.value, { name: "Acme", score: 9 });
+  assert.equal(result.error, undefined);
+});
+
+test("parseLlmJson - parses JSON embedded in prose", () => {
+  const result = parseLlmJson('Here you go: {"name":"Acme"} done.');
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.value, { name: "Acme" });
+});
+
+test("parseLlmJson - returns controlled error for empty string", () => {
+  const result = parseLlmJson("");
+  assert.equal(result.ok, false);
+  assert.equal(typeof result.error, "string");
+  assert.equal(result.value, undefined);
+});
+
+test("parseLlmJson - returns controlled error for truncated JSON", () => {
+  const result = parseLlmJson('{"name":"Acme"');
+  assert.equal(result.ok, false);
+  assert.equal(typeof result.error, "string");
+});
+
+test("parseLlmJson - returns controlled error for non-JSON input", () => {
+  const result = parseLlmJson("not json at all");
+  assert.equal(result.ok, false);
+  assert.equal(typeof result.error, "string");
+});
+
+test("parseLlmJson - returns controlled error for JSON array (not an object)", () => {
+  const result = parseLlmJson("[1,2,3]");
+  assert.equal(result.ok, false);
+  assert.equal(typeof result.error, "string");
+});
+
+test("parseNamerResponse - parses a valid namer response", () => {
+  const raw = JSON.stringify({
+    names: ["Acme Labs", "BrightWorks"],
+    rationale: "Short, memorable, brandable.",
+  });
+  const result = parseNamerResponse(raw);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.value?.names, ["Acme Labs", "BrightWorks"]);
+  assert.equal(result.value?.rationale, "Short, memorable, brandable.");
+});
+
+test("parseNamerResponse - ignores extra fields", () => {
+  const raw = JSON.stringify({
+    names: ["Acme Labs"],
+    rationale: "ok",
+    extra: { nested: true },
+    confidence: 0.9,
+  });
+  const result = parseNamerResponse(raw);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.value?.names, ["Acme Labs"]);
+});
+
+test("parseNamerResponse - returns controlled error for empty string", () => {
+  const result = parseNamerResponse("");
+  assert.equal(result.ok, false);
+  assert.equal(typeof result.error, "string");
+  assert.equal(result.value, undefined);
+});
+
+test("parseNamerResponse - returns controlled error for truncated JSON", () => {
+  const result = parseNamerResponse('{"names":["Acme"');
+  assert.equal(result.ok, false);
+  assert.equal(typeof result.error, "string");
+});
+
+test("parseNamerResponse - returns controlled error for non-JSON input", () => {
+  const result = parseNamerResponse("I am unable to comply.");
+  assert.equal(result.ok, false);
+  assert.equal(typeof result.error, "string");
+});
+
+test("parseNamerResponse - returns controlled error for wrong types", () => {
+  const result = parseNamerResponse(JSON.stringify({ names: "Acme", rationale: 42 }));
+  assert.equal(result.ok, false);
+  assert.equal(typeof result.error, "string");
+});
+
+test("parseNamerResponse - returns controlled error when names is empty array", () => {
+  const result = parseNamerResponse(JSON.stringify({ names: [], rationale: "none" }));
+  assert.equal(result.ok, false);
+  assert.equal(typeof result.error, "string");
+});
+
+test("parseResearcherResponse - parses a valid researcher response", () => {
+  const raw = JSON.stringify({
+    summary: "The market is growing.",
+    findings: ["Finding one", "Finding two"],
+    sources: ["https://example.com/a"],
+  });
+  const result = parseResearcherResponse(raw);
+  assert.equal(result.ok, true);
+  assert.equal(result.value?.summary, "The market is growing.");
+  assert.deepEqual(result.value?.findings, ["Finding one", "Finding two"]);
+  assert.deepEqual(result.value?.sources, ["https://example.com/a"]);
+});
+
+test("parseResearcherResponse - ignores extra fields", () => {
+  const raw = JSON.stringify({
+    summary: "ok",
+    findings: ["f"],
+    sources: [],
+    metadata: { model: "x" },
+  });
+  const result = parseResearcherResponse(raw);
+  assert.equal(result.ok, true);
+  assert.equal(result.value?.summary, "ok");
+});
+
+test("parseResearcherResponse - returns controlled error for empty string", () => {
+  const result = parseResearcherResponse("");
+  assert.equal(result.ok, false);
+  assert.equal(typeof result.error, "string");
+  assert.equal(result.value, undefined);
+});
+
+test("parseResearcherResponse - returns controlled error for truncated JSON", () => {
+  const result = parseResearcherResponse('{"summary":"ok","findings":[');
+  assert.equal(result.ok, false);
+  assert.equal(typeof result.error, "string");
+});
+
+test("parseResearcherResponse - returns controlled error for non-JSON input", () => {
+  const result = parseResearcherResponse("Sorry, no results.");
+  assert.equal(result.ok, false);
+  assert.equal(typeof result.error, "string");
+});
+
+test("parseResearcherResponse - returns controlled error for wrong types", () => {
+  const result = parseResearcherResponse(
+    JSON.stringify({ summary: 123, findings: "not-an-array", sources: "nope" }),
+  );
+  assert.equal(result.ok, false);
+  assert.equal(typeof result.error, "string");
+});
+
+test("parseResearcherResponse - returns controlled error when summary is missing", () => {
+  const result = parseResearcherResponse(
+    JSON.stringify({ findings: ["f"], sources: [] }),
+  );
+  assert.equal(result.ok, false);
+  assert.equal(typeof result.error, "string");
+});
+
+test("parsers - never perform network calls (pure functions)", () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  // @ts-ignore
+  globalThis.fetch = (..._args: unknown[]) => {
+    fetchCalls++;
+    throw new Error("network access is not allowed in parser tests");
+  };
+
+  try {
+    parseLlmJson('{"a":1}');
+    parseLlmJson("garbage");
+    parseNamerResponse(JSON.stringify({ names: ["A"], rationale: "r" }));
+    parseNamerResponse("garbage");
+    parseResearcherResponse(
+      JSON.stringify({ summary: "s", findings: [], sources: [] }),
+    );
+    parseResearcherResponse("garbage");
+    extractJsonObject("garbage");
+    assert.equal(fetchCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
