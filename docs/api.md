@@ -926,6 +926,88 @@ function verify(rawBody: string, header: string, secrets: string[]) {
 
 ---
 
+## Dashboard Security Model
+
+The dashboard service (`server.ts`) serves the landing site and the `/app` static bundle, and exposes the mutating routes `/api/jobs/create`, `/api/dispute-job`, `/api/claim-refund`, and `/api/build/submit`. The following controls apply to all of them.
+
+### Authentication: Bearer-Only
+
+Tokens are issued by `POST /api/auth/token` and **must** be sent in the `Authorization` header:
+
+```bash
+Authorization: Bearer <token>
+```
+
+Cookie-based authentication is **not** supported. Requests that present a token only via a cookie (e.g. `Cookie: token=...`) are rejected with `401 Unauthorized`. This removes the ambient-authority vector that CSRF attacks rely on; clients must attach the header explicitly on every request.
+
+### CSRF Protection for Mutating Routes
+
+Because auth is bearer-only, cross-site form POSTs cannot carry credentials and are rejected. As defence in depth, mutating routes additionally enforce a **double-submit CSRF token**:
+
+1. `GET /api/auth/csrf` issues a random token and sets it in a cookie with `SameSite=Strict; Secure; HttpOnly=false` (readable by `public/app.js`).
+2. The client echoes the token in the `X-CSRF-Token` header on every mutating request.
+3. The server rejects the request with `403 Forbidden` if the header is missing or does not match the cookie.
+
+Cross-site form submissions cannot set custom headers, so they fail both the bearer check and the CSRF check.
+
+### Security Headers and CSP
+
+All responses include a consistent header set applied via `helmet`:
+
+| Header                      | Value / Notes                                                        |
+| --------------------------- | -------------------------------------------------------------------- |
+| `Content-Security-Policy`   | Tailored to `public/app.js`; see allow-list below                    |
+| `X-Content-Type-Options`    | `nosniff`                                                            |
+| `X-Frame-Options`           | `DENY`                                                               |
+| `Referrer-Policy`           | `no-referrer`                                                        |
+| `Strict-Transport-Security` | `max-age=31536000; includeSubDomains`                                |
+
+CSP allow-list (configurable via `CSP_CONNECT_SRC` / `CSP_SCRIPT_SRC`):
+
+- `default-src 'self'`
+- `script-src 'self'` (no inline scripts; `public/app.js` is served as an external file)
+- `style-src 'self' 'unsafe-inline'` (inline styles used by the static bundle)
+- `connect-src 'self' <STELLAR_RPC_URL> <allow-listed CDN origins>`
+- `img-src 'self' data:`
+- `frame-ancestors 'none'`
+
+### Request Body Size Limits
+
+Body parsing is bounded per route rather than by a single global limit:
+
+| Route                 | Default limit | Env override             |
+| --------------------- | ------------- | ------------------------ |
+| Global (`express.json`) | `100kb`     | `BODY_LIMIT_DEFAULT`     |
+| `/api/build/submit`   | `2mb`         | `BODY_LIMIT_BUILD_SUBMIT`|
+| `/api/jobs/create`    | `256kb`       | `BODY_LIMIT_JOBS_CREATE` |
+
+Requests exceeding the applicable limit are rejected with `413 Payload Too Large` before any handler runs.
+
+### Rate Limiting Buckets
+
+Rate limits are applied per-IP **and** per-wallet/per-token, with cost-weighted buckets for embedding-heavy routes. Each bucket is independent; a request is rejected if any bucket is exhausted.
+
+| Bucket            | Key                    | Scope                                  | Default                |
+| ----------------- | ---------------------- | -------------------------------------- | ---------------------- |
+| `ip`              | client IP              | All routes                             | 120 req/min            |
+| `wallet`          | authenticated wallet   | Mutating + wallet-scoped reads         | 30 req/min             |
+| `token`           | bearer token hash      | All authenticated routes               | 60 req/min             |
+| `cost:embeddings` | wallet                 | `/api/agents/match`, embedding routes  | 600 cost units/min     |
+
+Embedding-heavy routes charge a cost per request (e.g. `10` units per `/api/agents/match` call) against the `cost:embeddings` bucket, so a single wallet cannot fan out across many IPs to bypass limits.
+
+All `429 Too Many Requests` responses include a `Retry-After` header (seconds until the earliest bucket refills) plus `RateLimit-*` headers:
+
+```
+HTTP/1.1 429 Too Many Requests
+Retry-After: 12
+RateLimit-Limit: 30
+RateLimit-Remaining: 0
+RateLimit-Reset: 1690732012
+```
+
+---
+
 ## Request/Response Conventions
 
 ### Request Headers
@@ -966,7 +1048,9 @@ All responses are JSON with standard fields:
 | 200  | Request succeeded                      |
 | 400  | Bad request (validation error)         |
 | 401  | Unauthorized (authentication required) |
+| 403  | Forbidden (CSRF token missing/invalid) |
 | 404  | Resource not found                     |
+| 413  | Payload too large (body limit exceeded)|
 | 422  | Unprocessable entity (malformed data)  |
 | 429  | Too many requests (rate limited)       |
 | 500  | Internal server error                  |
@@ -1033,6 +1117,20 @@ WEBHOOK_ALERT_URL=https://...      # Optional: forward failure alerts here
 BUYER_SECRET=SBXXXXXXXX...         # Buyer keypair secret
 STELLAR_RPC_URL=https://...        # Stellar RPC endpoint
 STELLAR_NETWORK_PASSPHRASE=...     # Network passphrase
+```
+
+### Dashboard
+
+```bash
+BODY_LIMIT_DEFAULT=100kb           # Global express.json limit
+BODY_LIMIT_BUILD_SUBMIT=2mb        # Limit for /api/build/submit
+BODY_LIMIT_JOBS_CREATE=256kb       # Limit for /api/jobs/create
+CSP_CONNECT_SRC=https://...        # Extra connect-src origins (RPC/CDN)
+CSP_SCRIPT_SRC=https://...         # Extra script-src origins
+RATE_LIMIT_IP_PER_MIN=120          # Per-IP bucket
+RATE_LIMIT_WALLET_PER_MIN=30       # Per-wallet bucket
+RATE_LIMIT_TOKEN_PER_MIN=60        # Per-token bucket
+RATE_LIMIT_EMBEDDING_COST_PER_MIN=600 # Cost-weighted embedding bucket
 ```
 
 ---
@@ -1122,6 +1220,14 @@ console.log(result); // { status: "accepted", jobId: "1" }
 ---
 
 ## Changelog
+
+### v1.2 (2026-07-29)
+
+- Documented dashboard security model: bearer-only auth (cookie auth rejected)
+- CSRF double-submit token (`X-CSRF-Token`) required on mutating routes
+- Security headers via `helmet` with a CSP allow-list for `public/app.js` and RPC/CDN origins
+- Per-route request body size limits with `413 Payload Too Large`
+- Per-IP, per-wallet, per-token, and cost-weighted rate-limit buckets; `429` includes `Retry-After`
 
 ### v1.1 (2026-07-29)
 
