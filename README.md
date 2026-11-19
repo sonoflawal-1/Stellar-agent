@@ -291,3 +291,6 @@ MIT
 
 <!-- handsoff-issue-656 -->
 - #656: feat(sdk): implement Server-Sent Events streaming for long-running job results
+
+<!-- handsoff-issue-1037 -->
+- #1037: fix(dashboard): /api/build/submit must verify the transaction network passphrase and source
