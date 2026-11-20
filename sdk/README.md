@@ -21,6 +21,8 @@ npm install marc-stellar-sdk
 > supported. Ensure your project's `tsconfig.json` / `package.json` targets
 > ESM (e.g. `"module": "NodeNext"`).
 
+For a step-by-step paid API walkthrough (Express and Hono on testnet), see [docs/TUTORIAL_PAID_API.md](../docs/TUTORIAL_PAID_API.md).
+
 ## Quick Start
 
 ```typescript

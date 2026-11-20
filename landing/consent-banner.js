@@ -107,6 +107,20 @@ function loadExternalResources(choice) {
 /**
  * Show/hide consent banner and wire up event listeners
  */
+function showConsentBanner() {
+  const banner = document.getElementById("consent-banner");
+  if (banner) {
+    banner.style.display = "flex";
+    const acceptBtn = document.getElementById("consent-accept");
+    acceptBtn?.focus();
+  }
+}
+
+function reopenConsentPreferences() {
+  localStorage.removeItem(CONSENT_KEY);
+  showConsentBanner();
+}
+
 function initConsentBanner() {
   const banner = document.getElementById("consent-banner");
   const acceptBtn = document.getElementById("consent-accept");
@@ -138,7 +152,17 @@ function initConsentBanner() {
       loadExternalResources("reject");
       banner.style.display = "none";
     });
+
+    banner.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        rejectBtn.click();
+      }
+    });
   }
+
+  document.getElementById("consent-preferences")?.addEventListener("click", () => {
+    reopenConsentPreferences();
+  });
 }
 
 // Initialize when DOM is ready

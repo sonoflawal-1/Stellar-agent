@@ -521,6 +521,40 @@ button {
 }
 
 /* ── Live Protocol Stats (Issue #599) ── */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: auto;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  z-index: 10000;
+  padding: 0.75rem 1rem;
+  background: #111;
+  color: #fff;
+  text-decoration: none;
+  border-radius: 4px;
+}
+.skip-link:focus {
+  left: 1rem;
+  top: 1rem;
+  width: auto;
+  height: auto;
+}
+.consent-banner button:focus-visible,
+.nav-link:focus-visible,
+.footer-link-btn:focus-visible {
+  outline: 2px solid #6ee7ff;
+  outline-offset: 2px;
+}
+.footer-link-btn {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+}
 .stats-section {
   padding: 80px 0;
   border-bottom: 1px solid var(--border);
