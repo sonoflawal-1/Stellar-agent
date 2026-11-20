@@ -1,5 +1,15 @@
 # MARC demo scripts
 
+| Script | Command | Demonstrates |
+| ------ | ------- | ------------ |
+| `lifecycle.ts` | `npm run lifecycle` | Full buyer/seller escrow + x402 + completion |
+| `cancel-flow.ts` | `npx tsx cancel-flow.ts` | Cancel funded job and refund client |
+| `multi-agent.ts` | `npx tsx multi-agent.ts` | Several agents trading concurrently |
+| `simulate.ts` | `npm run simulate` | Marketplace stress / multi buyer-seller |
+| `tui.ts` | `npx tsx tui.ts` | Interactive Blessed buyer TUI |
+| `buyer-agent.ts` | `npx tsx buyer-agent.ts` | Standalone buyer worker |
+| `seller-agent.ts` | `npx tsx seller-agent.ts` | Standalone seller worker |
+
 ## `lifecycle.ts` — one-shot agent lifecycle orchestrator
 
 Runs the full buyer ↔ seller lifecycle against a live Stellar testnet: spawns
