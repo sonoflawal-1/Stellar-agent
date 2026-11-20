@@ -1,6 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { validateManifest, calculateReputation } from "./server.js";
+import { AgentStore } from "./store.js";
+
+const STORE_MANIFEST = {
+  id: "seller-store",
+  name: "Store Test Agent",
+  description: "Agent used to exercise registry persistence",
+  url: "https://store.example.com",
+  price_usdc: 2,
+  wallet: "GBUQWP3BOUZX34ULNQG23RQ6F4YUSXHTBVDJ42LPBK4EK4YLYL2QQ5K",
+  tags: ["test"],
+};
 
 const VALID_MANIFEST = {
   id: "seller-test",
@@ -242,4 +253,37 @@ test("calculateReputation - handles 100% success rate correctly", () => {
   assert.equal(reputation.completed_jobs, 2);
   assert.equal(reputation.disputed_jobs, 0);
   assert.equal(reputation.success_rate, "100%");
+});
+
+test("AgentStore - registrations survive a store reload (restart persistence)", () => {
+  const path = ":memory:";
+  const first = new AgentStore(path);
+  first.register(STORE_MANIFEST);
+  first.close();
+
+  // Simulate a process restart by opening a fresh store over the same data.
+  const second = new AgentStore(path);
+  const stored = second.get(STORE_MANIFEST.id);
+  assert.ok(stored, "registration should be present after reload");
+  assert.equal(stored?.manifest.name, STORE_MANIFEST.name);
+  assert.equal(stored?.manifest.url, STORE_MANIFEST.url);
+  second.close();
+});
+
+test("AgentStore - hides agents whose heartbeat exceeds the TTL from discovery", () => {
+  const store = new AgentStore(":memory:", { ttlMs: 1000 });
+  store.register(STORE_MANIFEST);
+
+  const fresh = store.discover();
+  assert.equal(fresh.length, 1, "fresh agent should be discoverable");
+
+  // Advance the clock past the TTL without sending a heartbeat.
+  const stale = store.discover(Date.now() + 5000);
+  assert.equal(stale.length, 0, "stale agent should be hidden from discovery");
+  assert.equal(store.get(STORE_MANIFEST.id)?.status, "offline");
+
+  // A heartbeat brings the agent back online.
+  store.heartbeat(STORE_MANIFEST.id);
+  assert.equal(store.discover().length, 1, "agent should reappear after heartbeat");
+  store.close();
 });

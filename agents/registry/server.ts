@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pino from "pino";
+import Database from "better-sqlite3";
 import { AgentHealthMonitor } from "./src/monitor.js";
 
 const isProduction = process.env.NODE_ENV === "production";
@@ -71,6 +72,8 @@ const HEARTBEAT_TIMEOUT_MS = MISSED_BEATS_LIMIT * HEARTBEAT_INTERVAL_MS;
 const AGENT_LIST_RATE_LIMIT = 60;
 const AGENT_LIST_RATE_WINDOW_MS = 60_000;
 const REGISTRY_API_KEY = registryEnv.REGISTRY_API_KEY;
+const REGISTRY_DB_PATH =
+  process.env.REGISTRY_DB_PATH ?? path.join(__dirname, "registry.sqlite");
 const agentListRequestCounts = new Map<string, { count: number; resetAt: number }>();
 
 export type AgentStatus = "Online" | "Offline";
@@ -86,11 +89,122 @@ export type AgentEntry = {
 
 export const activeAgents = new Map<string, AgentEntry>();
 
+/**
+ * SQLite-backed persistence for agent registrations.
+ *
+ * The in-memory `activeAgents` map stays the hot path for reads, but every
+ * mutation is mirrored to SQLite so registrations survive a restart.
+ */
+const db = new Database(REGISTRY_DB_PATH);
+db.pragma("journal_mode = WAL");
+db.exec(`
+  CREATE TABLE IF NOT EXISTS agents (
+    id TEXT PRIMARY KEY,
+    manifest TEXT NOT NULL,
+    tags TEXT NOT NULL,
+    status TEXT NOT NULL,
+    last_heartbeat INTEGER NOT NULL
+  );
+`);
+
+const upsertAgentStmt = db.prepare(`
+  INSERT INTO agents (id, manifest, tags, status, last_heartbeat)
+  VALUES (@id, @manifest, @tags, @status, @lastHeartbeat)
+  ON CONFLICT(id) DO UPDATE SET
+    manifest = excluded.manifest,
+    tags = excluded.tags,
+    status = excluded.status,
+    last_heartbeat = excluded.last_heartbeat
+`);
+
+const deleteAgentStmt = db.prepare(`DELETE FROM agents WHERE id = ?`);
+const selectAllAgentsStmt = db.prepare(`SELECT * FROM agents`);
+
+function persistAgent(agentId: string, entry: AgentEntry): void {
+  try {
+    upsertAgentStmt.run({
+      id: agentId,
+      manifest: JSON.stringify(entry.manifest),
+      tags: JSON.stringify(entry.tags),
+      status: entry.status,
+      lastHeartbeat: entry.lastHeartbeat,
+    });
+  } catch (err) {
+    logger.error(
+      { agentId, err: (err as Error).message },
+      `[registry] Failed to persist agent ${agentId}`,
+    );
+  }
+}
+
+function removePersistedAgent(agentId: string): void {
+  try {
+    deleteAgentStmt.run(agentId);
+  } catch (err) {
+    logger.error(
+      { agentId, err: (err as Error).message },
+      `[registry] Failed to remove persisted agent ${agentId}`,
+    );
+  }
+}
+
+/** Rehydrate the in-memory registry from SQLite on startup. */
+function loadPersistedAgents(): void {
+  let rows: Array<{
+    id: string;
+    manifest: string;
+    tags: string;
+    status: string;
+    last_heartbeat: number;
+  }>;
+  try {
+    rows = selectAllAgentsStmt.all() as typeof rows;
+  } catch (err) {
+    logger.error(
+      { err: (err as Error).message },
+      "[registry] Failed to load persisted agents",
+    );
+    return;
+  }
+  const now = Date.now();
+  let loaded = 0;
+  for (const row of rows) {
+    let manifest: Record<string, unknown>;
+    let tags: string[];
+    try {
+      manifest = JSON.parse(row.manifest);
+      tags = JSON.parse(row.tags);
+    } catch (err) {
+      logger.warn(
+        { agentId: row.id, err: (err as Error).message },
+        `[registry] Skipping corrupt persisted agent ${row.id}`,
+      );
+      continue;
+    }
+    const stale = now - row.last_heartbeat >= HEARTBEAT_TIMEOUT_MS;
+    const status: AgentStatus =
+      stale || row.status !== "Online" ? "Offline" : "Online";
+    activeAgents.set(row.id, {
+      lastHeartbeat: row.last_heartbeat,
+      manifest,
+      tags,
+      status,
+    });
+    loaded++;
+  }
+  if (loaded > 0) {
+    logger.info({ loaded }, `[registry] Restored ${loaded} agent registration(s) from SQLite`);
+  }
+}
+
+loadPersistedAgents();
+
 export function setAgentStatus(agentId: string, status: AgentStatus): void {
   const entry = activeAgents.get(agentId);
   if (!entry) return;
   if (entry.status === status) return;
   entry.status = status;
+  persistAgent(agentId, entry);
   logger.info({ agentId, status }, `[registry] Agent ${agentId} marked ${status}`);
 }
 
@@ -271,6 +385,26 @@ function getAliveAgents(): Record<string, unknown>[] {
   return alive;
 }
 
+/**
+ * Mark agents whose last heartbeat is older than the TTL as Offline.
+ * Persisted so the status survives restarts.
+ */
+function expireStaleAgents(): number {
+  const now = Date.now();
+  let expired = 0;
+  for (const [id, entry] of activeAgents) {
+    if (entry.status === "Online" && now - entry.lastHeartbeat >= HEARTBEAT_TIMEOUT_MS) {
+      entry.status = "Offline";
+      persistAgent(id, entry);
+      expired++;
+    }
+  }
+  if (expired > 0) {
+    logger.info({ expiredCount: expired }, `[registry] Marked ${expired} stale agent(s) Offline`);
+  }
+  return expired;
+}
+
 function getAllAgentsWithStatus(): Record<string, unknown>[] {
   const now = Date.now();
   return loadManifests().map((m) => {
@@ -311,14 +445,16 @@ app.post("/heartbeat", heartbeatAuth, (req, res) => {
   }
 
   const existing = activeAgents.get(agentId);
-  activeAgents.set(agentId, {
+  const entry: AgentEntry = {
     lastHeartbeat: Date.now(),
     manifest,
     tags: extractTags(manifest),
-    status: existing?.status ?? "Online",
-  });
+    status: "Online",
+  };
+  activeAgents.set(agentId, entry);
+  persistAgent(agentId, entry);
   logger.info({ agentId, ip }, `[registry] Heartbeat received from ${agentId}`);
-  res.json({ status: "ok", agentId, tags: extractTags(manifest) });
+  res.json({ status: "ok", agentId, tags: entry.tags });
 });
 
 export interface AgentReputation {
@@ -509,6 +645,7 @@ app.delete("/agents/:id", (req, res) => {
     return res.status(404).json({ error: "agent not found" });
   }
   activeAgents.delete(id);
+  removePersistedAgent(id);
   logger.info({ agentId: id, ip }, `[registry] Manually deregistered agent: ${id}`);
   res.json({ status: "ok", agentId: id });
 });
@@ -583,17 +720,7 @@ const isDirectExecution =
 
 if (isDirectExecution) {
   setInterval(() => {
-    const now = Date.now();
-    let removed = 0;
-    for (const [id, entry] of activeAgents) {
-      if (now - entry.lastHeartbeat >= HEARTBEAT_TIMEOUT_MS) {
-        activeAgents.delete(id);
-        removed++;
-      }
-    }
-    if (removed > 0) {
-      logger.info({ removedCount: removed }, `[registry] Deregistered ${removed} stale agent(s)`);
-    }
+    expireStaleAgents();
   }, HEARTBEAT_INTERVAL_MS);
 
   // Background liveness monitor: pings /health endpoints without blocking HTTP threads.
@@ -607,6 +734,11 @@ if (isDirectExecution) {
 
   const shutdown = () => {
     healthMonitor.stop();
+    try {
+      db.close();
+    } catch {
+      // ignore close errors during shutdown
+    }
     logger.info("[registry] Health monitor stopped");
     process.exit(0);
   };

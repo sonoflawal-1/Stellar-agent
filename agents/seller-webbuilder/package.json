@@ -15,10 +15,12 @@
     "express": "^4.19.0",
     "express-rate-limit": "^8.5.2",
     "groq-sdk": "^1.1.2",
-    "marc-stellar-sdk": "file:../../sdk"
+    "marc-stellar-sdk": "file:../../sdk",
+    "sanitize-html": "^2.13.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/sanitize-html": "^2.13.0",
     "tsx": "^4.19.0"
   }
 }
