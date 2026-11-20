@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import crypto from "crypto";
+import { randomUUID } from "node:crypto";
 import jwt from "jsonwebtoken";
 import {
   Keypair,
@@ -166,17 +167,45 @@ export function verifyChallenge(signedXdr: string): string | null {
 export interface SessionClaims {
   /** The authenticated Stellar account (G...). */
   publicKey: string;
+  /** Unique token id for server-side revocation. */
+  jti?: string;
+  /** Refresh-token family id (rotation / reuse detection). */
+  family?: string;
   /** Issued-at (seconds since epoch). */
   iat: number;
   /** Expiration (seconds since epoch). */
   exp: number;
 }
 
+const revokedJtis = new Map<string, number>();
+const refreshFamilies = new Map<string, { publicKey: string; activeJti: string }>();
+const revokedFamilies = new Set<string>();
+
+function pruneRevokedJtis(nowSec = Math.floor(Date.now() / 1000)): void {
+  for (const [jti, exp] of revokedJtis.entries()) {
+    if (exp <= nowSec) revokedJtis.delete(jti);
+  }
+}
+
+function decodeJti(token: string): { jti?: string; exp?: number; family?: string; publicKey?: string } | null {
+  const decoded = jwt.decode(token) as SessionClaims | null;
+  if (!decoded || typeof decoded !== "object") return null;
+  return {
+    jti: typeof decoded.jti === "string" ? decoded.jti : undefined,
+    exp: typeof decoded.exp === "number" ? decoded.exp : undefined,
+    family: typeof decoded.family === "string" ? decoded.family : undefined,
+    publicKey: typeof decoded.publicKey === "string" ? decoded.publicKey : undefined,
+  };
+}
+
 /**
  * Issue a signed JWT session token (24-hour expiry) for an authenticated wallet.
  */
-export function createSession(publicKey: string): string {
-  return jwt.sign({ publicKey }, JWT_SECRET, {
+export function createSession(publicKey: string, familyId?: string): string {
+  const jti = randomUUID();
+  const family = familyId ?? randomUUID();
+  refreshFamilies.set(family, { publicKey, activeJti: jti });
+  return jwt.sign({ publicKey, jti, family }, JWT_SECRET, {
     expiresIn: JWT_EXPIRY_SECONDS,
     algorithm: "HS256",
   });
@@ -200,6 +229,14 @@ export function verifySession(token: string): string | null {
       return null;
     }
 
+    pruneRevokedJtis();
+    if (decoded.jti && revokedJtis.has(decoded.jti)) {
+      return null;
+    }
+    if (decoded.family && revokedFamilies.has(decoded.family)) {
+      return null;
+    }
+
     return decoded.publicKey;
   } catch {
     return null;
@@ -212,17 +249,43 @@ export function verifySession(token: string): string | null {
  * JWTs are stateless, so this is a no-op retained for API compatibility.
  * Clients should discard the token; short-lived tokens limit exposure.
  */
-export function invalidateSession(_token: string): void {
-  // Stateless JWT: nothing to revoke server-side.
+export function invalidateSession(token: string): void {
+  const meta = decodeJti(token);
+  if (meta?.jti) {
+    revokedJtis.set(meta.jti, meta.exp ?? Math.floor(Date.now() / 1000) + JWT_EXPIRY_SECONDS);
+  }
 }
 
 /**
- * Refresh a session token by issuing a new JWT for the same wallet.
+ * Refresh a session token with rotation. Reuse of a replaced refresh token revokes the family.
  */
 export function refreshSession(token: string): string | null {
+  const meta = decodeJti(token);
+  if (!meta?.publicKey || !meta.family || !meta.jti) return null;
+
+  if (revokedFamilies.has(meta.family)) return null;
+
+  const family = refreshFamilies.get(meta.family);
+  if (!family) {
+    return createSession(meta.publicKey, meta.family);
+  }
+
+  if (family.activeJti !== meta.jti) {
+    revokedFamilies.add(meta.family);
+    refreshFamilies.delete(meta.family);
+    return null;
+  }
+
   const publicKey = verifySession(token);
   if (!publicKey) return null;
-  return createSession(publicKey);
+
+  const next = createSession(publicKey, meta.family);
+  const nextMeta = decodeJti(next);
+  if (nextMeta?.jti) {
+    revokedJtis.set(meta.jti, meta.exp ?? Math.floor(Date.now() / 1000) + JWT_EXPIRY_SECONDS);
+    refreshFamilies.set(meta.family, { publicKey, activeJti: nextMeta.jti });
+  }
+  return next;
 }
 
 // ---------------------------------------------------------------------------
