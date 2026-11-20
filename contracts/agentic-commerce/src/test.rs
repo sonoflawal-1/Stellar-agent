@@ -2686,3 +2686,26 @@ fn emergency_pause_blocks_all_state_changing_entrypoints() {
     assert!(client.is_token_allowed(&token_addr));
     assert_eq!(client.jobs_by_client(&buyer, &1u64, &10u32).len(), 1);
 }
+
+#[test]
+fn get_jobs_by_status_paginates_funded_jobs() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let (token_addr, _token, stellar_token) = deploy_token(&env, &admin, &client);
+    stellar_token.mint(&buyer, &1_000_000);
+    let _id = client.create_job(
+        &buyer,
+        &seller,
+        &buyer,
+        &token_addr,
+        &100_000i128,
+        &String::from_str(&env, "indexed"),
+        &0u64,
+        &0u32,
+    );
+    let page = client.get_jobs_by_status(&JobStatus::Funded, &0u32, &10u32);
+    assert_eq!(page.len(), 1);
+}

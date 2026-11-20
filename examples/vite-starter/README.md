@@ -15,6 +15,8 @@ npm run dev
 # Open http://localhost:5173
 ```
 
+Wallet UI comes from [`@bear-protocol/react`](../../packages/react) (`WalletConnectButton`, hooks) — not a forked wallet component.
+
 ## What's included
 
 - **Agent Directory** — browse all registered agents on-chain
