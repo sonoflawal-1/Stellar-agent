@@ -16,6 +16,8 @@ import {
   validateAgentConfig,
   autoRegister,
   registerGracefulShutdown,
+  createBudgetPolicy,
+  BudgetExceededError,
   TaskQueue,
   submitDeliverable,
   computeDeliverableHash,
@@ -1032,6 +1034,250 @@ test("submitDeliverable - computes hash, stores content and calls the contract",
 });
 
 // ---------------------------------------------------------------------------
+// Buyer budget policy
+// ---------------------------------------------------------------------------
+
+function makeFakeClock(startIso = "2024-06-01T10:00:00.000Z") {
+  let now = new Date(startIso).getTime();
+  return {
+    now: () => new Date(now),
+    advanceMs: (ms: number) => {
+      now += ms;
+    },
+    set: (iso: string) => {
+      now = new Date(iso).getTime();
+    },
+  };
+}
+
+function makeFakeFetch(response: { ok?: boolean; status?: number; body?: unknown }) {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const fetchImpl = async (url: string, init?: RequestInit) => {
+    calls.push({ url, init });
+    const status = response.status ?? (response.ok === false ? 400 : 200);
+    const ok = response.ok ?? status < 400;
+    return {
+      ok,
+      status,
+      async json() {
+        return response.body ?? {};
+      },
+      async text() {
+        return typeof response.body === "string"
+          ? response.body
+          : JSON.stringify(response.body ?? {});
+      },
+    } as unknown as Response;
+  };
+  return { fetchImpl, calls };
+}
+
+test("createBudgetPolicy - refuses a job priced above BUDGET_MAX_PER_JOB", async () => {
+  const clock = makeFakeClock();
+  const policy = createBudgetPolicy({
+    maxPerJob: 100,
+    dailyCap: 1000,
+    now: clock.now,
+  });
+
+  await assert.rejects(
+    async () => {
+      await policy.authorize({ jobId: "job-over", amount: 150 });
+    },
+    (err: unknown) => {
+      assert.ok(err instanceof BudgetExceededError);
+      assert.equal(err.reason, "per-job");
+      assert.equal(err.amount, 150);
+      assert.equal(err.limit, 100);
+      return true;
+    },
+  );
+
+  // Nothing should have been charged against the daily cap.
+  assert.equal(policy.getSpentToday(), 0);
+});
+
+test("createBudgetPolicy - allows a job priced exactly at BUDGET_MAX_PER_JOB", async () => {
+  const clock = makeFakeClock();
+  const policy = createBudgetPolicy({
+    maxPerJob: 100,
+    dailyCap: 1000,
+    now: clock.now,
+  });
+
+  const decision = await policy.authorize({ jobId: "job-exact", amount: 100 });
+  assert.equal(decision.approved, true);
+  assert.equal(decision.requiresApproval, false);
+  assert.equal(policy.getSpentToday(), 100);
+});
+
+test("createBudgetPolicy - enforces the daily cap across multiple jobs", async () => {
+  const clock = makeFakeClock();
+  const policy = createBudgetPolicy({
+    maxPerJob: 100,
+    dailyCap: 250,
+    now: clock.now,
+  });
+
+  await policy.authorize({ jobId: "job-1", amount: 100 });
+  await policy.authorize({ jobId: "job-2", amount: 100 });
+  assert.equal(policy.getSpentToday(), 200);
+
+  await assert.rejects(
+    async () => {
+      await policy.authorize({ jobId: "job-3", amount: 100 });
+    },
+    (err: unknown) => {
+      assert.ok(err instanceof BudgetExceededError);
+      assert.equal(err.reason, "daily-cap");
+      assert.equal(err.amount, 100);
+      assert.equal(err.limit, 250);
+      return true;
+    },
+  );
+
+  // The refused job must not be charged.
+  assert.equal(policy.getSpentToday(), 200);
+});
+
+test("createBudgetPolicy - resets the daily counter at UTC midnight", async () => {
+  const clock = makeFakeClock("2024-06-01T23:30:00.000Z");
+  const policy = createBudgetPolicy({
+    maxPerJob: 100,
+    dailyCap: 150,
+    now: clock.now,
+  });
+
+  await policy.authorize({ jobId: "job-before-midnight", amount: 150 });
+  assert.equal(policy.getSpentToday(), 150);
+
+  // Still the same UTC day -> cap is exhausted.
+  clock.set("2024-06-01T23:59:59.000Z");
+  await assert.rejects(
+    async () => {
+      await policy.authorize({ jobId: "job-same-day", amount: 10 });
+    },
+    (err: unknown) => {
+      assert.ok(err instanceof BudgetExceededError);
+      assert.equal(err.reason, "daily-cap");
+      return true;
+    },
+  );
+
+  // Cross UTC midnight -> counter resets.
+  clock.set("2024-06-02T00:00:01.000Z");
+  assert.equal(policy.getSpentToday(), 0);
+
+  const decision = await policy.authorize({ jobId: "job-next-day", amount: 150 });
+  assert.equal(decision.approved, true);
+  assert.equal(policy.getSpentToday(), 150);
+});
+
+test("createBudgetPolicy - skips approval when amount is below the approval threshold", async () => {
+  const clock = makeFakeClock();
+  const { fetchImpl, calls } = makeFakeFetch({ body: { approved: true } });
+  const policy = createBudgetPolicy({
+    maxPerJob: 1000,
+    dailyCap: 5000,
+    approvalThreshold: 500,
+    approvalWebhookUrl: "https://approvals.example.test/hook",
+    fetchImpl,
+    now: clock.now,
+  });
+
+  const decision = await policy.authorize({ jobId: "job-small", amount: 100 });
+  assert.equal(decision.approved, true);
+  assert.equal(decision.requiresApproval, false);
+  assert.equal(calls.length, 0, "webhook must not be called below threshold");
+  assert.equal(policy.getSpentToday(), 100);
+});
+
+test("createBudgetPolicy - calls approval webhook and proceeds when approved", async () => {
+  const clock = makeFakeClock();
+  const { fetchImpl, calls } = makeFakeFetch({ body: { approved: true } });
+  const policy = createBudgetPolicy({
+    maxPerJob: 1000,
+    dailyCap: 5000,
+    approvalThreshold: 500,
+    approvalWebhookUrl: "https://approvals.example.test/hook",
+    fetchImpl,
+    now: clock.now,
+  });
+
+  const decision = await policy.authorize({
+    jobId: "job-large",
+    amount: 750,
+    prompt: "Build a landing page",
+  });
+
+  assert.equal(decision.approved, true);
+  assert.equal(decision.requiresApproval, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://approvals.example.test/hook");
+  assert.equal(calls[0].init?.method, "POST");
+
+  const sentBody = JSON.parse(String(calls[0].init?.body));
+  assert.equal(sentBody.jobId, "job-large");
+  assert.equal(sentBody.amount, 750);
+
+  assert.equal(policy.getSpentToday(), 750);
+});
+
+test("createBudgetPolicy - refuses the job when the approval webhook denies it", async () => {
+  const clock = makeFakeClock();
+  const { fetchImpl, calls } = makeFakeFetch({ body: { approved: false } });
+  const policy = createBudgetPolicy({
+    maxPerJob: 1000,
+    dailyCap: 5000,
+    approvalThreshold: 500,
+    approvalWebhookUrl: "https://approvals.example.test/hook",
+    fetchImpl,
+    now: clock.now,
+  });
+
+  await assert.rejects(
+    async () => {
+      await policy.authorize({ jobId: "job-denied", amount: 750 });
+    },
+    (err: unknown) => {
+      assert.ok(err instanceof BudgetExceededError);
+      assert.equal(err.reason, "approval-denied");
+      return true;
+    },
+  );
+
+  assert.equal(calls.length, 1);
+  assert.equal(policy.getSpentToday(), 0);
+});
+
+test("createBudgetPolicy - refuses the job when the approval webhook errors", async () => {
+  const clock = makeFakeClock();
+  const fetchImpl = async () => {
+    throw new Error("network down");
+  };
+  const policy = createBudgetPolicy({
+    maxPerJob: 1000,
+    dailyCap: 5000,
+    approvalThreshold: 500,
+    approvalWebhookUrl: "https://approvals.example.test/hook",
+    fetchImpl,
+    now: clock.now,
+  });
+
+  await assert.rejects(
+    async () => {
+      await policy.authorize({ jobId: "job-err", amount: 750 });
+    },
+    (err: unknown) => {
+      assert.ok(err instanceof BudgetExceededError);
+      assert.equal(err.reason, "approval-error");
+      return true;
+    },
+  );
+
+  assert.equal(policy.getSpentToday(), 0);
+});
+
 // LLM output parsing helpers (pure functions, no network)
 // ---------------------------------------------------------------------------
 

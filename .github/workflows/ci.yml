@@ -31,9 +31,25 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
+      - name: Record start time
+        run: echo "CI_START=$(date +%s)" >> "$GITHUB_ENV"
       - run: npm ci
       - run: npm run build
       - run: npm test
+      - name: Record CI duration
+        if: always()
+        run: |
+          end=$(date +%s)
+          elapsed=$(( end - CI_START ))
+          echo "CI duration: ${elapsed}s" >> "$GITHUB_STEP_SUMMARY"
+          echo "${elapsed}" > ci-duration.txt
+      - name: Upload CI duration artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-duration
+          path: ci-duration.txt
+          if-no-files-found: warn
 
   sdk-entrypoints:
     runs-on: ubuntu-latest
@@ -122,7 +138,6 @@ jobs:
       - name: Build Next.js starter (SSR verification)
         working-directory: examples/nextjs-starter
         run: |
-          npm ci
           npm run build 2>&1 | tee next-build.log
           if grep -q "window is not defined" next-build.log; then
             echo "SSR error: 'window is not defined' detected during Next.js build" >&2

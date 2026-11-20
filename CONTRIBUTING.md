@@ -426,6 +426,25 @@ limits. Every CI run reports both exact sizes and configured limits.
 The size check uses the workspace's `wasm32v1-none` target and the Stellar CLI
 optimizer, matching the artifacts produced by `scripts/build.sh`.
 
+### Root Workspace & Lockfile
+
+The repository is an npm workspaces monorepo. Install dependencies **once at
+the root**:
+
+```bash
+npm ci
+```
+
+This installs every package (`sdk`, `dashboard`, `demo`, `landing`, etc.) from
+the single root `package-lock.json`. Do **not** run `npm install` inside a
+package directory and do **not** commit per-package `package-lock.json` files —
+they cause version drift and slow installs. If a package needs a dependency,
+add it from the root:
+
+```bash
+npm install <package> --workspace ./sdk
+```
+
 ### Protected Paths & CODEOWNERS
 
 Changes to contract code and deployment metadata always require review from a
@@ -460,6 +479,55 @@ protection rule, and re-verify after any repository ownership change:
 
 Keep `.github/CODEOWNERS` in sync with the team: when ownership changes, update
 the file in the same pull request as the change that requires it.
+
+---
+
+## Release Process (Changesets)
+
+Versioning and publishing for the TypeScript packages (`sdk` and
+`@bear-protocol/react`) is automated with
+[Changesets](https://github.com/changesets/changesets). Do not bump versions or
+edit changelogs by hand.
+
+### Authoring a Changeset
+
+When your PR changes a published package, add a changeset before opening it:
+
+```bash
+npx changeset
+```
+
+The prompt asks which packages changed, whether the bump is `patch`, `minor`,
+or `major`, and for a short summary. This writes a markdown file under
+`.changeset/` — commit it with your PR. For docs-only or internal changes that
+don't affect a published package, run `npx changeset --empty` (or skip it if no
+published package is touched).
+
+### The Version PR
+
+On every push to `main`, the Changesets GitHub Action opens (or updates) a
+single PR titled **"chore: version packages"**. That PR:
+
+- Bumps `version` in each affected package's `package.json`
+- Updates each package's `CHANGELOG.md` with the summaries from the changesets
+- Deletes the consumed `.changeset/*.md` files
+
+Review it like any other PR. Merging it is what triggers publishing.
+
+### Publishing on Merge
+
+When the version PR is merged, the same workflow builds the packages and
+publishes them to npm, then creates GitHub releases with the changelog notes.
+`@bear-protocol/react` depends on `sdk`, so a `sdk` bump also bumps the React
+package's dependency range automatically. Never publish manually from a local
+machine.
+
+### Contributor Checklist for Releases
+
+- [ ] Added a changeset (`npx changeset`) if a published package changed
+- [ ] Wrote a user-facing summary (it becomes the changelog entry)
+- [ ] Did not edit `version` fields or `CHANGELOG.md` by hand
+- [ ] Did not commit per-package lockfiles
 
 ### For Feature Work
 
@@ -517,6 +585,9 @@ npm test --workspace ./sdk
 npm run lint --workspace ./sdk
 npm run format --workspace ./sdk
 ```
+
+If you changed a published package (`sdk`, `@bear-protocol/react`), also run
+`npx changeset` and commit the generated file.
 
 ---
 
