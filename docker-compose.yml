@@ -229,7 +229,6 @@ services:
       start_period: 10s
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./indexer/migrations/postgres:/docker-entrypoint-initdb.d:ro
     networks:
       - marc-net
 
@@ -240,8 +239,18 @@ services:
       context: .
       dockerfile: indexer/Dockerfile
     working_dir: /app
+    command: sh -c "node dist/migrate.js && node dist/index.js"
+    ports:
+      - "8080:8080"
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-marc}:${POSTGRES_PASSWORD:-marc_dev_password}@postgres:5432/${POSTGRES_DB:-marc_indexer}
+      INDEXER_API_PORT: "8080"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     depends_on:
       sdk:
         condition: service_completed_successfully
