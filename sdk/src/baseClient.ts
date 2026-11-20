@@ -5,12 +5,72 @@ import { toSigner } from "./signer.js";
 import { maskSecret } from "./format.js";
 import {
   ContractError,
+  MarcApiError,
   SimulationError,
   TransactionTimeoutError,
   extractContractErrorCode,
   resolveContractErrorExplanation,
 } from "./errors.js";
 import { withSpan } from "./tracing.js";
+
+// ---------------------------------------------------------------------------
+// #949 — Retry with jittered backoff helpers
+// ---------------------------------------------------------------------------
+
+/** Default number of retry attempts when `cfg.maxRetries` is not set. */
+const DEFAULT_MAX_RETRIES = 3;
+/** Base delay (ms) for exponential backoff. */
+const BASE_RETRY_DELAY_MS = 200;
+/** Upper bound (ms) for a single backoff delay. */
+const MAX_RETRY_DELAY_MS = 5_000;
+
+/**
+ * Returns true when an error should be retried: HTTP 429 (rate limited),
+ * HTTP 5xx (server error), or a transient network failure.
+ */
+function isRetryableError(err: unknown): boolean {
+  if (!err) return false;
+  const anyErr = err as { status?: number; response?: { status?: number }; message?: string };
+  const status = anyErr.status ?? anyErr.response?.status;
+  if (typeof status === "number") {
+    return status === 429 || (status >= 500 && status <= 599);
+  }
+  const msg = err instanceof Error ? err.message : String(err);
+  return /429|rate.?limit|too many requests|5\d\d|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket hang up|network|fetch failed|timeout/i.test(
+    msg,
+  );
+}
+
+/**
+ * Compute a jittered exponential backoff delay for the given attempt (0-based).
+ * Uses "full jitter": a random value in `[0, base * 2^attempt]`, capped.
+ */
+function backoffDelay(attempt: number): number {
+  const ceiling = Math.min(BASE_RETRY_DELAY_MS * Math.pow(2, attempt), MAX_RETRY_DELAY_MS);
+  return Math.floor(Math.random() * ceiling);
+}
+
+/**
+ * Wrap an error as a {@link ContractError} when it carries a decodable Soroban
+ * contract error code; otherwise return the original error untouched.
+ */
+function wrapContractError(
+  err: unknown,
+  contractAddr: string,
+  identityContract: string,
+): unknown {
+  if (err instanceof ContractError) return err;
+  const msg = err instanceof Error ? err.message : String(err);
+  const code = extractContractErrorCode(msg);
+  if (code !== null) {
+    return new ContractError(
+      code,
+      contractAddr,
+      resolveContractErrorExplanation(code, contractAddr, identityContract),
+    );
+  }
+  return err;
+}
 
 // ---------------------------------------------------------------------------
 // #781 — RPC Failover Pool
@@ -54,14 +114,16 @@ export class RpcFailoverPool {
   private probeTimer?: ReturnType<typeof setInterval>;
   private readonly maxConsecutiveFailures: number;
   private readonly probeIntervalMs: number;
+  private readonly maxRetries: number;
 
   constructor(
     urls: string[],
-    opts: { maxConsecutiveFailures?: number; probeIntervalMs?: number } = {},
+    opts: { maxConsecutiveFailures?: number; probeIntervalMs?: number; maxRetries?: number } = {},
   ) {
     if (urls.length === 0) throw new Error("RpcFailoverPool requires at least one URL");
     this.maxConsecutiveFailures = opts.maxConsecutiveFailures ?? 3;
     this.probeIntervalMs = opts.probeIntervalMs ?? 30_000;
+    this.maxRetries = opts.maxRetries ?? DEFAULT_MAX_RETRIES;
 
     this.endpoints = urls.map((url) => ({
       url,
@@ -106,19 +168,23 @@ export class RpcFailoverPool {
   }
 
   /**
-   * Execute `fn` against the best healthy endpoint. On failure, mark that
-   * endpoint as degraded and retry against the next candidate until one
-   * succeeds or all are exhausted.
+   * Execute `fn` against the best healthy endpoint. On a retryable failure
+   * (HTTP 429, 5xx, or a transient network error) the endpoint is marked as
+   * degraded, a jittered exponential backoff is applied, and the call is
+   * retried against the *next* endpoint in the rotation.
    *
-   * Each retry uses exponential backoff: 200 ms * 2^attempt (capped at 2 s).
+   * The total number of attempts is bounded by `maxRetries` (configurable via
+   * `cfg.maxRetries`). Non-retryable errors are thrown immediately.
    */
   async call<T>(fn: (server: rpc.Server) => Promise<T>): Promise<T> {
     const healthy = this.endpoints.filter((e) => e.healthy);
     const order = healthy.length > 0 ? healthy : [...this.endpoints];
 
+    const maxAttempts = Math.max(1, this.maxRetries);
     let lastErr: unknown;
-    for (let i = 0; i < order.length; i++) {
-      const ep = order[i]!;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      // Rotate through endpoints; wrap around when attempts exceed pool size.
+      const ep = order[attempt % order.length]!;
       const server = this.servers.get(ep.url)!;
       const t0 = Date.now();
       try {
@@ -135,11 +201,12 @@ export class RpcFailoverPool {
         if (ep.consecutiveFailures >= this.maxConsecutiveFailures) {
           ep.healthy = false;
         }
-        // Exponential backoff before trying the next endpoint
-        if (i < order.length - 1) {
-          const delay = Math.min(200 * Math.pow(2, i), 2000);
-          await new Promise((r) => setTimeout(r, delay));
+        // Only retry transient failures; surface permanent errors immediately.
+        if (!isRetryableError(err) || attempt === maxAttempts - 1) {
+          throw err;
         }
+        // Jittered exponential backoff before rotating to the next endpoint.
+        await new Promise((r) => setTimeout(r, backoffDelay(attempt)));
       }
     }
 
@@ -355,6 +422,7 @@ export abstract class BaseClient {
     this.rpcPool = new RpcFailoverPool(urls, {
       maxConsecutiveFailures: 3,
       probeIntervalMs: 30_000,
+      maxRetries: cfg.maxRetries ?? DEFAULT_MAX_RETRIES,
     });
 
     // `this.server` points to the first URL for legacy internal methods that
@@ -388,6 +456,39 @@ export abstract class BaseClient {
       if (this.rpcPool) return this.rpcPool.call(fn);
       return fn(this.server);
     });
+  }
+
+  /**
+   * Perform an HTTP request against a dashboard `/api` route and parse the
+   * structured error envelope `{ error: { code, message, requestId } }`
+   * (issue #967) into a {@link MarcApiError}.
+   *
+   * Successful (2xx) responses are returned as parsed JSON. Any non-2xx
+   * response is converted into a `MarcApiError` carrying the server-provided
+   * `code`, `message`, `requestId`, and HTTP status. If the body is not a
+   * valid structured error envelope, a generic `MarcApiError` is thrown so
+   * callers always receive a consistent error type.
+   *
+   * @param url - Absolute or relative URL of the dashboard API route.
+   * @param init - Optional fetch options (method, headers, body, ...).
+   * @returns The parsed JSON body of a successful response.
+   * @throws {MarcApiError} When the response status is not 2xx.
+   */
+  protected async apiRequest<T>(url: string, init?: RequestInit): Promise<T> {
+    const response = await fetch(url, init);
+
+    if (response.ok) {
+      return (await response.json()) as T;
+    }
+
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      body = undefined;
+    }
+
+    throw MarcApiError.fromResponseBody(body, response.status);
   }
 
   /**
@@ -472,7 +573,7 @@ export abstract class BaseClient {
             resolveContractErrorExplanation(code, contractAddr, this.cfg.identityContract),
           );
         }
-        throw new Error(errStr);
+        throw wrapContractError(new Error(errStr), contractAddr, this.cfg.identityContract);
       }
 
       break;
@@ -510,10 +611,68 @@ export abstract class BaseClient {
           resolveContractErrorExplanation(code, contractAddr, this.cfg.identityContract),
         );
       }
-      throw new Error(rawDetail);
+      throw wrapContractError(new Error(rawDetail), contractAddr, this.cfg.identityContract);
     }
     this.cfg.onTx?.(sent.hash, txLabel);
     return decode(getResp.returnValue!);
+  }
+
+  /**
+   * #951 — Simulation-only dry-run for a single contract operation.
+   *
+   * Builds a transaction with a placeholder (unfunded) source account and runs
+   * `simulateTransaction` without ever submitting it. This lets callers
+   * preflight writes (e.g. `createJob`) to quote fees, inspect expected events,
+   * and surface contract errors before spending funds.
+   *
+   * @param op - The contract operation to simulate.
+   * @returns The minimum resource fee, cost breakdown, emitted events, and the
+   *          raw simulation result ScVal (if any).
+   * @throws {ContractError} When the simulation reports a decodable contract error.
+   * @throws {SimulationError} When the simulation fails for a non-contract reason.
+   */
+  protected async simulateOperation(op: xdr.Operation): Promise<{
+    minResourceFee: bigint;
+    cost: rpc.Api.SimulateTransactionCost | undefined;
+    events: xdr.DiagnosticEvent[];
+    result: xdr.ScVal | undefined;
+  }> {
+    const ephemeral = Keypair.random();
+    const dummy = new Account(ephemeral.publicKey(), "0");
+    const tx = new TransactionBuilder(dummy, {
+      fee: BASE_FEE,
+      networkPassphrase: this.cfg.networkPassphrase,
+    })
+      .addOperation(op)
+      .setTimeout(30)
+      .build();
+
+    const sim = await this.rpcCall((s) => s.simulateTransaction(tx), "soroban.simulate");
+
+    if (rpc.Api.isSimulationError(sim)) {
+      const errMsg = maskSecret(sim.error);
+      const code = extractContractErrorCode(errMsg);
+      if (code !== null) {
+        throw new ContractError(
+          code,
+          this.cfg.commerceContract,
+          resolveContractErrorExplanation(
+            code,
+            this.cfg.commerceContract,
+            this.cfg.identityContract,
+          ),
+        );
+      }
+      throw new SimulationError(errMsg, sim, tx.toXDR());
+    }
+
+    const success = sim as rpc.Api.SimulateTransactionSuccessResponse;
+    return {
+      minResourceFee: BigInt(success.minResourceFee ?? BASE_FEE),
+      cost: success.cost,
+      events: success.events ?? [],
+      result: success.result?.retval,
+    };
   }
 
   /**

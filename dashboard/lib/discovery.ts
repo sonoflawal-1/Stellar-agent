@@ -259,6 +259,15 @@ interface VectorEntry {
   text: string;
 }
 
+/**
+ * Bounded, hash-keyed LRU cache of agent embeddings.
+ *
+ * Keyed by a hash of the agent's embedding text so that unchanged metadata
+ * reuses the cached vector across requests. The cache is capped at
+ * EMBEDDING_CACHE_MAX entries (and thus a bounded amount of memory) to keep
+ * the vector search from growing without limit. See #965.
+ */
+const EMBEDDING_CACHE_MAX = Number(process.env.EMBEDDING_CACHE_MAX ?? 5_000);
 const vectorIndex = new Map<string, VectorEntry>();
 
 function agentKey(agent: Agent): string {
@@ -266,13 +275,41 @@ function agentKey(agent: Agent): string {
   return String(anyAgent.id ?? anyAgent.address ?? anyAgent.name ?? "");
 }
 
-/** Index (or re-index) a set of agents into the in-memory vector store. */
+/** Hash of the agent's embedding text — the cache key for its vector. */
+function metadataHash(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
+}
+
+/** Insert into the LRU cache, evicting the oldest entry when over capacity. */
+function cacheSet(key: string, entry: VectorEntry): void {
+  if (vectorIndex.has(key)) vectorIndex.delete(key);
+  vectorIndex.set(key, entry);
+  while (vectorIndex.size > EMBEDDING_CACHE_MAX) {
+    const oldest = vectorIndex.keys().next().value;
+    if (oldest === undefined) break;
+    vectorIndex.delete(oldest);
+  }
+}
+
+/** Get a cached vector, refreshing its LRU recency. */
+function cacheGet(key: string): VectorEntry | undefined {
+  const entry = vectorIndex.get(key);
+  if (entry) {
+    vectorIndex.delete(key);
+    vectorIndex.set(key, entry);
+  }
+  return entry;
+}
+
+/** Index (or re-index) a set of agents into the bounded vector cache. */
 export function indexAgents(agents: Agent[]): void {
   for (const agent of agents) {
     const key = agentKey(agent);
     if (!key) continue;
     const text = agentEmbeddingText(agent);
-    vectorIndex.set(key, { id: key, vector: embedText(text), text });
+    const hash = metadataHash(text);
+    if (cacheGet(hash)) continue;
+    cacheSet(hash, { id: key, vector: embedText(text), text });
   }
 }
 
@@ -282,6 +319,27 @@ export function clearVectorIndex(): void {
 
 export function vectorIndexSize(): number {
   return vectorIndex.size;
+}
+
+/** Maximum number of cached embeddings (memory ceiling). */
+export function vectorIndexCapacity(): number {
+  return EMBEDDING_CACHE_MAX;
+}
+
+/**
+ * Readiness probe for the embedding model.
+ *
+ * The deterministic embedder is always available, so this reports readiness
+ * synchronously and lets callers measure warm vs cold latency. When
+ * embeddings are disabled it reports `ready: false`.
+ */
+export function embeddingsReady(): { ready: boolean; enabled: boolean; cached: number; capacity: number } {
+  return {
+    ready: cfg.embeddingsEnabled,
+    enabled: cfg.embeddingsEnabled,
+    cached: vectorIndex.size,
+    capacity: EMBEDDING_CACHE_MAX,
+  };
 }
 
 function lexicalScore(query: string, agent: Agent): number {
@@ -299,10 +357,14 @@ function lexicalScore(query: string, agent: Agent): number {
 function rankByCosine(queryVec: Float32Array, agents: Agent[], topK: number): AgentMatch[] {
   const scored: AgentMatch[] = [];
   for (const agent of agents) {
-    const key = agentKey(agent);
-    const entry = vectorIndex.get(key);
-    const vector = entry ? entry.vector : embedText(agentEmbeddingText(agent));
-    scored.push({ agent, score: cosineSimilarity(queryVec, vector) });
+    const text = agentEmbeddingText(agent);
+    const hash = metadataHash(text);
+    let entry = cacheGet(hash);
+    if (!entry) {
+      entry = { id: agentKey(agent), vector: embedText(text), text };
+      cacheSet(hash, entry);
+    }
+    scored.push({ agent, score: cosineSimilarity(queryVec, entry.vector) });
   }
   scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, topK);
@@ -328,7 +390,7 @@ export async function matchAgents(opts: MatchOptions): Promise<AgentMatch[]> {
     return rankLexical(opts.query, agents, topK);
   }
 
-  // Keep the index fresh for the current agent set.
+  // Warm the bounded embedding cache for the current agent set, then rank.
   indexAgents(agents);
   const queryVec = embedText(opts.query);
   return rankByCosine(queryVec, agents, topK);

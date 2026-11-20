@@ -623,3 +623,162 @@ test("createJobAndWait and approveAndCreateJob forward SLA parameters", async ()
 
   client.disconnect();
 });
+
+// ---------------------------------------------------------------------------
+// #951 — simulation-only dry-run methods for every write
+// ---------------------------------------------------------------------------
+
+test("CommerceClient exposes the simulate namespace with a method per write", () => {
+  const client = new CommerceClient({
+    ...TESTNET,
+    rpcUrl: "https://example.invalid",
+  });
+
+  assert.ok(client.simulate);
+  assert.equal(typeof client.simulate.createJob, "function");
+  assert.equal(typeof client.simulate.submit, "function");
+  assert.equal(typeof client.simulate.complete, "function");
+  assert.equal(typeof client.simulate.cancel, "function");
+  assert.equal(typeof client.simulate.approve, "function");
+  assert.equal(typeof client.simulate.openChannel, "function");
+  assert.equal(typeof client.simulate.closeChannel, "function");
+  assert.equal(typeof client.simulate.forceClose, "function");
+  assert.equal(typeof client.simulate.setTreasury, "function");
+  assert.equal(typeof client.simulate.setFeeBps, "function");
+
+  client.disconnect();
+});
+
+test("simulate.createJob works without a funded signer and never submits", async () => {
+  const client = new CommerceClient({
+    ...TESTNET,
+    rpcUrl: "https://example.invalid",
+  });
+
+  // A random keypair is unfunded on testnet; simulation must not require it.
+  const unfunded = Keypair.random();
+  let submitted = false;
+  (client as any).invoke = async () => {
+    submitted = true;
+    throw new Error("simulate must not submit");
+  };
+
+  const result = await client.simulate.createJob(
+    unfunded,
+    Keypair.random().publicKey(),
+    Keypair.random().publicKey(),
+    TESTNET.usdcToken,
+    1_000n,
+    "dry run",
+  );
+
+  assert.equal(submitted, false);
+  assert.ok(result);
+  assert.equal(typeof result.minResourceFee, "string");
+  assert.ok(Array.isArray(result.events));
+  assert.equal(result.error, undefined);
+
+  client.disconnect();
+});
+
+test("simulate.createJob returns resource fees and expected events on success", async () => {
+  const client = new CommerceClient({
+    ...TESTNET,
+    rpcUrl: "https://example.invalid",
+  });
+
+  const expectedEvent = {
+    type: "contract",
+    contractId: TESTNET.contractId,
+    topics: [nativeToScVal("job_created", { type: "symbol" })],
+    data: nativeToScVal(1n, { type: "u64" }),
+  };
+
+  (client as any).simulateDryRun = async () => ({
+    minResourceFee: "12345",
+    transactionData: {} as any,
+    result: { retval: nativeToScVal(1n, { type: "u64" }) },
+    events: [expectedEvent],
+  });
+
+  const result = await client.simulate.createJob(
+    Keypair.random(),
+    Keypair.random().publicKey(),
+    Keypair.random().publicKey(),
+    TESTNET.usdcToken,
+    1_000n,
+    "dry run",
+  );
+
+  assert.equal(result.minResourceFee, "12345");
+  assert.equal(result.events.length, 1);
+  assert.deepEqual(result.events[0], expectedEvent);
+  assert.equal(result.error, undefined);
+
+  client.disconnect();
+});
+
+test("simulate.createJob throws a typed ContractError with decoded code and name on contract failure", async () => {
+  const client = new CommerceClient({
+    ...TESTNET,
+    rpcUrl: "https://example.invalid",
+  });
+
+  (client as any).simulateDryRun = async () => {
+    throw new ContractError(
+      KnownContractErrorCode.SelfEscrow,
+      TESTNET.contractId,
+    );
+  };
+
+  await assert.rejects(
+    client.simulate.createJob(
+      Keypair.random(),
+      Keypair.random().publicKey(),
+      Keypair.random().publicKey(),
+      TESTNET.usdcToken,
+      1_000n,
+      "dry run",
+    ),
+    (err: unknown) => {
+      assert.ok(err instanceof ContractError);
+      assert.equal(err.code, KnownContractErrorCode.SelfEscrow);
+      assert.equal(err.name, "ContractError");
+      assert.match(err.explanation, /SelfEscrow/);
+      return true;
+    },
+  );
+
+  client.disconnect();
+});
+
+test("simulate.submit and simulate.complete validate arguments before simulating", async () => {
+  const client = new CommerceClient({
+    ...TESTNET,
+    rpcUrl: "https://example.invalid",
+  });
+
+  await assert.rejects(
+    client.simulate.submit(
+      Keypair.random(),
+      1n,
+      "https://example.com/deliverable",
+      new Uint8Array(16) as any,
+    ),
+    /32 bytes/i,
+  );
+
+  await assert.rejects(
+    client.simulate.createJob(
+      Keypair.random(),
+      Keypair.random().publicKey(),
+      Keypair.random().publicKey(),
+      TESTNET.usdcToken,
+      0n,
+      "dry run",
+    ),
+    /budget must be greater than 0/,
+  );
+
+  client.disconnect();
+});

@@ -13,6 +13,7 @@ Thank you for contributing to Bear — the commerce layer for AI agent payments 
 7. [Workflow](#workflow)
 8. [Pre-Commit Hooks](#pre-commit-hooks)
 9. [WASM Size Budgets](#wasm-size-budgets)
+10. [Protected Paths & CODEOWNERS](#protected-paths--codeowners)
 
 ---
 
@@ -424,6 +425,41 @@ limits. Every CI run reports both exact sizes and configured limits.
 
 The size check uses the workspace's `wasm32v1-none` target and the Stellar CLI
 optimizer, matching the artifacts produced by `scripts/build.sh`.
+
+### Protected Paths & CODEOWNERS
+
+Changes to contract code and deployment metadata always require review from a
+code owner. The `.github/CODEOWNERS` file assigns owners to these paths:
+
+- `contracts/` — Soroban contract sources, tests, and build configuration
+- `deployments/` — deployment metadata (network IDs, contract addresses, manifests)
+
+If your pull request touches either path, GitHub automatically requests review
+from the listed owners and the PR cannot merge until at least one owner
+approves. Do not bypass this by pushing directly to `main` or by merging with
+admin privileges — if a change is urgent, ask an owner to review it.
+
+#### Repository Settings Checklist (Maintainers)
+
+Configure these once in **Settings → Branches** for the `main` branch
+protection rule, and re-verify after any repository ownership change:
+
+- [ ] **Require a pull request before merging** — no direct pushes to `main`.
+- [ ] **Require review from Code Owners** — enforces the `contracts/` and
+      `deployments/` ownership rules above.
+- [ ] **Dismiss stale pull request approvals when new commits are pushed** —
+      approvals must reflect the code actually being merged.
+- [ ] **Require status checks to pass before merging** — select the CI jobs
+      (Rust tests, clippy, formatting, WASM size budgets, TypeScript tests).
+- [ ] **Require branches to be up to date before merging** — so status checks
+      run against the merge result.
+- [ ] **Restrict who can push to matching branches** — limit to maintainers
+      (and automation accounts that only open PRs).
+- [ ] **Do not allow bypassing the above settings** — applies the rules to
+      administrators as well.
+
+Keep `.github/CODEOWNERS` in sync with the team: when ownership changes, update
+the file in the same pull request as the change that requires it.
 
 ### For Feature Work
 
