@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "node server.js",
     "build": "echo 'Landing page is static HTML. No build step needed.'",
-    "test": "echo 'No tests defined'"
+    "test": "node --test i18n.test.js consent-banner.test.js"
   },
   "keywords": [
     "stellar",

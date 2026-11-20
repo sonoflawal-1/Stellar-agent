@@ -30,11 +30,33 @@ const cfg: MarcConfig = {
 | Field               | Type     | Description                                                            |
 | ------------------- | -------- | ---------------------------------------------------------------------- |
 | `rpcUrl`            | string   | Soroban RPC endpoint                                                   |
+| `rpcUrls`           | string[] | Optional list of RPC endpoints to rotate through on failure            |
+| `maxRetries`        | number   | Optional retry count for 429/5xx responses (default: 3)                |
 | `networkPassphrase` | string   | Stellar network passphrase                                             |
 | `identityContract`  | string   | Agent Identity contract address                                        |
 | `commerceContract`  | string   | Agentic Commerce contract address                                      |
 | `usdcToken`         | string   | USDC SAC token address                                                 |
 | `onTx`              | function | Optional callback fired with tx hash after each successful transaction |
+
+### RPC failover and retries
+
+When `rpcUrls` is provided, the client rotates through the endpoints on
+transient failures. Requests that fail with HTTP 429 or 5xx are retried with
+jittered exponential backoff, up to `maxRetries` attempts per endpoint.
+
+```typescript
+const cfg: MarcConfig = {
+  ...TESTNET,
+  rpcUrls: [
+    "https://soroban-testnet.stellar.org",
+    "https://rpc-failover.example.com",
+  ],
+  maxRetries: 5, // default: 3
+};
+```
+
+If `rpcUrls` is omitted, `rpcUrl` is used as the single endpoint and retries
+still apply.
 
 ---
 
@@ -165,6 +187,85 @@ Get the current fee in basis points (100 = 1%).
 const fee = await commerce.feeBps(); // 100
 ```
 
+### `watchJob(jobId, options?)`
+
+Watch a job for state changes as an async iterator. Built on the same polling
+core as `subscribeJob`, but composes with `for await`.
+
+```typescript
+const controller = new AbortController();
+
+for await (const ev of commerce.watchJob(jobId, {
+  signal: controller.signal,
+})) {
+  console.log(ev.status); // "Funded" | "Submitted" | "Completed" | "Cancelled"
+  if (ev.status === "Completed") break;
+}
+
+// Aborting the signal ends the iterator cleanly.
+controller.abort();
+```
+
+| Option   | Type             | Description                                          |
+| -------- | ---------------- | ---------------------------------------------------- |
+| `signal` | `AbortSignal`    | Optional signal; aborting it ends the iterator       |
+| `pollMs` | `number`         | Optional polling interval in milliseconds            |
+
+### Dry-run simulation (`simulate`)
+
+Every write method has a simulation-only counterpart under `commerce.simulate`.
+These build and simulate the transaction without signing or submitting it, so
+they do not require a funded signer. Each returns the resource fees, the events
+the call would emit, and any contract error (as a typed `BearContractError`).
+
+```typescript
+const result = await commerce.simulate.createJob(
+  clientAddress, // address only — no keypair needed
+  providerAddress,
+  evaluatorAddress,
+  TESTNET.usdcToken,
+  10_000_000n,
+  "Build a landing page for Brew & Co",
+);
+
+// {
+//   fee: "100",                 // resource fee (stroops)
+//   events: [...],              // expected contract events
+//   error: null,                // or a BearContractError
+// }
+```
+
+Available dry-run methods mirror the write surface: `simulate.createJob`,
+`simulate.submit`, `simulate.complete`, `simulate.cancel`, and
+`simulate.register` / `simulate.updateUri` / `simulate.deregister` on
+`IdentityClient`.
+
+---
+
+## Contract errors
+
+Contract failures surface as `BearContractError` with a decoded `.name` and
+`.code` instead of raw `Error(Contract, #n)` text. The `CONTRACT_ERRORS` map
+covers every code in the contract `Error` enum.
+
+```typescript
+import { BearContractError, CONTRACT_ERRORS } from "marc-stellar-sdk";
+
+try {
+  await commerce.complete(evaluatorKeypair, jobId);
+} catch (err) {
+  if (err instanceof BearContractError) {
+    console.error(err.code, err.name); // e.g. 3, "JobNotSubmitted"
+  }
+}
+
+// Look up a code directly:
+CONTRACT_ERRORS[3]; // "JobNotSubmitted"
+```
+
+A drift test fails the build if the contract `Error` enum gains a variant that
+is missing from `CONTRACT_ERRORS`.
+
 ---
 
 ## marcPaywall (Express middleware)
@@ -214,6 +315,186 @@ const paidFetch = marcFetch({
 const res = await paidFetch("http://seller-agent/api/work");
 const data = await res.json();
 ```
+
+### Payment receipts (`returnReceipt`)
+
+By default `marcFetch` returns the raw `Response` (backwards compatible). Pass
+`returnReceipt: true` to get a typed `{ response, receipt }` object so callers
+can record what they paid.
+
+```typescript
+import { marcFetch, type PaymentReceipt } from "marc-stellar-sdk";
+
+const paidFetch = marcFetch({
+  signer: keypair,
+  rpcUrl: TESTNET.rpcUrl,
+  returnReceipt: true,
+});
+
+const { response, receipt } = await paidFetch("http://seller-agent/api/work");
+// receipt: PaymentReceipt
+// {
+//   txHash: "abc123...",       // Stellar transaction hash
+//   amount: 10_000n,           // amount paid, in base units (BigInt)
+//   token: "C...",             // token contract address
+//   payTo: "G...",             // recipient address
+//   ledger: 1234567,           // ledger the payment was included in
+// }
+```
+
+The receipt is populated from the submitted transaction's ledger data, so
+`txHash`, `amount`, `token`, `payTo`, and `ledger` match what was settled
+on-chain.
+
+### Budget guard
+
+An autonomous agent following 402 challenges can be drained by a malicious API.
+`marcFetch` supports optional budget limits with typed `BudgetExceededError`
+failures and an `onBudgetExceeded` hook.
+
+```typescript
+const paidFetch = marcFetch({
+  signer: keypair,
+  rpcUrl: TESTNET.rpcUrl,
+  maxPerRequest: 1_000_000n, // max 0.1 USDC per request (base units)
+  maxPerWindow: 10_000_000n, // max 1 USDC per rolling window
+  windowMs: 3_600_000, // rolling window length (default: 1 hour)
+  onBudgetExceeded: (err) => {
+    console.warn("budget exceeded:", err.limit, err.attempted);
+  },
+});
+```
+
+| Option            | Type                     | Default      | Description                                                                 |
+| ----------------- | ------------------------ | ------------ | --------------------------------------------------------------------------- |
+| `maxPerRequest`   | `bigint`                 | unset (off)  | Maximum amount payable for a single request, in base units.                 |
+| `maxPerWindow`    | `bigint`                 | unset (off)  | Maximum total amount payable within the rolling window, in base units.      |
+| `windowMs`        | `number`                 | `3_600_000`  | Length of the rolling window in milliseconds (default 1 hour).              |
+| `onBudgetExceeded`| `(err) => void`          | unset        | Called when a payment is blocked by a budget limit.                         |
+
+When a limit is unset, that check is disabled. Budget checks are enforced
+atomically, so concurrent requests cannot collectively exceed `maxPerWindow`.
+
+### Payee and asset allowlist
+
+A malicious server can answer with a 402 challenge that asks you to pay an
+arbitrary address in an arbitrary token. Budget limits alone do not prevent
+this: a cheap payment to an attacker-controlled address still drains funds.
+`marcFetch` therefore validates every 402 challenge against optional
+allowlists **before any payment is signed or submitted**.
+
+```typescript
+const paidFetch = marcFetch({
+  signer: keypair,
+  rpcUrl: TESTNET.rpcUrl,
+  allowedPayees: [seller.publicKey()], // only pay these recipients
+  allowedAssets: [TESTNET.usdcToken], // only pay in these tokens
+});
+```
+
+| Option          | Type       | Default     | Description                                                                 |
+| --------------- | ---------- | ----------- | --------------------------------------------------------------------------- |
+| `allowedPayees` | `string[]` | unset (off) | Recipient addresses (`payTo`) a challenge may request payment to.           |
+| `allowedAssets` | `string[]` | unset (off) | Token contract addresses a challenge may request payment in.                |
+
+A challenge whose `payTo` is not in `allowedPayees`, or whose asset is not in
+`allowedAssets`, is rejected with a `PaymentRejectedError` (see below) and **no
+network payment is made**. Matching is exact and case-sensitive; pass the
+canonical `G...`/`C...` addresses.
+
+> **Safe defaults:** when neither allowlist is configured, `marcFetch` logs a
+> warning on the first 402 challenge it handles, because it will pay any
+> recipient in any token (subject only to budget limits). For autonomous agents
+> always set both `allowedPayees` and `allowedAssets` — ideally to a single
+> known seller and `TESTNET.usdcToken` — and keep `maxPerRequest`/`maxPerWindow`
+> as a second line of defence.
+
+### Typed errors
+
+All failure modes surface as typed errors so callers can branch on them:
+
+| Error class                 | When it is thrown                                                              |
+| --------------------------- | ------------------------------------------------------------------------------ |
+| `BudgetExceededError`       | A payment would exceed `maxPerRequest` or `maxPerWindow`.                      |
+| `PaymentRejectedError`      | The server rejects the payment proof (e.g. invalid/expired proof), or the 402 challenge's `payTo`/asset is outside the configured allowlists (no payment is made). |
+| `InsufficientFundsError`    | The signer's balance cannot cover the required payment.                        |
+| `MarcPaymentTimeoutError`   | The payment transaction does not confirm within the timeout (tx pending).      |
+
+```typescript
+import {
+  BudgetExceededError,
+  PaymentRejectedError,
+  InsufficientFundsError,
+  MarcPaymentTimeoutError,
+} from "marc-stellar-sdk";
+
+try {
+  await paidFetch("http://seller-agent/api/work");
+} catch (err) {
+  if (err instanceof BudgetExceededError) {
+    // do not retry — the price exceeds our limits
+  } else if (err instanceof InsufficientFundsError) {
+    // top up the wallet
+  } else if (err instanceof MarcPaymentTimeoutError) {
+    // tx still pending; safe to retry after checking the ledger
+  } else if (err instanceof PaymentRejectedError) {
+    // server refused the proof; do not resend funds
+  }
+}
+```
+
+---
+
+## Amount helpers (multi-token)
+
+`format.ts` formats amounts for the default token. When working with the token
+allowlist (`TokenInfo.decimals`), use the BigInt-based helpers to convert
+between human-readable amounts and on-chain base units. No floating-point math
+is used, so round-trips are exact for every decimals value (0–18).
+
+### `toBaseUnits(amount, decimals)`
+
+Convert a human-readable amount (string or number) to base units (`bigint`).
+
+```typescript
+import { toBaseUnits } from "marc-stellar-sdk";
+
+toBaseUnits("1.5", 7); // 15_000_000n
+toBaseUnits("1", 0); // 1n
+toBaseUnits("0.000000000000000001", 18); // 1n
+```
+
+### `fromBaseUnits(amount, decimals)`
+
+Convert base units (`bigint`) back to a human-readable string.
+
+```typescript
+import { fromBaseUnits } from "marc-stellar-sdk";
+
+fromBaseUnits(15_000_000n, 7); // "1.5"
+fromBaseUnits(1n, 0); // "1"
+fromBaseUnits(1n, 18); // "0.000000000000000001"
+```
+
+### `TokenRegistry`
+
+A cache over `get_token_info` that resolves a token's `decimals` (and other
+`TokenInfo`) so you can convert amounts per token.
+
+```typescript
+import { TokenRegistry } from "marc-stellar-sdk";
+
+const registry = new TokenRegistry(cfg); // caches get_token_info results
+
+const info = await registry.getTokenInfo(TESTNET.usdcToken);
+// { address: "C...", decimals: 7, symbol: "USDC", ... }
+
+const base = toBaseUnits("2.50", info.decimals); // 25_000_000n
+const human = fromBaseUnits(base, info.decimals); // "2.5"
+```
+
+Repeated lookups for the same token are served from the cache; call
+`registry.clear()` to invalidate it.
 
 ---
 

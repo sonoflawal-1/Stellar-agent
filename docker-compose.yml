@@ -10,6 +10,11 @@ version: "3.9"
 #   docker compose up                  # starts soroban-rpc + all agents
 #   docker compose up buyer            # interactive TUI only
 #
+# Full demo (contracts + agents + dashboard + seed):
+#   docker compose --profile demo up
+# Teardown:
+#   docker compose --profile demo down -v
+#
 # Services:
 #   stellar       local standalone Stellar network + Soroban RPC (port 8000)
 #   init          one-shot: waits for RPC, compiles + deploys contracts, funds keys
@@ -96,6 +101,12 @@ services:
     working_dir: /app
     ports:
       - "3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3000/readyz || node -e \"fetch('http://localhost:3000/readyz').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
     depends_on:
       sdk:
         condition: service_completed_successfully
@@ -238,6 +249,18 @@ services:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
+
+  # ── Demo seed (one-shot; run with --profile demo) ─────────────────────────
+  demo-seed:
+    <<: *node
+    profiles: ["demo"]
+    command: sh scripts/demo-seed.sh
+    restart: "no"
+    depends_on:
+      registry:
+        condition: service_healthy
+      dashboard:
+        condition: service_started
 
   # ── Buyer TUI (interactive) ───────────────────────────────────────────────
   buyer:

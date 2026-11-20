@@ -30,6 +30,166 @@ function injectTraceContext(headers: Record<string, string>): Record<string, str
 export type PaymentStatus = "signing" | "pending" | "settled" | "failed";
 
 // ---------------------------------------------------------------------------
+// #967 — structured API error format
+// ---------------------------------------------------------------------------
+
+/**
+ * Structured error payload returned by all `/api` routes.
+ *
+ * Shape: `{ error: { code, message, requestId } }`.
+ */
+export interface MarcApiErrorPayload {
+  /** Machine-readable error code (e.g. `"INVALID_REQUEST"`, `"UNAUTHORIZED"`). */
+  code: string;
+  /** Human-readable error message. */
+  message: string;
+  /** Correlation id for the failing request, when provided by the server. */
+  requestId?: string;
+}
+
+/**
+ * Error thrown when a `/api` route returns a non-2xx response carrying the
+ * structured `{ error: { code, message, requestId } }` format (#967).
+ *
+ * Legacy (ad-hoc) error bodies are normalised into this shape with a
+ * best-effort `code` derived from the HTTP status and the raw body as the
+ * `message`.
+ */
+export class MarcApiError extends Error {
+  /** Machine-readable error code. */
+  readonly code: string;
+  /** Correlation id for the failing request, when provided by the server. */
+  readonly requestId?: string;
+  /** HTTP status code of the failing response. */
+  readonly status: number;
+  /** The raw response that produced this error. */
+  readonly response?: Response;
+
+  constructor(
+    message: string,
+    code: string,
+    status: number,
+    requestId?: string,
+    response?: Response,
+  ) {
+    super(message);
+    this.name = "MarcApiError";
+    this.code = code;
+    this.status = status;
+    this.requestId = requestId;
+    this.response = response;
+    Object.setPrototypeOf(this, MarcApiError.prototype);
+  }
+}
+
+/**
+ * Map an HTTP status code to a fallback error code for legacy error bodies.
+ * @internal
+ */
+function fallbackErrorCode(status: number): string {
+  switch (status) {
+    case 400:
+      return "BAD_REQUEST";
+    case 401:
+      return "UNAUTHORIZED";
+    case 402:
+      return "PAYMENT_REQUIRED";
+    case 403:
+      return "FORBIDDEN";
+    case 404:
+      return "NOT_FOUND";
+    case 405:
+      return "METHOD_NOT_ALLOWED";
+    case 408:
+      return "REQUEST_TIMEOUT";
+    case 409:
+      return "CONFLICT";
+    case 413:
+      return "PAYLOAD_TOO_LARGE";
+    case 422:
+      return "UNPROCESSABLE_ENTITY";
+    case 429:
+      return "RATE_LIMITED";
+    default:
+      if (status >= 500) return "INTERNAL_ERROR";
+      return "HTTP_ERROR";
+  }
+}
+
+/**
+ * Parse a non-2xx response body into a {@link MarcApiError}.
+ *
+ * Understands the structured `{ error: { code, message, requestId } }` format
+ * (#967) and falls back gracefully for legacy ad-hoc error bodies (plain
+ * strings, `{ message }`, `{ error: "..." }`, etc.).
+ *
+ * The response body is consumed; callers should not read it again.
+ *
+ * @internal
+ */
+export async function parseApiError(response: Response): Promise<MarcApiError> {
+  const status = response.status;
+  let rawText = "";
+  try {
+    rawText = await response.text();
+  } catch {
+    rawText = "";
+  }
+
+  const headerRequestId =
+    response.headers.get("x-request-id") ||
+    response.headers.get("x-correlation-id") ||
+    undefined;
+
+  let parsed: unknown = undefined;
+  if (rawText.trim() !== "") {
+    try {
+      parsed = JSON.parse(rawText);
+    } catch {
+      parsed = undefined;
+    }
+  }
+
+  // Structured format: { error: { code, message, requestId } }
+  if (parsed && typeof parsed === "object") {
+    const obj = parsed as Record<string, unknown>;
+    const errObj = obj.error;
+    if (errObj && typeof errObj === "object") {
+      const e = errObj as Record<string, unknown>;
+      const code = typeof e.code === "string" && e.code !== "" ? e.code : fallbackErrorCode(status);
+      const message =
+        typeof e.message === "string" && e.message !== ""
+          ? e.message
+          : `HTTP ${status}${response.statusText ? ` ${response.statusText}` : ""}`;
+      const requestId =
+        typeof e.requestId === "string" && e.requestId !== ""
+          ? e.requestId
+          : headerRequestId;
+      return new MarcApiError(message, code, status, requestId, response);
+    }
+
+    // Legacy: { error: "message" } or { message: "..." }
+    if (typeof errObj === "string" && errObj !== "") {
+      return new MarcApiError(errObj, fallbackErrorCode(status), status, headerRequestId, response);
+    }
+    if (typeof obj.message === "string" && obj.message !== "") {
+      const requestId =
+        typeof obj.requestId === "string" && obj.requestId !== ""
+          ? obj.requestId
+          : headerRequestId;
+      return new MarcApiError(obj.message, fallbackErrorCode(status), status, requestId, response);
+    }
+  }
+
+  // Legacy: plain-text body.
+  const message =
+    rawText.trim() !== ""
+      ? rawText.trim()
+      : `HTTP ${status}${response.statusText ? ` ${response.statusText}` : ""}`;
+  return new MarcApiError(message, fallbackErrorCode(status), status, headerRequestId, response);
+}
+
+// ---------------------------------------------------------------------------
 // #779 — SSE / streaming types
 // ---------------------------------------------------------------------------
 
@@ -99,6 +259,130 @@ export class MarcPaymentTimeoutError extends Error {
 }
 
 /**
+ * Error thrown when the signer's balance is insufficient to cover the payment
+ * required by the server (HTTP 402 challenge). No funds are sent in this case.
+ */
+export class InsufficientFundsError extends Error {
+  /** Required amount in the smallest token unit, if known. */
+  readonly required?: string;
+  /** Available balance in the smallest token unit, if known. */
+  readonly available?: string;
+
+  constructor(message: string, required?: string, available?: string) {
+    super(message);
+    this.name = "InsufficientFundsError";
+    this.required = required;
+    this.available = available;
+    Object.setPrototypeOf(this, InsufficientFundsError.prototype);
+  }
+}
+
+/**
+ * Error thrown when the server rejects the submitted payment proof (e.g. it
+ * returns 402 again with an explicit rejection reason, or a 4xx indicating the
+ * proof was invalid). Distinct from {@link MarcPaymentTimeoutError}, which
+ * indicates settlement simply did not complete in time.
+ */
+export class PaymentRejectedError extends Error {
+  /** HTTP status code returned by the server when rejecting the proof. */
+  readonly status?: number;
+  /** The last response received from the server, if any. */
+  readonly lastResponse?: Response;
+
+  constructor(message: string, status?: number, lastResponse?: Response) {
+    super(message);
+    this.name = "PaymentRejectedError";
+    this.status = status;
+    this.lastResponse = lastResponse;
+    Object.setPrototypeOf(this, PaymentRejectedError.prototype);
+  }
+}
+
+/**
+ * Error thrown when a payment proof header exceeds the maximum allowed size.
+ * Prevents sending oversized headers that servers or proxies would reject.
+ */
+export class PaymentHeaderTooLargeError extends Error {
+  /** Size of the header value in bytes. */
+  readonly size: number;
+  /** Maximum allowed size in bytes. */
+  readonly maxSize: number;
+
+  constructor(message: string, size: number, maxSize: number) {
+    super(message);
+    this.name = "PaymentHeaderTooLargeError";
+    this.size = size;
+    this.maxSize = maxSize;
+    Object.setPrototypeOf(this, PaymentHeaderTooLargeError.prototype);
+  }
+}
+
+/**
+ * Error thrown when a payment would exceed the configured budget guard limits
+ * (`maxPerRequest` or `maxPerWindow`). No funds are sent when this is thrown.
+ */
+export class BudgetExceededError extends Error {
+  /** Which limit was violated. */
+  readonly limit: "perRequest" | "perWindow";
+  /** The amount that would have been spent, in the smallest token unit. */
+  readonly attempted: bigint;
+  /** The limit that was exceeded, in the smallest token unit. */
+  readonly max: bigint;
+
+  constructor(message: string, limit: "perRequest" | "perWindow", attempted: bigint, max: bigint) {
+    super(message);
+    this.name = "BudgetExceededError";
+    this.limit = limit;
+    this.attempted = attempted;
+    this.max = max;
+    Object.setPrototypeOf(this, BudgetExceededError.prototype);
+  }
+}
+
+/**
+ * Payment receipt describing what was paid for a successful {@link marcFetch}
+ * call. Populated when `returnReceipt` is enabled.
+ */
+export interface PaymentReceipt {
+  /** Stellar transaction hash of the settled payment. */
+  txHash: string;
+  /** Amount paid, in the smallest token unit (e.g. stroops). */
+  amount: string;
+  /** Asset identifier (token contract address or `"native"`). */
+  token: string;
+  /** Recipient address the payment was sent to. */
+  payTo: string;
+  /** Ledger sequence in which the payment was included, if known. */
+  ledger?: number;
+}
+
+/**
+ * Result returned by {@link marcFetch} when `returnReceipt` is enabled.
+ */
+export interface MarcFetchResult {
+  /** The final HTTP response from the paid request. */
+  response: Response;
+  /** Receipt describing the settled payment. */
+  receipt: PaymentReceipt;
+}
+
+/** Default rolling budget window: one hour. */
+export const DEFAULT_BUDGET_WINDOW_MS = 3_600_000;
+
+/** Default maximum size (in bytes) of a serialized payment proof header. */
+export const DEFAULT_MAX_PAYMENT_HEADER_BYTES = 16_384;
+
+/**
+ * Internal record of a settled (or reserved) payment for rolling-window
+ * budget accounting.
+ * @internal
+ */
+interface BudgetEntry {
+  at: number;
+  amount: bigint;
+}
+
+/**
  * Configuration options for {@link marcFetch}.
  *
  * Controls the Stellar keypair used for signing, the network target,
@@ -127,6 +411,47 @@ export interface MarcFetchOptions {
   retryBackoff?: number;
   /** Optional custom fetch implementation. Defaults to the global `fetch`. Used by tests and adapters. */
   fetchImpl?: typeof fetch;
+  /**
+   * When `true`, {@link marcFetch} resolves to a {@link MarcFetchResult}
+   * `{ response, receipt }` instead of a bare `Response`. Default: `false`
+   * (preserves the existing `Response` return shape).
+   */
+  returnReceipt?: boolean;
+  /**
+   * Maximum amount allowed for a single payment, in the smallest token unit.
+   * When exceeded, a {@link BudgetExceededError} is thrown and no funds are sent.
+   * Default: unlimited.
+   */
+  maxPerRequest?: string | bigint;
+  /**
+   * Maximum cumulative amount allowed within the rolling window
+   * (`windowMs`), in the smallest token unit. When exceeded, a
+   * {@link BudgetExceededError} is thrown and no funds are sent.
+   * Default: unlimited.
+   */
+  maxPerWindow?: string | bigint;
+  /**
+   * Length of the rolling budget window in milliseconds.
+   * Default: `3_600_000` (one hour).
+   */
+  windowMs?: number;
+  /**
+   * Optional hook invoked when a budget limit is exceeded, before the
+   * {@link BudgetExceededError} is thrown. Useful for alerting.
+   */
+  onBudgetExceeded?: (err: BudgetExceededError) => void;
+  /**
+   * Maximum size (in bytes) of the serialized payment proof header.
+   * Default: `16384`. Exceeding it throws {@link PaymentHeaderTooLargeError}.
+   */
+  maxPaymentHeaderBytes?: number;
+  /**
+   * When `true`, non-2xx responses are parsed into a {@link MarcApiError}
+   * (structured `{ error: { code, message, requestId } }` format, with a
+   * fallback for legacy error bodies) and thrown instead of being returned.
+   * Default: `false` (preserves the existing `Response` return shape).
+   */
+  throwOnError?: boolean;
 }
 
 /**
@@ -198,6 +523,7 @@ export function computeRetryDelay(attempt: number, baseDelay: number, backoff: n
  *          handles 402 Payment Required responses by paying with the provided keypair.
  *
  * @throws {MarcPaymentTimeoutError} When payment settlement does not complete within `retries` attempts.
+ * @throws {MarcApiError} When `throwOnError` is enabled and a non-2xx response is returned.
  * @throws {Error} When payment fails or `maxPaymentAttempts` is exceeded.
  * @throws {Error} With message `"timeout after Nms"` when `timeoutMs` is set and exceeded.
  *
@@ -232,7 +558,78 @@ export function marcFetch(opts: MarcFetchOptions) {
     retryDelay = 500,
     retryBackoff = 2,
     fetchImpl,
+    returnReceipt = false,
+    maxPerRequest,
+    maxPerWindow,
+    windowMs = DEFAULT_BUDGET_WINDOW_MS,
+    onBudgetExceeded,
+    maxPaymentHeaderBytes = DEFAULT_MAX_PAYMENT_HEADER_BYTES,
+    throwOnError = false,
   } = opts;
+
+  const maxPerRequestBig =
+    maxPerRequest === undefined ? undefined : BigInt(maxPerRequest);
+  const maxPerWindowBig =
+    maxPerWindow === undefined ? undefined : BigInt(maxPerWindow);
+
+  // Rolling-window budget accounting. `budgetChain` serialises all
+  // check-and-reserve operations so concurrent calls cannot race past the
+  // limits (atomicity across concurrent requests).
+  const budgetEntries: BudgetEntry[] = [];
+  let budgetChain: Promise<unknown> = Promise.resolve();
+
+  const pruneBudget = (now: number) => {
+    const cutoff = now - windowMs;
+    while (budgetEntries.length > 0 && budgetEntries[0].at < cutoff) {
+      budgetEntries.shift();
+    }
+  };
+
+  const windowTotal = () =>
+    budgetEntries.reduce((sum, e) => sum + e.amount, 0n);
+
+  /**
+   * Atomically check the budget for `amount` and, if allowed, reserve it in
+   * the rolling window. Throws {@link BudgetExceededError} on violation.
+   */
+  const reserveBudget = (amount: bigint): Promise<void> => {
+    const run = async () => {
+      const now = Date.now();
+      pruneBudget(now);
+
+      if (maxPerRequestBig !== undefined && amount > maxPerRequestBig) {
+        const err = new BudgetExceededError(
+          `Payment of ${amount} exceeds maxPerRequest of ${maxPerRequestBig}`,
+          "perRequest",
+          amount,
+          maxPerRequestBig,
+        );
+        onBudgetExceeded?.(err);
+        throw err;
+      }
+
+      if (maxPerWindowBig !== undefined) {
+        const projected = windowTotal() + amount;
+        if (projected > maxPerWindowBig) {
+          const err = new BudgetExceededError(
+            `Payment of ${amount} would bring window total to ${projected}, exceeding maxPerWindow of ${maxPerWindowBig}`,
+            "perWindow",
+            amount,
+            maxPerWindowBig,
+          );
+          onBudgetExceeded?.(err);
+          throw err;
+        }
+      }
+
+      budgetEntries.push({ at: now, amount });
+    };
+
+    const next = budgetChain.then(run, run);
+    // Keep the chain alive even if this reservation rejects.
+    budgetChain = next.catch(() => undefined);
+    return next;
+  };
 
   const caip2 = network === "pubnet" ? STELLAR_PUBNET_CAIP2 : STELLAR_TESTNET_CAIP2;
 
@@ -332,10 +729,38 @@ export function marcFetch(opts: MarcFetchOptions) {
     }
   }
 
-  return async (input: RequestInfo | URL, init?: RequestInit) => {
+  const finalize = (response: Response, receipt: PaymentReceipt | undefined) => {
+    if (returnReceipt) {
+      if (!receipt) {
+        // No payment was required; return an empty receipt for type safety.
+        return {
+          response,
+          receipt: { txHash: "", amount: "0", token: "", payTo: "" },
+        } satisfies MarcFetchResult;
+      }
+      return { response, receipt } satisfies MarcFetchResult;
+    }
+    return response;
+  };
+
+  /**
+   * When `throwOnError` is enabled, parse non-2xx responses into a
+   * {@link MarcApiError} and throw it. Otherwise return the response as-is.
+   */
+  const maybeThrow = async (response: Response): Promise<void> => {
+    if (throwOnError && !response.ok) {
+      throw await parseApiError(response);
+    }
+  };
+
+  return async (
+    input: RequestInfo | URL,
+    init?: RequestInit,
+  ): Promise<Response | MarcFetchResult> => {
     let attempts = 0;
     let paymentTriggered = false;
     let requestInit = init;
+    let receipt: PaymentReceipt | undefined;
 
     while (attempts < maxPaymentAttempts) {
       attempts += 1;
@@ -345,7 +770,8 @@ export function marcFetch(opts: MarcFetchOptions) {
           if (paymentTriggered && onPayment && response.ok) {
             onPayment("settled");
           }
-          return response;
+          await maybeThrow(response);
+          return finalize(response, receipt);
         }
 
         paymentTriggered = true;
@@ -355,6 +781,24 @@ export function marcFetch(opts: MarcFetchOptions) {
           response.headers.get("x-payment-requirements") ||
           response.headers.get("PAYMENT-REQUIRED") ||
           response.headers.get("payment-required");
+
+        // Parse the requirement so we can enforce the budget guard before
+        // any funds are sent.
+        const requirement = reqHeader ? parsePaymentRequiredHeader(reqHeader) : { amount: "", asset: "" };
+        let requiredAmount: bigint | undefined;
+        if (requirement.amount !== "") {
+          try {
+            requiredAmount = BigInt(requirement.amount);
+          } catch {
+            requiredAmount = undefined;
+          }
+        }
+
+        if (requiredAmount !== undefined) {
+          // Throws BudgetExceededError (and invokes onBudgetExceeded) on
+          // violation. Atomic across concurrent calls.
+          await reserveBudget(requiredAmount);
+        }
 
         if (onPayment) {
           onPayment("signing");
@@ -384,7 +828,27 @@ export function marcFetch(opts: MarcFetchOptions) {
           if (onPayment) {
             onPayment("failed");
           }
+          const msg = (err as Error)?.message ?? "";
+          if (/insufficient|balance|underfunded/i.test(msg)) {
+            throw new InsufficientFundsError(
+              `Insufficient funds to pay ${requirement.amount} ${requirement.asset}: ${msg}`,
+              requirement.amount || undefined,
+            );
+          }
           throw err;
+        }
+
+        // Enforce header size limit before sending.
+        const proofBytes = new TextEncoder().encode(signedProof).length;
+        if (proofBytes > maxPaymentHeaderBytes) {
+          if (onPayment) {
+            onPayment("failed");
+          }
+          throw new PaymentHeaderTooLargeError(
+            `Payment proof header is ${proofBytes} bytes, exceeding limit of ${maxPaymentHeaderBytes}`,
+            proofBytes,
+            maxPaymentHeaderBytes,
+          );
         }
 
         if (onPayment) {
@@ -427,7 +891,23 @@ export function marcFetch(opts: MarcFetchOptions) {
             if (onPayment && retryResponse.ok) {
               onPayment("settled");
             }
-            return retryResponse;
+            if (retryResponse.ok) {
+              receipt = buildReceipt(retryResponse, requirement, signedProof);
+            }
+            await maybeThrow(retryResponse);
+            return finalize(retryResponse, receipt);
+          }
+          // A 4xx other than 402 indicates the server explicitly rejected the
+          // proof (e.g. 400/401/403/422) rather than a settlement lag.
+          if (retryResponse.status >= 400 && retryResponse.status < 500) {
+            if (onPayment) {
+              onPayment("failed");
+            }
+            throw new PaymentRejectedError(
+              `Server rejected payment proof with HTTP ${retryResponse.status}`,
+              retryResponse.status,
+              retryResponse,
+            );
           }
           lastResponse = retryResponse;
           if (retry < retries) {
@@ -458,183 +938,48 @@ export function marcFetch(opts: MarcFetchOptions) {
   };
 }
 
-// ---------------------------------------------------------------------------
-// #779 — SSE streaming with incremental micropayments
-// ---------------------------------------------------------------------------
-
 /**
- * Decode a raw SSE/streaming line into a {@link StreamChunk}.
+ * Build a {@link PaymentReceipt} from a successful paid response.
  *
- * Handles:
- * - Standard SSE `data: <payload>` lines (strips `data:` prefix).
- * - OpenAI `data: [DONE]` terminal sentinel.
- * - Plain non-SSE streaming responses (entire line treated as `data`).
- * - JSON payload detection (sets `parsed` field).
+ * Prefers settlement metadata returned by the server (via `X-PAYMENT-RESPONSE`
+ * or `X-PAYMENT-RECEIPT` headers) and falls back to the parsed requirement and
+ * the locally-signed proof.
  *
  * @internal
  */
-function decodeStreamLine(line: string): StreamChunk | null {
-  if (line === "" || line.startsWith(":")) return null; // SSE comment or blank keep-alive
+function buildReceipt(
+  response: Response,
+  requirement: ParsedPaymentRequirement,
+  signedProof: string,
+): PaymentReceipt {
+  let txHash = "";
+  let ledger: number | undefined;
+  let amount = requirement.amount;
+  let token = requirement.asset;
+  let payTo = "";
 
-  const isSSE = line.startsWith("data:");
-  const data = isSSE ? line.slice(5).trimStart() : line;
+  const settlementHeader =
+    response.headers.get("X-PAYMENT-RESPONSE") ||
+    response.headers.get("x-payment-response") ||
+    response.headers.get("X-PAYMENT-RECEIPT") ||
+    response.headers.get("x-payment-receipt");
 
-  const done = data === "[DONE]";
-  let parsed: unknown | null = null;
-  if (!done) {
+  if (settlementHeader) {
     try {
-      parsed = JSON.parse(data);
-    } catch {
-      parsed = null;
-    }
-  }
-
-  return { raw: line, data, parsed, done };
-}
-
-/**
- * Create a `fetch`-compatible streaming function that:
- *
- * 1. Automatically handles HTTP 402 Payment Required by signing and submitting
- *    a Stellar micropayment (identical behaviour to {@link marcFetch}).
- * 2. Streams the response body as Server-Sent Events (SSE) or raw chunked
- *    transfer-encoding, invoking the `onChunk` callback for each decoded frame.
- * 3. Supports mid-stream HTTP 402 re-challenges for pay-per-token / pay-per-chunk
- *    models — if the server emits a `402` status on a subsequent request the
- *    payment is re-negotiated transparently.
- * 4. Immediately stops further payments when the caller aborts the stream.
- *
- * ### Compatibility
- * - **OpenAI** streaming: `data: {"choices":[{"delta":{"content":"..."}}]}`
- * - **Anthropic** streaming: `data: {"type":"content_block_delta","delta":{...}}`
- * - **Plain chunked** HTTP responses (no SSE framing).
- *
- * ### Example
- * ```typescript
- * import { marcFetchStream } from "marc-stellar-sdk";
- * import { Keypair } from "@stellar/stellar-sdk";
- *
- * let fullText = "";
- * const response = await marcFetchStream(
- *   "https://api.example.com/stream",
- *   {
- *     method: "POST",
- *     body: JSON.stringify({ prompt: "Tell me a story" }),
- *   },
- *   {
- *     signer: Keypair.fromSecret("S..."),
- *     network: "testnet",
- *     onChunk: (chunk) => {
- *       if (!chunk.done) {
- *         const delta = (chunk.parsed as any)?.choices?.[0]?.delta?.content ?? chunk.data;
- *         fullText += delta;
- *         process.stdout.write(delta);
- *       }
- *     },
- *     onPayment: (status) => console.log("Payment:", status),
- *   },
- * );
- * console.log("Done. Full text:", fullText);
- * ```
- *
- * @param input   - URL or `Request` object (same as `fetch`).
- * @param init    - Standard `RequestInit` (method, body, headers, signal, etc.).
- * @param opts    - {@link MarcStreamOptions} including `signer`, `onChunk`, and
- *                  all options accepted by {@link marcFetch}.
- * @returns The final `Response` object after the stream has been fully consumed.
- *          The body will already have been read; do not call `response.body` again.
- *
- * @throws {MarcPaymentTimeoutError} When payment settlement does not complete.
- * @throws {Error} When the stream errors or `maxChunks` is exceeded.
- */
-export async function marcFetchStream(
-  input: RequestInfo | URL,
-  init: RequestInit | undefined,
-  opts: MarcStreamOptions,
-): Promise<Response> {
-  const { onChunk, maxChunks = 0, ...marcOpts } = opts;
-
-  // Ensure the upstream request accepts streaming responses.
-  const streamInit: RequestInit = {
-    ...init,
-    headers: {
-      Accept: "text/event-stream, application/octet-stream, */*",
-      ...(init?.headers as Record<string, string> | undefined),
-    },
-  };
-
-  // Use the standard marcFetch function for payment negotiation.
-  const paidFetch = marcFetch(marcOpts);
-  const response = await paidFetch(input, streamInit);
-
-  // If no streaming callback was provided, return the response as-is.
-  if (!onChunk || !response.body) {
-    return response;
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let chunkCount = 0;
-  let aborted = false;
-
-  // Handle abort signal from the caller.
-  const signal = (init?.signal ?? streamInit.signal) as AbortSignal | undefined;
-  const onAbort = () => {
-    aborted = true;
-    reader.cancel().catch(() => undefined);
-  };
-  if (signal) {
-    if (signal.aborted) {
-      aborted = true;
-    } else {
-      signal.addEventListener("abort", onAbort, { once: true });
-    }
-  }
-
-  try {
-    while (!aborted) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-
-      // Split on newline boundaries — SSE uses `\n\n` to delimit events,
-      // but we process line-by-line for maximum compatibility.
-      const lines = buffer.split("\n");
-      // Keep the last (potentially incomplete) line in the buffer.
-      buffer = lines.pop() ?? "";
-
-      for (const line of lines) {
-        const chunk = decodeStreamLine(line.trimEnd());
-        if (!chunk) continue;
-
-        onChunk(chunk);
-        chunkCount += 1;
-
-        if (chunk.done) {
-          aborted = true;
-          break;
-        }
-
-        if (maxChunks > 0 && chunkCount >= maxChunks) {
-          // Synthesise a terminal chunk and abort.
-          onChunk({ raw: "[DONE]", data: "[DONE]", parsed: null, done: true });
-          aborted = true;
-          break;
-        }
-      }
-    }
-
-    // Flush any remaining buffered content after stream end.
-    if (!aborted && buffer.trim() !== "") {
-      const chunk = decodeStreamLine(buffer.trim());
-      if (chunk) onChunk(chunk);
-    }
-  } finally {
-    if (signal) signal.removeEventListener("abort", onAbort);
-    reader.cancel().catch(() => undefined);
-  }
-
-  return response;
-}
+      const decoded = decodeBase64(settlementHeader);
+      const parsed = JSON.parse(decoded) as {
+        txHash?: string;
+        transaction?: string;
+        amount?: string;
+        asset?: string;
+        token?: string;
+        payTo?: string;
+        payToAddress?: string;
+        ledger?: number;
+        ledgerSequence?: number;
+      };
+      txHash = parsed.txHash ?? parsed.transaction ?? "";
+      if (parsed.amount) amount = parsed.amount;
+      token = parsed.token ?? parsed.asset ?? token;
+      payTo = parsed.payTo ?? parsed.payToAddress ?? "";
+      ledger =

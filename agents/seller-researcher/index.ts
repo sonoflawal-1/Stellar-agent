@@ -6,7 +6,6 @@ import rateLimit from "express-rate-limit";
 import Groq from "groq-sdk";
 import { CommerceClient } from "marc-stellar-sdk";
 import {
-  retryWithBackoff,
   createSellerAgent,
   makeSellerResponse,
   validatePrompt,
@@ -18,6 +17,8 @@ import {
   withSpan,
   validateEnv,
   sellerResearcherEnvSchema,
+  createTaskQueue,
+  submitDeliverable,
 } from "../shared.js";
 
 validateEnv(sellerResearcherEnvSchema, "seller-researcher");
@@ -47,6 +48,46 @@ const activeTaskTracker = createActiveTaskTracker();
 let jobsActive = 0;
 let jobsCompleted = 0;
 let jobsFailed = 0;
+
+const taskQueue = createTaskQueue({
+  agentId: AGENT_ID,
+  agentDir: AGENT_DIR,
+  concurrency: config.queueConcurrency,
+  maxAttempts: config.queueMaxAttempts,
+  handler: async (payload) => {
+    const { jobId, task, depth } = payload as {
+      jobId: string;
+      task: string;
+      depth: ResearchDepth;
+    };
+    jobsActive++;
+    const releaseTask = activeTaskTracker.track(`job:${jobId}`);
+    try {
+      console.log(`[${AGENT_ID}] Calling Groq...`);
+      const research = await generate(task, depth);
+      const sourceCount = research.sources.length;
+      console.log(
+        `[${AGENT_ID}] Research done: ${research.summary.length} chars, ${sourceCount} sources`,
+      );
+
+      const bytes = Buffer.from(JSON.stringify(research, null, 2), "utf8");
+      await withSpan(
+        "stellar.commerce.submit",
+        { "job.id": String(jobId), "stellar.operation": "submit" },
+        () => submitDeliverable(seller, cfg, BigInt(jobId), bytes, { label: AGENT_ID }),
+      );
+      console.log(`[${AGENT_ID}] ✓ Job #${jobId} submitted`);
+      jobsCompleted++;
+    } catch (err) {
+      jobsFailed++;
+      console.error(`[${AGENT_ID}] Error:`, (err as Error).message);
+      throw err;
+    } finally {
+      jobsActive--;
+      releaseTask();
+    }
+  },
+});
 
 app.get("/health", (_req, res) => {
   res.json({
@@ -89,6 +130,71 @@ interface ResearchOutput {
 }
 
 type ResearchDepth = "brief" | "standard" | "deep";
+
+export class ResearcherParseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ResearcherParseError";
+  }
+}
+
+function stripCodeFences(raw: string): string {
+  return raw.replace(/```(?:json)?\s*/gi, "").replace(/```/g, "").trim();
+}
+
+/**
+ * Parse and validate the raw LLM response for the seller-researcher agent.
+ * Throws a controlled {@link ResearcherParseError} on malformed or invalid output.
+ */
+export function parseResearcherResponse(raw: unknown): ResearchOutput {
+  if (typeof raw !== "string") {
+    throw new ResearcherParseError("LLM response is not a string");
+  }
+  const cleaned = stripCodeFences(raw);
+  if (cleaned.length === 0) {
+    throw new ResearcherParseError("LLM response is empty");
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch (err) {
+    throw new ResearcherParseError(
+      `LLM response is not valid JSON: ${(err as Error).message}`,
+    );
+  }
+
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new ResearcherParseError("LLM response must be a JSON object");
+  }
+  const obj = parsed as Record<string, unknown>;
+
+  if (typeof obj.summary !== "string" || obj.summary.trim().length === 0) {
+    throw new ResearcherParseError("LLM response missing valid 'summary' string");
+  }
+
+  if (!Array.isArray(obj.sources)) {
+    throw new ResearcherParseError("LLM response missing 'sources' array");
+  }
+
+  const sources: { title: string; url: string }[] = [];
+  for (let i = 0; i < obj.sources.length; i++) {
+    const src = obj.sources[i];
+    if (src === null || typeof src !== "object" || Array.isArray(src)) {
+      throw new ResearcherParseError(`sources[${i}] is not an object`);
+    }
+    const s = src as Record<string, unknown>;
+    if (typeof s.title !== "string" || s.title.trim().length === 0) {
+      throw new ResearcherParseError(`sources[${i}] missing valid 'title' string`);
+    }
+    if (typeof s.url !== "string" || s.url.trim().length === 0) {
+      throw new ResearcherParseError(`sources[${i}] missing valid 'url' string`);
+    }
+    sources.push({ title: s.title, url: s.url });
+  }
+
+  return { summary: obj.summary, sources };
+}
 
 const DEPTH_CONFIG: Record<ResearchDepth, { sourceRange: string; detail: string }> = {
   brief: { sourceRange: "2-3", detail: "Write a concise 1-2 paragraph summary." },
@@ -141,8 +247,8 @@ ${detail}`,
         AGENT_ID,
       ),
   );
-  const text = res.choices[0].message.content ?? "";
-  return JSON.parse(text.replace(/```(?:json)?\s*/gi, "").trim()) as ResearchOutput;
+  const text = res.choices[0]?.message?.content ?? "";
+  return parseResearcherResponse(text);
 }
 
 const limiter = rateLimit({
@@ -227,45 +333,18 @@ async function handleJob(
         : `task length ${typeof task === "string" ? task.length : 0}`
     }`,
   );
+  await taskQueue.enqueue(String(jobId), {
+    jobId: String(jobId),
+    task,
+    depth: resolvedDepth,
+  });
   const response = makeSellerResponse(
     { status: "accepted", jobId, depth: resolvedDepth },
     startedAt,
   );
   console.log(`[${AGENT_ID}] [req:${requestId}] Response: ${JSON.stringify(response)}`);
   res.json(response);
-
-  jobsActive++;
-  const releaseTask = activeTaskTracker.track(`job:${jobId}`);
-  try {
-    console.log(`[${AGENT_ID}] Calling Groq...`);
-    const research = await generate(task, resolvedDepth);
-    const sourceCount = research.sources.length;
-    fs.mkdirSync(OUTPUT_DIR, { recursive: true });
-    fs.writeFileSync(OUTPUT_FILE, JSON.stringify(research, null, 2));
-    console.log(
-      `[${AGENT_ID}] Research done: ${research.summary.length} chars, ${sourceCount} sources`,
-    );
-
-    const commerce = new CommerceClient(cfg);
-    await withSpan(
-      "stellar.commerce.submit",
-      { "job.id": String(jobId), "stellar.operation": "submit" },
-      () =>
-        retryWithBackoff(
-          () => commerce.submit(seller, BigInt(jobId), `file://${path.resolve(OUTPUT_FILE)}`),
-          { maxAttempts: 5, baseDelayMs: 1000, label: AGENT_ID },
-        ),
-    );
-    console.log(`[${AGENT_ID}] ✓ Job #${jobId} submitted`);
-    jobsCompleted++;
-  } catch (err) {
-    jobsFailed++;
-    console.error(`[${AGENT_ID}] Error:`, (err as Error).message);
-  } finally {
-    jobsActive--;
-    releaseTask();
-  }
 }
 
 const server = app.listen(PORT, () => console.log(`[${AGENT_ID}] Listening on :${PORT}`));
-registerGracefulShutdown(server, activeTaskTracker, null, AGENT_ID);
+registerGracefulShutdown(server, activeTaskTracker, () => taskQueue.close(), AGENT_ID);

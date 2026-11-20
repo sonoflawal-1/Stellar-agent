@@ -110,6 +110,73 @@
     };
   }
 
+  // ── Virtual scrolling (#762) ──
+  // Long history feeds render only the rows inside the viewport (plus a small
+  // overscan) so DOM size stays bounded no matter how many events are loaded.
+  // Jobs are server-paginated (24/page) and stay on normal rendering; the
+  // history feed is the unbounded one.
+  var VIRTUALIZE_THRESHOLD = 60;
+  var VIRTUAL_ROW_HEIGHT = 84;
+  var VIRTUAL_OVERSCAN = 4;
+
+  var computeVirtualWindow = window.computeVirtualWindow;
+
+  function createVirtualList(opts) {
+    var viewport = opts.viewport;
+    var items = opts.items || [];
+    var rowHeight = opts.rowHeight || VIRTUAL_ROW_HEIGHT;
+    var overscan = opts.overscan == null ? VIRTUAL_OVERSCAN : opts.overscan;
+    var renderRow = opts.renderRow;
+    var frame = null;
+
+    var spacer = document.createElement("div");
+    spacer.className = "virtual-list-spacer";
+    spacer.style.height = items.length * rowHeight + "px";
+
+    var win = document.createElement("div");
+    win.className = "virtual-list-window";
+    spacer.appendChild(win);
+    viewport.innerHTML = "";
+    viewport.appendChild(spacer);
+
+    function paint() {
+      frame = null;
+      var range = computeVirtualWindow(
+        items.length,
+        viewport.scrollTop,
+        viewport.clientHeight,
+        rowHeight,
+        overscan,
+      );
+      var html = "";
+      for (var i = range.start; i < range.end; i++) {
+        html +=
+          '<div class="virtual-list-row" style="top:' +
+          i * rowHeight +
+          "px;height:" +
+          rowHeight +
+          'px">' +
+          renderRow(items[i], i) +
+          "</div>";
+      }
+      win.innerHTML = html;
+    }
+
+    function onScroll() {
+      if (frame === null) frame = requestAnimationFrame(paint);
+    }
+
+    viewport.addEventListener("scroll", onScroll, { passive: true });
+    paint();
+    return {
+      refresh: paint,
+      destroy: function () {
+        viewport.removeEventListener("scroll", onScroll);
+        if (frame !== null) cancelAnimationFrame(frame);
+      },
+    };
+  }
+
   // ── Web Notifications (#754) ──
   // Opt-in desktop notifications for background job status changes.
   // Permission is requested at most once; a denial is remembered and never
@@ -271,6 +338,112 @@
     provider: null, // 'freighter' | 'xbull' | 'albedo' | 'lobstr' | null
   };
   window.__walletState = wallet;
+
+  // ── Wallet connection state machine (#972) ──
+  // Explicit states for connect / sign / submit flows so the UI can render a
+  // single, consistent status component and errors are never swallowed.
+  var WALLET_STATES = ["idle", "connecting", "signing", "submitted", "failed"];
+  var WALLET_TRANSITIONS = {
+    idle: ["connecting"],
+    connecting: ["signing", "failed", "idle"],
+    signing: ["submitted", "failed", "idle"],
+    submitted: ["idle", "connecting"],
+    failed: ["idle", "connecting"],
+  };
+
+  function createWalletStateMachine() {
+    var current = "idle";
+    var lastError = null;
+    var listeners = [];
+    function canTransition(from, to) {
+      var allowed = WALLET_TRANSITIONS[from];
+      return Boolean(allowed && allowed.indexOf(to) !== -1);
+    }
+    function notify() {
+      for (var i = 0; i < listeners.length; i++) {
+        try {
+          listeners[i](current, lastError);
+        } catch (e) {}
+      }
+    }
+    return {
+      getState: function () {
+        return current;
+      },
+      getError: function () {
+        return lastError;
+      },
+      can: canTransition,
+      subscribe: function (fn) {
+        if (typeof fn === "function") listeners.push(fn);
+        return function () {
+          var idx = listeners.indexOf(fn);
+          if (idx !== -1) listeners.splice(idx, 1);
+        };
+      },
+      transition: function (next, error) {
+        if (!canTransition(current, next)) {
+          return { ok: false, from: current, to: next, error: "Invalid transition " + current + " → " + next };
+        }
+        var prev = current;
+        current = next;
+        lastError = next === "failed" ? normalizeWalletError(error) : null;
+        notify();
+        return { ok: true, from: prev, to: next, error: lastError };
+      },
+      reset: function () {
+        current = "idle";
+        lastError = null;
+        notify();
+      },
+    };
+  }
+
+  function normalizeWalletError(err) {
+    var message = err && err.message ? err.message : String(err || "Unknown wallet error");
+    var code = "wallet_error";
+    if (/reject|denied|cancel/i.test(message)) code = "user_rejected";
+    else if (/not installed|not loaded|not found/i.test(message)) code = "wallet_unavailable";
+    else if (/network|fetch|offline/i.test(message)) code = "network_error";
+    else if (/mainnet/i.test(message)) code = "mainnet_blocked";
+    return { code: code, message: message };
+  }
+
+  var walletSM = createWalletStateMachine();
+  window.__walletStateMachine = walletSM;
+
+  // Single status component rendered from the state machine (#972).
+  function renderWalletStatus() {
+    var el = document.getElementById("wallet-status");
+    if (!el) return;
+    var st = walletSM.getState();
+    var err = walletSM.getError();
+    var labels = {
+      idle: "",
+      connecting: "Connecting to wallet…",
+      signing: "Waiting for signature…",
+      submitted: "Transaction submitted",
+      failed: err ? "Wallet error: " + err.message : "Wallet error",
+    };
+    var text = labels[st] || "";
+    el.textContent = text;
+    el.className = "wallet-status wallet-status-" + st;
+    el.setAttribute("role", st === "failed" ? "alert" : "status");
+    el.setAttribute("aria-live", st === "failed" ? "assertive" : "polite");
+    el.style.display = text ? "" : "none";
+  }
+  walletSM.subscribe(renderWalletStatus);
+
+  // Global unhandled rejection logger (#972) — never leaves a rejection silent.
+  window.addEventListener("unhandledrejection", function (event) {
+    var reason = event && event.reason;
+    try {
+      console.error("[bear] Unhandled promise rejection:", reason);
+    } catch (e) {}
+    if (walletSM.getState() === "connecting" || walletSM.getState() === "signing") {
+      walletSM.transition("failed", reason);
+    }
+  });
 
   // Target network for the dashboard (Testnet). Used for mismatch prompts.
   var TARGET_NETWORK = "testnet";
@@ -520,6 +693,8 @@
       toast("Stellar Wallets Kit not loaded", "error");
       return;
     }
+    var started = walletSM.transition("connecting");
+    if (!started.ok) walletSM.reset(), walletSM.transition("connecting");
     try {
       if (typeof StellarWalletsKit.setWallet === "function") {
         StellarWalletsKit.setWallet(id);
@@ -541,7 +716,9 @@
           handleNetworkChanged(netRes && (netRes.network || netRes.networkPassphrase));
         }
       } catch (e) {}
+      walletSM.transition("idle");
     } catch (e) {
+      walletSM.transition("failed", e);
       notifyError(e);
     }
   };
@@ -655,6 +832,21 @@
     navigate();
   }
 
+  // Reflect the active network in the sidebar badge. When no wallet is
+  // connected we fall back to the network the dashboard targets by default.
+  function renderNetworkBadge() {
+    var nb = document.getElementById("network-badge");
+    if (!nb) return;
+    var net = (wallet && wallet.connected && wallet.network) || TARGET_NETWORK;
+    var label =
+      net === "mainnet"
+        ? "Stellar Mainnet"
+        : net === "testnet"
+          ? "Stellar Testnet"
+          : "Unknown Network";
+    nb.innerHTML = '<span class="badge-dot"></span>' + label;
+  }
+
   function updateWalletUI() {
     var connectedEl = document.getElementById("wallet-connected");
     var modeLabel = document.getElementById("wallet-mode-label");
@@ -704,31 +896,43 @@
 
   /** Build unsigned tx on server, sign with Stellar Wallets Kit, submit via server */
   async function signAndSubmit(buildEndpoint, params) {
-    await ensureSession();
-    if (wallet.network === "mainnet") {
-      throw new Error(
-        "Wallet is on Mainnet — dashboard blocks mainnet signing to avoid real transactions",
-      );
+    if (walletSM.getState() === "idle" || walletSM.getState() === "failed") {
+      walletSM.reset();
+      walletSM.transition("connecting");
     }
-    // 1. Build unsigned tx on server
-    var buildRes = await api(buildEndpoint, {
-      method: "POST",
-      body: { publicKey: wallet.publicKey, ...params },
-    });
-    // 2. Sign with Stellar Wallets Kit (multi-wallet, #743)
-    if (!swkReady) throw new Error("Stellar Wallets Kit not loaded");
-    var addressResult = await StellarWalletsKit.getAddress();
-    var signResult = await StellarWalletsKit.signTransaction(buildRes.xdr, {
-      networkPassphrase: TARGET_PASSPHRASE,
-      address: addressResult.address,
-    });
-    var signedXdr =
-      signResult.signedTxXdr ||
-      signResult.signedTransaction ||
-      signResult.signedTx ||
-      signResult.signedXdr ||
-      signResult;
-    return await apiClientSubmit(signedXdr);
+    try {
+      await ensureSession();
+      if (wallet.network === "mainnet") {
+        throw new Error(
+          "Wallet is on Mainnet — dashboard blocks mainnet signing to avoid real transactions",
+        );
+      }
+      // 1. Build unsigned tx on server
+      var buildRes = await api(buildEndpoint, {
+        method: "POST",
+        body: { publicKey: wallet.publicKey, ...params },
+      });
+      // 2. Sign with Stellar Wallets Kit (multi-wallet, #743)
+      if (!swkReady) throw new Error("Stellar Wallets Kit not loaded");
+      walletSM.transition("signing");
+      var addressResult = await StellarWalletsKit.getAddress();
+      var signResult = await StellarWalletsKit.signTransaction(buildRes.xdr, {
+        networkPassphrase: TARGET_PASSPHRASE,
+        address: addressResult.address,
+      });
+      var signedXdr =
+        signResult.signedTxXdr ||
+        signResult.signedTransaction ||
+        signResult.signedTx ||
+        signResult.signedXdr ||
+        signResult;
+      var submitted = await apiClientSubmit(signedXdr);
+      walletSM.transition("submitted");
+      return submitted;
+    } catch (e) {
+      walletSM.transition("failed", e);
+      throw e;
+    }
   }
 
   async function apiClientSubmit(signedXdr) {
@@ -899,15 +1103,23 @@
   }
 
   // Renders an actionable "Something went wrong" view in place of the page.
-  function renderErrorView(message, retryFn) {
+  function renderErrorView(message, retryFn, err) {
     var page = document.getElementById("page");
     if (!page) return;
     var safeMsg = escapeHtml(message || "An unexpected error occurred.");
+    // #967 — surface structured error code / requestId when available.
+    var detail = err && (err.code || err.requestId) ? apiErrorDetail(err) : "";
+    var detailHtml = detail
+      ? '<p class="error-detail" style="color:var(--text-muted);font-size:12px;margin:0 0 20px;font-family:monospace">' +
+        escapeHtml(detail.trim()) +
+        "</p>"
+      : "";
     page.innerHTML =
       '<div class="error-view" role="alert" style="max-width:560px;margin:64px auto;text-align:center;padding:32px">' +
       '<div style="font-size:40px;margin-bottom:12px">⚠️</div>' +
       '<h2 style="margin:0 0 8px;font-size:20px">Something went wrong</h2>' +
       '<p style="color:var(--text-muted);margin:0 0 20px;line-height:1.5">' + safeMsg + "</p>" +
+      detailHtml +
       '<button type="button" class="btn btn-primary" id="error-retry-btn">Retry</button>' +
       "</div>";
     reliability.errorView = message || true;
@@ -919,7 +1131,7 @@
           try {
             retryFn();
           } catch (e) {
-            renderErrorView(errorText(e), retryFn);
+            renderErrorView(errorText(e), retryFn, e);
           }
         } else {
           navigate();
@@ -1006,10 +1218,57 @@
     if (/network error|failed to fetch|load failed/i.test(String(msg))) return;
     renderErrorView(msg || "An unexpected error occurred.", function () {
       navigate();
-    });
+    }, reason);
   });
 
   // ── API Client ──
+  // #967 — normalizes every /api error response into { code, message, requestId }.
+  // Accepts the structured envelope, legacy string errors and plain text bodies.
+  function parseApiError(data, responseText, res) {
+    var fallbackMessage = "Request failed (" + (res && res.status ? res.status : "unknown") + ")";
+    var code = null;
+    var message = null;
+    var requestId = null;
+    var err = data && typeof data === "object" ? data.error : null;
+    if (err && typeof err === "object") {
+      code = typeof err.code === "string" ? err.code : null;
+      message = typeof err.message === "string" ? err.message : null;
+      requestId = typeof err.requestId === "string" ? err.requestId : null;
+    } else if (typeof err === "string") {
+      // Legacy: { error: "message" }
+      message = err;
+    } else if (data && typeof data === "object" && typeof data.message === "string") {
+      // Legacy: { message: "..." }
+      message = data.message;
+      if (typeof data.code === "string") code = data.code;
+    }
+    if (!message && responseText && typeof responseText === "string") {
+      // Only surface raw text when it is not JSON (avoid dumping objects).
+      if (responseText.charAt(0) !== "{" && responseText.charAt(0) !== "[") {
+        message = responseText;
+      }
+    }
+    if (!requestId && res && res.headers && typeof res.headers.get === "function") {
+      try {
+        requestId = res.headers.get("x-request-id") || res.headers.get("x-bear-request-id") || null;
+      } catch (e) {}
+    }
+    return {
+      code: code,
+      message: message || fallbackMessage,
+      requestId: requestId,
+    };
+  }
+
+  // Human-readable suffix shown in error UI for structured API errors.
+  function apiErrorDetail(err) {
+    if (!err) return "";
+    var parts = [];
+    if (err.code) parts.push("code: " + err.code);
+    if (err.requestId) parts.push("requestId: " + err.requestId);
+    return parts.length ? " (" + parts.join(", ") + ")" : "";
+  }
+
   async function api(path, opts = {}) {
     const headers = opts.body ? { "Content-Type": "application/json" } : {};
     if (window.__sessionToken) headers.Authorization = "Bearer " + window.__sessionToken;
@@ -1051,8 +1310,17 @@
       }
     }
     if (!res.ok) {
-      var rawError = data && data.error ? data.error : responseText || "Request failed (" + res.status + ")";
-      var apiError = new Error(formatSorobanError(rawError));
+      // #967 — structured error envelope: { error: { code, message, requestId } }.
+      // Fall back to legacy shapes (plain string error, { message }, raw text).
+      var parsedError = parseApiError(data, responseText, res);
+      var apiError = new Error(formatSorobanError(parsedError.message));
+      apiError.code = parsedError.code;
+      apiError.requestId = parsedError.requestId;
+      apiError.status = res.status;
+      apiError.technicalDetails =
+        "HTTP " + res.status + " " + res.statusText +
+        (parsedError.code ? "\ncode: " + parsedError.code : "") +
+        (parsedError.requestId ? "\nrequestId: " + parsedError.requestId : "");
       apiError.technicalDetails = responseText || getTechnicalDetails(rawError);
       if (!opts._silent) notifyError(apiError);
       throw apiError;
@@ -1106,6 +1374,294 @@
     if (!addr) return "\u2014";
     return addr.slice(0, 6) + "..." + addr.slice(-4);
   }
+
+  // ── Accessibility layer (#971) ──
+  // Dialog helpers with focus trap, Escape handling, focus restore and
+  // aria-hidden on the background content.
+  var dialogStack = [];
+
+  function focusableIn(root) {
+    if (!root) return [];
+    var sel =
+      'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),' +
+      'textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+    var nodes = root.querySelectorAll(sel);
+    var out = [];
+    for (var i = 0; i < nodes.length; i++) {
+      if (nodes[i].offsetParent !== null || nodes[i] === document.activeElement) out.push(nodes[i]);
+    }
+    return out;
+  }
+
+  function openDialog(overlay, opts) {
+    if (!overlay) return null;
+    opts = opts || {};
+    var previous = document.activeElement;
+    var dialog = overlay.querySelector('[role="dialog"]') || overlay;
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    if (opts.label && !dialog.getAttribute("aria-label") && !dialog.getAttribute("aria-labelledby")) {
+      dialog.setAttribute("aria-label", opts.label);
+    }
+    var main = document.getElementById("page");
+    if (main) main.setAttribute("aria-hidden", "true");
+    var entry = { overlay: overlay, dialog: dialog, previous: previous };
+    dialogStack.push(entry);
+    function onKeydown(e) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeDialog(overlay);
+        return;
+      }
+      if (e.key !== "Tab") return;
+      var items = focusableIn(dialog);
+      if (items.length === 0) {
+        e.preventDefault();
+        return;
+      }
+      var first = items[0];
+      var last = items[items.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+    entry.onKeydown = onKeydown;
+    document.addEventListener("keydown", onKeydown, true);
+    var items = focusableIn(dialog);
+    if (items.length > 0) {
+      try { items[0].focus(); } catch (e) {}
+    } else {
+      dialog.setAttribute("tabindex", "-1");
+      try { dialog.focus(); } catch (e) {}
+    }
+    return entry;
+  }
+
+  function closeDialog(overlay) {
+    var idx = -1;
+    for (var i = dialogStack.length - 1; i >= 0; i--) {
+      if (!overlay || dialogStack[i].overlay === overlay) {
+        idx = i;
+        break;
+      }
+    }
+    if (idx === -1) return;
+    var entry = dialogStack[idx];
+    dialogStack.splice(idx, 1);
+    if (entry.onKeydown) document.removeEventListener("keydown", entry.onKeydown, true);
+    if (entry.overlay && entry.overlay.parentNode) entry.overlay.parentNode.removeChild(entry.overlay);
+    if (dialogStack.length === 0) {
+      var main = document.getElementById("page");
+      if (main) main.removeAttribute("aria-hidden");
+    }
+    if (entry.previous && typeof entry.previous.focus === "function") {
+      try { entry.previous.focus(); } catch (e) {}
+    }
+  }
+
+  // Roving-tabindex keyboard handling for tablists (Arrow/Home/End).
+  function initTabs(container) {
+    if (!container) return;
+    var tabs = container.querySelectorAll('[role="tab"]');
+    if (!tabs.length) return;
+    function activate(tab) {
+      for (var i = 0; i < tabs.length; i++) {
+        var t = tabs[i];
+        var selected = t === tab;
+        t.setAttribute("aria-selected", selected ? "true" : "false");
+        t.setAttribute("tabindex", selected ? "0" : "-1");
+        var panelId = t.getAttribute("aria-controls");
+        var panel = panelId ? document.getElementById(panelId) : null;
+        if (panel) panel.hidden = !selected;
+      }
+      try { tab.focus(); } catch (e) {}
+    }
+    for (var i = 0; i < tabs.length; i++) {
+      (function (tab, index) {
+        tab.addEventListener("click", function () { activate(tab); });
+        tab.addEventListener("keydown", function (e) {
+          var next = null;
+          if (e.key === "ArrowRight" || e.key === "ArrowDown") next = tabs[(index + 1) % tabs.length];
+          else if (e.key === "ArrowLeft" || e.key === "ArrowUp") next = tabs[(index - 1 + tabs.length) % tabs.length];
+          else if (e.key === "Home") next = tabs[0];
+          else if (e.key === "End") next = tabs[tabs.length - 1];
+          if (next) {
+            e.preventDefault();
+            activate(next);
+          }
+        });
+      })(tabs[i], i);
+    }
+  }
+
+  // Live regions for async updates (#971).
+  function announce(message, assertive) {
+    var id = assertive ? "a11y-live-assertive" : "a11y-live-polite";
+    var el = document.getElementById(id);
+    if (!el) {
+      el = document.createElement("div");
+      el.id = id;
+      el.className = "sr-only";
+      el.setAttribute("aria-live", assertive ? "assertive" : "polite");
+      el.setAttribute("aria-atomic", "true");
+      document.body.appendChild(el);
+    }
+    el.textContent = "";
+    setTimeout(function () { el.textContent = String(message == null ? "" : message); }, 30);
+  }
+
+  // ── Job form validation + fee preview (#973) ──
+  // Mirrors the rules in lib/validator.ts: budget must be a positive integer
+  // amount in stroops-compatible units, description length bounded, provider
+  // address well-formed.
+  var JOB_LIMITS = { budgetMin: 1, budgetMax: 1000000000, descriptionMax: 500 };
+
+  function validateJobForm(values) {
+    var errors = {};
+    var budget = values && values.budget;
+    var budgetNum = Number(budget);
+    if (budget === "" || budget == null) {
+      errors.budget = "Budget is required";
+    } else if (!isFinite(budgetNum) || Math.floor(budgetNum) !== budgetNum) {
+      errors.budget = "Budget must be a whole number";
+    } else if (budgetNum < JOB_LIMITS.budgetMin) {
+      errors.budget = "Budget must be at least " + JOB_LIMITS.budgetMin;
+    } else if (budgetNum > JOB_LIMITS.budgetMax) {
+      errors.budget = "Budget must not exceed " + JOB_LIMITS.budgetMax;
+    }
+    var desc = values && values.description;
+    if (desc != null && String(desc).length > JOB_LIMITS.descriptionMax) {
+      errors.description = "Description must be at most " + JOB_LIMITS.descriptionMax + " characters";
+    }
+    var provider = values && values.provider;
+    if (provider != null && provider !== "" && !/^G[A-Z0-9]{55}$/.test(String(provider))) {
+      errors.provider = "Provider must be a valid Stellar address";
+    }
+    return { valid: Object.keys(errors).length === 0, errors: errors };
+  }
+
+  // Fee math: fee is a percentage of budget, net payout = budget - fee.
+  function computeFeePreview(budget, feeBps) {
+    var b = Number(budget) || 0;
+    var bps = Number(feeBps);
+    if (!isFinite(bps) || bps < 0) bps = 0;
+    var fee = Math.floor((b * bps) / 10000);
+    return { budget: b, feeBps: bps, fee: fee, net: b - fee };
+  }
+
+  var feePreviewTimer = null;
+  function scheduleFeePreview(values, render) {
+    if (feePreviewTimer) clearTimeout(feePreviewTimer);
+    feePreviewTimer = setTimeout(async function () {
+      var budget = Number(values && values.budget) || 0;
+      var feeBps = 0;
+      try {
+        var res = await api("/simulate_job_fee", {
+          method: "POST",
+          body: { budget: budget },
+          _silent: true,
+        });
+        if (res && res.feeBps != null) feeBps = Number(res.feeBps);
+        else if (res && res.fee != null) feeBps = budget > 0 ? Math.round((Number(res.fee) / budget) * 10000) : 0;
+      } catch (e) {
+        feeBps = 0;
+      }
+      if (typeof render === "function") render(computeFeePreview(budget, feeBps));
+    }, 300);
+  }
+
+  // ── Job timeline (#974) ──
+  var TIMELINE_EVENT_MAP = {
+    created: "created",
+    job_created: "created",
+    funded: "funded",
+    job_funded: "funded",
+    submitted: "submitted",
+    job_submitted: "submitted",
+    completed: "completed",
+    job_completed: "completed",
+    approved: "completed",
+    disputed: "disputed",
+    job_disputed: "disputed",
+  };
+
+  function mapTimelineEvent(ev) {
+    var type = ev && (ev.type || ev.event || ev.name);
+    var step = TIMELINE_EVENT_MAP[String(type || "").toLowerCase()] || null;
+    return {
+      step: step,
+      ledger: ev && (ev.ledger || ev.ledgerSequence || ev.ledger_sequence) || null,
+      closedAt: ev && (ev.closedAt || ev.closed_at || ev.ledgerCloseTime || ev.ledger_close_time) || null,
+      txHash: ev && (ev.txHash || ev.tx_hash || ev.transactionHash) || null,
+    };
+  }
+
+  function formatLedgerTime(value) {
+    if (value == null || value === "") return "";
+    var d;
+    if (typeof value === "number" || /^\d+$/.test(String(value))) {
+      var n = Number(value);
+      d = new Date(n > 1e12 ? n : n * 1000);
+    } else {
+      d = new Date(value);
+    }
+    if (isNaN(d.getTime())) return String(value);
+    return d.toLocaleString();
+  }
+
+  async function renderJobTimeline(jobId) {
+    var container = document.getElementById("job-timeline-" + jobId);
+    if (!container) return;
+    container.innerHTML = '<div class="timeline-loading" role="status">Loading timeline…</div>';
+    var events = [];
+    try {
+      var res = await api("/jobs/" + encodeURIComponent(String(jobId)) + "/events", { _silent: true });
+      events = Array.isArray(res) ? res : (res && res.events) || [];
+    } catch (e) {
+      events = [];
+    }
+    if (!events.length) {
+      container.innerHTML =
+        '<div class="timeline-empty" role="status">No lifecycle events recorded yet.</div>';
+      return;
+    }
+    var items = events.map(mapTimelineEvent).filter(function (it) { return it.step; });
+    if (!items.length) {
+      container.innerHTML =
+        '<div class="timeline-empty" role="status">No lifecycle events recorded yet.</div>';
+      return;
+    }
+    var html = '<ol class="job-timeline" aria-label="Job lifecycle timeline">';
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      var time = formatLedgerTime(it.closedAt);
+      html +=
+        '<li class="timeline-item timeline-' + escapeAttr(it.step) + '">' +
+        '<span class="timeline-dot" aria-hidden="true"></span>' +
+        '<div class="timeline-body">' +
+        '<div class="timeline-step">' + escapeHtml(it.step) + "</div>" +
+        (time ? '<div class="timeline-time">' + escapeHtml(time) + "</div>" : "") +
+        (it.ledger ? '<div class="timeline-ledger">Ledger ' + escapeHtml(String(it.ledger)) + "</div>" : "") +
+        (it.txHash
+          ? '<a class="timeline-tx" href="' +
+            escapeAttr(stellarExpertUrl(it.txHash)) +
+            '" target="_blank" rel="noopener noreferrer">View transaction ↗</a>'
+          : "") +
+        "</div></li>";
+    }
+    html += "</ol>";
+    container.innerHTML = html;
+  }
+
+  // Exports for tests (#971–#974)
+  window.__bearA11y = { openDialog: openDialog, closeDialog: closeDialog, initTabs: initTabs, announce: announce };
+  window.__bearWalletSM = { createWalletStateMachine: createWalletStateMachine, states: WALLET_STATES, transitions: WALLET_TRANSITIONS };
+  window.__bearJobForm = { validateJobForm: validateJobForm, computeFeePreview: computeFeePreview, limits: JOB_LIMITS };
+  window.__bearTimeline = { mapTimelineEvent: mapTimelineEvent, formatLedgerTime: formatLedgerTime, renderJobTimeline: renderJobTimeline };
 
   function escapeHtml(str) {
     const div = document.createElement("div");
@@ -1925,6 +2481,10 @@
   window.__simulateTransaction = simulateTransaction;
   window.__showSimulationModal = showSimulationModal;
 
+  // Expose the virtualized list renderer for unit testing (#762)
+  window.__VirtualList = VirtualList;
+  window.__VIRTUALIZE_THRESHOLD = VIRTUALIZE_THRESHOLD;
+
   // ── Skeleton Loaders (#582) ──
   function skeletonCards(n) {
     let html = '<div class="stat-grid">';
@@ -1967,6 +2527,251 @@
     // All HTML is constructed from trusted sources (our API responses contain
     // only Stellar addresses and contract state, not user-generated content)
     document.getElementById("page").innerHTML = html;
+  }
+
+  // ── Virtualized list renderer (#762) ──
+  // Renders only the rows within the viewport plus a small buffer, keeping the
+  // number of live DOM nodes bounded (below 100) regardless of list length.
+  // Row heights are measured after mount and cached, so both fixed- and
+  // variable-height rows lay out correctly. The viewport is absolutely
+  // positioned inside a spacer whose height equals the total content height, so
+  // the native scrollbar and scroll position stay accurate.
+  var VIRTUAL_OVERSCAN = 5; // buffer rows above + below the viewport
+  var VIRTUAL_MIN_WINDOW = 40; // fallback viewport height (px) when not yet laid out
+
+  function VirtualList(options) {
+    var opts = options || {};
+    var container = opts.container; // scroll container element (must exist)
+    if (!container) throw new Error("VirtualList: container is required");
+    var getItems = opts.getItems || function () { return []; };
+    var renderRow = opts.renderRow; // function(item, index) -> HTML string
+    if (typeof renderRow !== "function") {
+      throw new Error("VirtualList: renderRow is required");
+    }
+    var overscan = opts.overscan != null ? opts.overscan : VIRTUAL_OVERSCAN;
+    var estimate = opts.estimatedRowHeight || 64;
+
+    // The container becomes the scroll surface, so give it the virtual-list
+    // class (bounded height + overflow) and remember the prior state for dispose.
+    var hadVirtualClass = container.classList.contains("virtual-list");
+    container.classList.add("virtual-list");
+    // The list's own flex/gap layout is replaced by absolute positioning.
+    var prevDisplay = container.style.display;
+    var prevGap = container.style.gap;
+    container.style.display = "block";
+    container.style.gap = "0";
+
+    // Spacer holds the full scroll height; viewport is translated to the window.
+    var spacer = document.createElement("div");
+    spacer.className = "virtual-spacer";
+    var viewport = document.createElement("div");
+    viewport.className = "virtual-viewport";
+    spacer.appendChild(viewport);
+    container.appendChild(spacer);
+
+    // Pool of reusable row nodes, keyed by slot position within the window.
+    var pool = [];
+    var heights = []; // measured height per item index
+    var offsets = []; // prefix-sum offsets for variable heights
+    var totalHeight = 0;
+    var windowStart = -1;
+    var windowCount = 0;
+    var rafId = null;
+    var disposed = false;
+
+    function itemsCount() {
+      var items = getItems();
+      return items ? items.length : 0;
+    }
+
+    // Rebuild prefix-sum offsets. Uses measured heights where available and the
+    // estimate elsewhere, so the scroll height is correct from the first pass.
+    function recomputeOffsets() {
+      var count = itemsCount();
+      heights.length = count;
+      offsets = new Array(count + 1);
+      offsets[0] = 0;
+      for (var i = 0; i < count; i++) {
+        var h = heights[i] != null ? heights[i] : estimate;
+        offsets[i + 1] = offsets[i] + h;
+      }
+      totalHeight = offsets[count];
+      spacer.style.height = totalHeight + "px";
+    }
+
+    // Binary search: first index whose cumulative offset is >= y.
+    function findStartIndex(y) {
+      var lo = 0;
+      var hi = offsets.length - 1;
+      while (lo < hi) {
+        var mid = (lo + hi) >> 1;
+        if (offsets[mid] < y) lo = mid + 1;
+        else hi = mid;
+      }
+      return Math.max(0, lo - 1);
+    }
+
+    function measureRow(node, index) {
+      var measured = node.offsetHeight;
+      if (measured > 0 && heights[index] !== measured) {
+        heights[index] = measured;
+        return true;
+      }
+      return false;
+    }
+
+    function render() {
+      if (disposed) return;
+      var items = getItems() || [];
+      var count = items.length;
+      var viewportHeight = container.clientHeight || VIRTUAL_MIN_WINDOW;
+      var scrollTop = container.scrollTop || 0;
+
+      var start = findStartIndex(scrollTop);
+      start = Math.max(0, start - overscan);
+      var end = findStartIndex(scrollTop + viewportHeight);
+      end = Math.min(count, end + overscan + 1);
+      // Guarantee at least one full screen worth of rows in the window.
+      end = Math.max(end, Math.min(count, start + overscan * 2 + 1));
+      var visibleCount = Math.max(0, end - start);
+
+      // Grow the pool to cover the window.
+      while (pool.length < visibleCount) {
+        var node = document.createElement("div");
+        node.className = "virtual-row";
+        viewport.appendChild(node);
+        pool.push(node);
+      }
+
+      var changed = false;
+      for (var i = 0; i < visibleCount; i++) {
+        var index = start + i;
+        var node2 = pool[i];
+        var html = renderRow(items[index], index);
+        // Only rewrite the DOM when the content actually differs (avoids layout
+        // thrash on scroll and preserves inline expansion state).
+        if (node2.__index !== index || node2.__html !== html) {
+          node2.innerHTML = html;
+          node2.__index = index;
+          node2.__html = html;
+        }
+        node2.style.display = "";
+        if (measureRow(node2, index)) changed = true;
+      }
+      // Hide surplus pooled nodes instead of destroying them (recycling).
+      for (var j = visibleCount; j < pool.length; j++) {
+        if (pool[j].style.display !== "none") {
+          pool[j].style.display = "none";
+          pool[j].__index = -1;
+          pool[j].__html = undefined;
+        }
+      }
+
+      // If measurement changed the layout, refresh offsets and re-render once.
+      if (changed) {
+        recomputeOffsets();
+        return render();
+      }
+
+      viewport.style.transform = "translateY(" + offsets[start] + "px)";
+      windowStart = start;
+      windowCount = visibleCount;
+    }
+
+    function schedule() {
+      if (disposed || rafId != null) return;
+      var raf =
+        typeof requestAnimationFrame === "function"
+          ? requestAnimationFrame
+          : function (cb) { return setTimeout(cb, 16); };
+      rafId = raf(function () {
+        rafId = null;
+        render();
+      });
+    }
+
+    function onScroll() {
+      schedule();
+    }
+
+    container.addEventListener("scroll", onScroll, { passive: true });
+
+    // Public-ish introspection used by tests and perf instrumentation.
+    function stats() {
+      return {
+        total: itemsCount(),
+        rendered: windowCount,
+        liveNodes: pool.filter(function (n) { return n.style.display !== "none"; }).length,
+        pooledNodes: pool.length,
+        windowStart: windowStart,
+        totalHeight: totalHeight,
+      };
+    }
+
+    function update() {
+      recomputeOffsets();
+      render();
+    }
+
+    function dispose() {
+      disposed = true;
+      container.removeEventListener("scroll", onScroll);
+      if (rafId != null) {
+        var caf =
+          typeof cancelAnimationFrame === "function" ? cancelAnimationFrame : clearTimeout;
+        caf(rafId);
+        rafId = null;
+      }
+      if (spacer.parentNode) spacer.parentNode.removeChild(spacer);
+      container.style.display = prevDisplay;
+      container.style.gap = prevGap;
+      if (!hadVirtualClass) container.classList.remove("virtual-list");
+      pool.length = 0;
+    }
+
+    return {
+      update: update,
+      render: render,
+      scheduleRender: schedule,
+      stats: stats,
+      dispose: dispose,
+      container: container,
+      spacer: spacer,
+      viewport: viewport,
+    };
+  }
+
+  // Only virtualize once a list is large enough that the DOM cost matters.
+  // Below the threshold the overhead of measurement is not worth it.
+  var VIRTUALIZE_THRESHOLD = 30;
+
+  // Registry of active virtual lists keyed by container id, so re-rendering a
+  // view can dispose the previous instance instead of stacking scroll listeners.
+  var virtualLists = {};
+
+  function destroyVirtualList(key) {
+    var vl = virtualLists[key];
+    if (vl) {
+      vl.dispose();
+      delete virtualLists[key];
+    }
+  }
+
+  function destroyAllVirtualLists() {
+    for (var key in virtualLists) {
+      if (Object.prototype.hasOwnProperty.call(virtualLists, key)) destroyVirtualList(key);
+    }
+  }
+
+  // Load the job-event timeline for each job row currently mounted in the DOM.
+  // With virtualization only a handful of rows exist at once, so this stays
+  // cheap even when the underlying list holds thousands of jobs (#762).
+  function loadVisibleJobTimelines() {
+    var rows = document.querySelectorAll(".job-timeline[id^='job-timeline-']");
+    for (var i = 0; i < rows.length; i++) {
+      var id = rows[i].id.replace("job-timeline-", "");
+      loadJobTimeline(id);
+    }
   }
 
   // ── Deliverable Preview (#580) ──
@@ -2578,122 +3383,7 @@
           '<div class="empty-desc">Create your first job to see it here.</div></div>';
       content = noMatchMsg;
     } else {
-      content = '<div class="job-list">';
-      for (const j of filtered) {
-        let actions = "";
-        if (j.status === "Funded") {
-          actions =
-            '<button class="btn btn-primary btn-sm" onclick="window.__submitJob(\'' +
-            j.id +
-            "')\">Submit Work</button>" +
-            '<button class="btn btn-danger btn-sm" onclick="window.__cancelJob(\'' +
-            j.id +
-            "')\">Cancel</button>";
-        } else if (j.status === "Submitted") {
-          if (j.evaluatorProgress) {
-            if (j.evaluatorProgress.approvals < j.evaluatorProgress.threshold) {
-              actions =
-                '<button class="btn btn-primary btn-sm" onclick="window.__approveJob(\'' +
-                j.id +
-                "')\">Approve quorum</button>";
-            }
-          } else {
-            actions +=
-              '<button class="btn btn-primary btn-sm" onclick="window.__completeJob(\'' +
-              j.id +
-              "')\">Complete (Release Funds)</button>";
-          }
-        } else {
-          actions =
-            '<span style="font-size:13px;color:var(--text-dim)">Job is ' +
-            escapeHtml(j.status.toLowerCase()) +
-            ". No actions available.</span>";
-        }
-
-        let deliverableHtml = "";
-        if (j.deliverable) {
-          deliverableHtml =
-            '<div class="detail-item" style="grid-column:1/-1">' +
-            '<div class="detail-label">Deliverable</div>' +
-            '<div class="detail-value">' +
-            renderDeliverable(j.deliverable) +
-            "</div></div>";
-        }
-
-        let evaluatorProgressHtml = "";
-        if (j.evaluatorProgress) {
-          const progress = j.evaluatorProgress;
-          const percent = Math.min(100, Math.round((progress.approvals / progress.threshold) * 100));
-          evaluatorProgressHtml =
-            '<div class="detail-item evaluator-progress-item" style="grid-column:1/-1">' +
-            '<div class="evaluator-progress-heading"><div class="detail-label">Evaluator approvals</div>' +
-            '<div class="evaluator-progress-count">' + progress.approvals + ' / ' + progress.threshold + '</div></div>' +
-            '<div class="evaluator-progress-track" role="progressbar" aria-label="Evaluator approvals" aria-valuemin="0" aria-valuemax="' +
-            progress.threshold + '" aria-valuenow="' + progress.approvals + '"><span style="width:' + percent + '%"></span></div>' +
-            '</div>';
-        }
-
-         content +=
-           '<div class="job-row" id="job-' +
-           j.id +
-           '">' +
-           '<div class="job-summary" data-job-id="' +
-           escapeHtml(String(j.id)) +
-           '" onclick="window.__toggleJob(event.currentTarget.dataset.jobId)">' +
-           '<div class="job-id-with-copy"><span class="job-id">#' +
-           escapeHtml(String(j.id)) +
-           "</span>" +
-           copyBtn(j.id, "job ID") +
-           "</div>" +
-           statusBadge(j.status) +
-          '<div class="job-desc">' +
-          escapeHtml(j.description || "\u2014") +
-          "</div>" +
-          '<div class="job-budget">' +
-          formatMusd(j.budget) +
-          ' <span class="unit">MUSD</span></div>' +
-          '<svg class="job-expand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>' +
-          "</div>" +
-          '<div class="job-detail">' +
-          '<div class="detail-grid">' +
-           '<div class="detail-item"><div class="detail-label">Client</div>' +
-           '<div class="detail-value addr-with-copy">' +
-           copyable(j.client, "wallet public key") +
-           "</div></div>" +
-           '<div class="detail-item"><div class="detail-label">Provider</div>' +
-           '<div class="detail-value addr-with-copy">' +
-           copyable(j.provider, "wallet public key") +
-           "</div></div>" +
-           '<div class="detail-item"><div class="detail-label">Evaluator</div>' +
-           '<div class="detail-value addr-with-copy">' +
-           copyable(j.evaluator, "wallet public key") +
-           "</div></div>" +
-           '<div class="detail-item"><div class="detail-label">Token</div>' +
-           '<div class="detail-value addr-with-copy">' +
-           copyable(j.token, "token contract address") +
-           "</div></div>" +
-          (j.created_at
-            ? '<div class="detail-item"><div class="detail-label">Created</div>' +
-              '<div class="detail-value" title="' + escapeHtml(new Date(Number(j.created_at) * 1000).toISOString()) + '">' +
-              escapeHtml(formatRelativeTime(j.created_at)) +
-              "</div></div>"
-            : "") +
-          evaluatorProgressHtml +
-          deliverableHtml +
-          '<div class="detail-item" style="grid-column:1/-1">' +
-          '<div class="detail-label">Timeline</div>' +
-          '<div class="job-timeline" role="list" id="job-timeline-' +
-          escapeAttr(String(j.id)) +
-          '"><div class="job-timeline-empty" role="listitem">Loading events…</div></div>' +
-          "</div>" +
-          "</div>" +
-          renderLifecycleStepper(j) +
-          '<div class="job-actions">' +
-          actions +
-          "</div>" +
-          "</div></div>";
-      }
-      content += "</div>";
+      content = '<div class="job-list" id="job-list"></div>';
     }
 
     const pagination =
@@ -2716,29 +3406,62 @@
         content +
         pagination,
     );
+
+    // Render the rows: fully when the list is short, virtualized when it is not
+    // (#762). Virtualization keeps live DOM nodes bounded (viewport + buffer) so
+    // large job histories stay smooth.
+    var listEl = document.getElementById("job-list");
+    if (listEl && filtered.length > 0) {
+      if (filtered.length > VIRTUALIZE_THRESHOLD) {
+        destroyVirtualList("job-list");
+        var vl = VirtualList({
+          container: listEl,
+          getItems: function () { return filtered; },
+          renderRow: jobRowHtml,
+          estimatedRowHeight: 64,
+        });
+        vl.update();
+        virtualLists["job-list"] = vl;
+      } else {
+        var html = "";
+        for (var idx = 0; idx < filtered.length; idx++) {
+          html += '<div class="virtual-row">' + jobRowHtml(filtered[idx], idx) + "</div>";
+        }
+        listEl.innerHTML = html;
+      }
+      loadVisibleJobTimelines();
+    }
   }
 
   // 4. Agents
-  async function renderAgents() {
-    setPage(
-      '<div class="section-header"><div><div class="section-title">Agents</div><div class="page-subtitle" style="margin-top:2px">On-chain identity registry for AI agents</div></div>' +
-        '<button class="btn btn-primary" onclick="window.__showRegisterAgent()">+ Register Agent</button></div>' +
-        skeletonAgentCards(4),
+  // #583 — case-insensitive agent search across name, description, tags,
+  // skills, URI, and owner.
+  function matchAgent(a, query) {
+    var q = String(query || "").toLowerCase().trim();
+    if (!q) return true;
+    var nameMatch = Boolean(a.name && String(a.name).toLowerCase().includes(q));
+    var descMatch = Boolean(a.description && String(a.description).toLowerCase().includes(q));
+    var tagsMatch = Boolean(
+      Array.isArray(a.tags)
+        ? a.tags.some(function (t) {
+            return String(t).toLowerCase().includes(q);
+          })
+        : typeof a.tag === "string" && a.tag.toLowerCase().includes(q),
     );
-    const skillsMatch = Boolean(
+    var skillsMatch = Boolean(
       Array.isArray(a.skills)
         ? a.skills.some(function (s) {
-            return String(s).toLowerCase().includes(q);
+            return String(s).toLowerCase().includes(query);
           })
-        : typeof a.skill === "string" && a.skill.toLowerCase().includes(q),
+        : typeof a.skill === "string" && a.skill.toLowerCase().includes(query),
     );
-    const uriMatch = Boolean(a.uri && String(a.uri).toLowerCase().includes(q));
-    const ownerMatch = Boolean(a.owner && String(a.owner).toLowerCase().includes(q));
-    const idMatch = Boolean(a.id !== undefined && String(a.id).toLowerCase().includes(q));
-
+    var uriMatch = Boolean(a.uri && String(a.uri).toLowerCase().includes(q));
+    var ownerMatch = Boolean(a.owner && String(a.owner).toLowerCase().includes(q));
+    var idMatch = Boolean(a.id !== undefined && String(a.id).toLowerCase().includes(q));
     return nameMatch || descMatch || tagsMatch || skillsMatch || uriMatch || ownerMatch || idMatch;
   }
 
+  // 4. Agents
   async function renderAgents() {
     if (!state.agents) {
       setPage(
@@ -2750,16 +3473,9 @@
     }
 
     const agents = state.agents || [];
-    const searchTerm = (state.agentSearch || "").trim();
-    const filtered = searchTerm
-      ? agents.filter(function (a) {
-          return matchAgent(a, searchTerm);
-        })
-      : agents;
 
     // #583 — apply agent search filter
     var agentQuery = (state.agentSearch || "").toLowerCase().trim();
-    var filtered = agents;
     if (agentQuery) {
       filtered = agents.filter(function (a) {
         return (
@@ -2886,6 +3602,60 @@
     }
   }
 
+  function historyRowHtml(ev) {
+    var icon, label, meta, badge;
+    if (ev.kind === "job") {
+      icon =
+        '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>';
+      label = escapeHtml(ev.desc);
+      var deliverablePart = ev.deliverable
+        ? ' &nbsp;·&nbsp; <a href="' +
+          escapeHtml(ev.deliverable) +
+          '" target="_blank" rel="noopener" style="color:var(--accent);font-weight:500">View Deliverable ↗</a>'
+        : "";
+      meta =
+        "Client: " +
+        copyable(ev.actor, "wallet public key") +
+        " &nbsp;·&nbsp; " +
+        formatMusd(ev.budget) +
+        " USDC" +
+        deliverablePart;
+      badge = statusBadge(ev.status);
+    } else {
+      icon =
+        '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>';
+      label = "Agent registered";
+      meta = "Owner: " + copyable(ev.actor, "wallet public key") + " &nbsp;·&nbsp; " + escapeHtml(ev.uri || "");
+      badge =
+        '<span class="status-badge status-Completed"><span class="dot"></span>Registered</span>';
+    }
+    return (
+      '<div class="history-row">' +
+      '<div class="history-icon ' +
+      (ev.kind === "job" ? "hist-job" : "hist-agent") +
+      '">' +
+      icon +
+      "</div>" +
+      '<div class="history-body">' +
+      '<div class="history-label">' +
+      label +
+      "</div>" +
+      '<div class="history-meta">' +
+      meta +
+      "</div>" +
+      "</div>" +
+      '<div class="history-right">' +
+      '<div class="history-id-with-copy"><span class="history-id">#' +
+      escapeHtml(String(ev.id)) +
+      "</span>" +
+      copyBtn(ev.id, ev.kind === "job" ? "job ID" : "agent ID") +
+      "</div>" +
+      badge +
+      "</div>" +
+      "</div>"
+    );
+  }
+
   // 5. Transaction History
   async function renderHistory() {
     setPage(
@@ -2955,68 +3725,23 @@
     }
     tabs += "</div>";
 
-    var rows = '<div class="history-list">';
+    var useVirtualList = filteredEvents.length > VIRTUALIZE_THRESHOLD;
+    var rows;
     if (filteredEvents.length === 0) {
-      rows +=
+      rows =
+        '<div class="history-list">' +
         '<div class="empty-state" style="margin-top:24px">' +
         '<div class="empty-icon"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg></div>' +
         '<div class="empty-title">No matching records</div>' +
-        '<div class="empty-desc">Try a different filter.</div></div>';
+        '<div class="empty-desc">Try a different filter.</div></div>' +
+        "</div>";
+    } else if (useVirtualList) {
+      rows = '<div class="history-list virtual-list" id="history-virtual"></div>';
     } else {
-      for (var ev of filteredEvents) {
-        var icon, label, meta, badge;
-        if (ev.kind === "job") {
-          icon =
-            '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>';
-          label = escapeHtml(ev.desc);
-          var deliverablePart = ev.deliverable
-            ? ' &nbsp;·&nbsp; <a href="' +
-              escapeHtml(ev.deliverable) +
-              '" target="_blank" rel="noopener" style="color:var(--accent);font-weight:500">View Deliverable ↗</a>'
-            : "";
-           meta =
-             "Client: " +
-             copyable(ev.actor, "wallet public key") +
-             " &nbsp;·&nbsp; " +
-             formatMusd(ev.budget) +
-             " USDC" +
-             deliverablePart;
-          badge = statusBadge(ev.status);
-        } else {
-          icon =
-            '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>';
-          label = "Agent registered";
-           meta = "Owner: " + copyable(ev.actor, "wallet public key") + " &nbsp;·&nbsp; " + escapeHtml(ev.uri || "");
-          badge =
-            '<span class="status-badge status-Completed"><span class="dot"></span>Registered</span>';
-        }
-        rows +=
-          '<div class="history-row">' +
-          '<div class="history-icon ' +
-          (ev.kind === "job" ? "hist-job" : "hist-agent") +
-          '">' +
-          icon +
-          "</div>" +
-          '<div class="history-body">' +
-          '<div class="history-label">' +
-          label +
-          "</div>" +
-          '<div class="history-meta">' +
-          meta +
-          "</div>" +
-          "</div>" +
-           '<div class="history-right">' +
-           '<div class="history-id-with-copy"><span class="history-id">#' +
-           escapeHtml(String(ev.id)) +
-           "</span>" +
-           copyBtn(ev.id, ev.kind === "job" ? "job ID" : "agent ID") +
-           "</div>" +
-           badge +
-          "</div>" +
-          "</div>";
-      }
+      rows = '<div class="history-list">';
+      for (var ev of filteredEvents) rows += historyRowHtml(ev);
+      rows += "</div>";
     }
-    rows += "</div>";
 
     var completedCount = jobs.filter(function (j) {
       return j.status === "Completed";
@@ -3061,6 +3786,18 @@
         tabs +
         rows,
     );
+
+    if (useVirtualList) {
+      var viewport = document.getElementById("history-virtual");
+      if (viewport) {
+        createVirtualList({
+          viewport: viewport,
+          items: filteredEvents,
+          rowHeight: VIRTUAL_ROW_HEIGHT,
+          renderRow: historyRowHtml,
+        });
+      }
+    }
   }
 
   window.__filterHistory = function (filter) {
@@ -3610,6 +4347,126 @@
     setMetaTag("property", "og:url", window.location.href);
   }
 
+  // ── Agent metadata schema validation (#975) ──
+  // Mirrors docs/agent-metadata-schema-v1.json.  The server validates too, but
+  // the dashboard re-checks so a malformed profile renders a warning banner
+  // instead of crashing the view.
+  var AGENT_METADATA_SCHEMA = {
+    type: "object",
+    required: ["name", "description"],
+    properties: {
+      name: { type: "string", minLength: 1, maxLength: 120 },
+      description: { type: "string", minLength: 1, maxLength: 2000 },
+      version: { type: "string" },
+      tags: { type: "array", items: { type: "string" }, maxItems: 32 },
+      capabilities: { type: "array", items: { type: "string" }, maxItems: 32 },
+      pricing: { type: ["string", "object", "number"] },
+      image: { type: "string" },
+      website: { type: "string" },
+      contact: { type: "string" },
+    },
+    additionalProperties: true,
+  };
+
+  function schemaTypeOf(value) {
+    if (value === null) return "null";
+    if (Array.isArray(value)) return "array";
+    return typeof value;
+  }
+
+  function validateAgentMetadata(metadata) {
+    var errors = [];
+    var schema = AGENT_METADATA_SCHEMA;
+    if (schemaTypeOf(metadata) !== "object") {
+      return { valid: false, errors: ["metadata must be a JSON object"] };
+    }
+    var required = schema.required || [];
+    for (var r = 0; r < required.length; r++) {
+      if (metadata[required[r]] == null) errors.push('missing required field "' + required[r] + '"');
+    }
+    var props = schema.properties || {};
+    Object.keys(props).forEach(function (key) {
+      if (metadata[key] == null) return;
+      var rule = props[key];
+      var actual = schemaTypeOf(metadata[key]);
+      var allowed = Array.isArray(rule.type) ? rule.type : [rule.type];
+      if (allowed.indexOf(actual) === -1) {
+        errors.push('field "' + key + '" must be ' + allowed.join(" or ") + " (got " + actual + ")");
+        return;
+      }
+      if (actual === "string") {
+        if (rule.minLength != null && metadata[key].length < rule.minLength) {
+          errors.push('field "' + key + '" is shorter than ' + rule.minLength + " characters");
+        }
+        if (rule.maxLength != null && metadata[key].length > rule.maxLength) {
+          errors.push('field "' + key + '" is longer than ' + rule.maxLength + " characters");
+        }
+      }
+      if (actual === "array") {
+        if (rule.maxItems != null && metadata[key].length > rule.maxItems) {
+          errors.push('field "' + key + '" has more than ' + rule.maxItems + " items");
+        }
+        if (rule.items && rule.items.type) {
+          for (var i = 0; i < metadata[key].length; i++) {
+            if (schemaTypeOf(metadata[key][i]) !== rule.items.type) {
+              errors.push('field "' + key + '[' + i + ']" must be ' + rule.items.type);
+            }
+          }
+        }
+      }
+    });
+    return { valid: errors.length === 0, errors: errors };
+  }
+
+  // Parses the agent's metadata JSON, tolerating malformed input.
+  function parseAgentMetadata(agent) {
+    var raw = agent && (agent.metadata != null ? agent.metadata : agent.metadataJson);
+    if (raw == null) return { present: false, data: null, parseError: null };
+    if (typeof raw === "object") return { present: true, data: raw, parseError: null };
+    try {
+      return { present: true, data: JSON.parse(String(raw)), parseError: null };
+    } catch (e) {
+      return { present: true, data: null, parseError: "Metadata is not valid JSON" };
+    }
+  }
+
+  function renderMetadataWarning(parseError, validation) {
+    var messages = [];
+    if (parseError) messages.push(parseError);
+    if (validation && validation.errors) messages = messages.concat(validation.errors);
+    if (messages.length === 0) return "";
+    var items = "";
+    for (var i = 0; i < messages.length && i < 8; i++) {
+      items += "<li>" + escapeHtml(String(messages[i])) + "</li>";
+    }
+    return (
+      '<div class="metadata-warning" role="alert" style="margin:16px 0;padding:12px 16px;border-radius:8px;' +
+      'border:1px solid #b45309;background:rgba(180,83,9,.12);color:var(--text)">' +
+      '<strong>⚠️ Metadata failed schema validation</strong>' +
+      '<div style="font-size:13px;color:var(--text-muted);margin-top:4px">' +
+      "This profile may render incorrectly. The raw metadata is shown below.</div>" +
+      '<ul style="margin:8px 0 0 18px;font-size:13px">' + items + "</ul></div>"
+    );
+  }
+
+  function renderReputation(reputation) {
+    if (!reputation || typeof reputation !== "object") return "";
+    var completed = reputation.completedJobs != null ? reputation.completedJobs : reputation.completed;
+    var total = reputation.totalJobs != null ? reputation.totalJobs : reputation.total;
+    var rating = reputation.rating != null ? reputation.rating : reputation.averageRating;
+    var disputes = reputation.disputes;
+    var rows = "";
+    if (completed != null) rows += '<div class="reputation-stat"><span class="reputation-label">Completed jobs</span><span class="reputation-value">' + escapeHtml(String(completed)) + "</span></div>";
+    if (total != null) rows += '<div class="reputation-stat"><span class="reputation-label">Total jobs</span><span class="reputation-value">' + escapeHtml(String(total)) + "</span></div>";
+    if (rating != null) rows += '<div class="reputation-stat"><span class="reputation-label">Rating</span><span class="reputation-value">' + escapeHtml(String(rating)) + "</span></div>";
+    if (disputes != null) rows += '<div class="reputation-stat"><span class="reputation-label">Disputes</span><span class="reputation-value">' + escapeHtml(String(disputes)) + "</span></div>";
+    if (!rows) return "";
+    return (
+      '<div class="agent-profile-section"><div class="agent-profile-heading">Reputation</div>' +
+      '<div class="reputation-grid">' + rows + "</div></div>"
+    );
+  }
+
   async function renderAgentProfile(id) {
     setPage(
       '<div class="page-header"><div class="page-title">Agent Profile</div></div>' +
@@ -3648,7 +4505,7 @@
       badges = [];
     }
 
-    // Recent job history for this agent
+    // Recent job history for this agent (indexer-backed)
     var jobs = [];
     try {
       jobs = (await api("/jobs?agent=" + encodeURIComponent(String(id)), { _silent: true })) || [];
@@ -3657,9 +4514,39 @@
       jobs = [];
     }
 
+    // Reputation from the indexer (best-effort — never blocks the profile)
+    var reputation = agent.reputation || null;
+    if (!reputation) {
+      try {
+        reputation = await api("/agents/" + encodeURIComponent(String(id)) + "/reputation", { _silent: true });
+      } catch (e) {
+        reputation = null;
+      }
+    }
+
+    // Metadata JSON validated against docs/agent-metadata-schema-v1.json
+    var parsedMeta = parseAgentMetadata(agent);
+    var validation = { valid: true, errors: [] };
+    if (parsedMeta.present && !parsedMeta.parseError) {
+      validation = validateAgentMetadata(parsedMeta.data);
+    }
+    var metadataWarningHtml = renderMetadataWarning(parsedMeta.parseError, validation);
+    var metadataHtml = "";
+    if (parsedMeta.present) {
+      var metaText = parsedMeta.data != null ? JSON.stringify(parsedMeta.data, null, 2) : String(agent.metadata != null ? agent.metadata : agent.metadataJson);
+      metadataHtml =
+        '<div class="agent-profile-section"><div class="agent-profile-heading">Metadata</div>' +
+        '<pre class="agent-metadata-json" style="white-space:pre-wrap;word-break:break-word;font-size:12px;' +
+        'max-height:320px;overflow:auto;padding:12px;border-radius:8px;background:var(--bg-elevated,#111)">' +
+        escapeHtml(metaText) + "</pre></div>";
+    }
+
     var shareUrl = window.location.origin + window.location.pathname + "#/agent/" + id;
     var capabilities = Array.isArray(agent.tags) ? agent.tags : [];
-    var pricing = agent.pricing || agent.price || null;
+    if (capabilities.length === 0 && parsedMeta.data && Array.isArray(parsedMeta.data.capabilities)) {
+      capabilities = parsedMeta.data.capabilities;
+    }
+    var pricing = agent.pricing || agent.price || (parsedMeta.data && parsedMeta.data.pricing) || null;
 
     var capabilitiesHtml = "";
     if (capabilities.length > 0) {
@@ -3674,7 +4561,7 @@
     if (pricing) {
       pricingHtml =
         '<div class="agent-profile-section"><div class="agent-profile-heading">Pricing</div>' +
-        '<div class="agent-profile-pricing">' + escapeHtml(String(pricing)) + "</div></div>";
+        '<div class="agent-profile-pricing">' + escapeHtml(typeof pricing === "object" ? JSON.stringify(pricing) : String(pricing)) + "</div></div>";
     }
 
     var historyHtml = '<div class="agent-profile-section"><div class="agent-profile-heading">Recent Jobs</div>';
@@ -3695,6 +4582,8 @@
     }
     historyHtml += "</div>";
 
+    var bio = agent.description || (parsedMeta.data && parsedMeta.data.description) || agent.uri || "No bio provided.";
+
     setPage(
       '<div class="agent-profile">' +
         '<div class="agent-profile-banner"></div>' +
@@ -3709,11 +4598,14 @@
         '<button class="btn btn-secondary" onclick="window.__copyShareLink(\'' + escapeAttr(shareUrl) + "')\">Copy Link</button>" +
         "</div></div>" +
         renderBadgeChips(badges) +
+        metadataWarningHtml +
         '<div class="agent-profile-section"><div class="agent-profile-heading">Bio</div>' +
-        '<div class="agent-profile-bio">' + escapeHtml(agent.description || agent.uri || "No bio provided.") + "</div></div>" +
+        '<div class="agent-profile-bio">' + escapeHtml(bio) + "</div></div>" +
+        renderReputation(reputation) +
         pricingHtml +
         capabilitiesHtml +
         historyHtml +
+        metadataHtml +
         "</div>",
     );
   }
@@ -3724,6 +4616,193 @@
 
   window.__hireAgent = function (agentId) {
     window.__showCreateJob({ provider: agentId });
+  };
+
+  // ── Network switcher (#976) ──
+  // Presets come from /api/network; switching clears client caches, asks the
+  // server to drop its caches and (for mainnet) requires explicit confirmation.
+  var networkPresets = null;
+  var networkPresetsPromise = null;
+
+  function getNetworkPresets() {
+    if (networkPresets) return Promise.resolve(networkPresets);
+    if (networkPresetsPromise) return networkPresetsPromise;
+    networkPresetsPromise = (async function () {
+      var presets = null;
+      try {
+        var data = await api("/network", { _silent: true });
+        presets = (data && (data.presets || data.networks)) || data || null;
+      } catch (e) {
+        presets = null;
+      }
+      // Fall back to the built-in presets when the endpoint is unavailable.
+      if (!presets || typeof presets !== "object" || Array.isArray(presets)) {
+        presets = NETWORK_PRESETS;
+      }
+      networkPresets = presets;
+      return presets;
+    })();
+    try {
+      await networkPresetsPromise;
+    } finally {
+      networkPresetsPromise = null;
+    }
+    return networkPresets;
+  }
+
+  function presetFor(networkId) {
+    if (networkPresets && networkPresets[networkId]) return networkPresets[networkId];
+    return NETWORK_PRESETS[networkId] || null;
+  }
+
+  function clearClientCaches() {
+    state.stats = null;
+    state.wallets = null;
+    state.agents = null;
+    state.jobs = null;
+    state.history = null;
+    state.jobTotal = 0;
+    state.jobHasNext = false;
+    state.agentTotal = 0;
+    state.walletBalances = null;
+    try {
+      if (typeof sse !== "undefined" && sse && sse.source) {
+        try { sse.source.close(); } catch (e) {}
+        sse.source = null;
+        sse.live = false;
+      }
+    } catch (e) {}
+  }
+
+  function renderNetworkMismatchBanner() {
+    var existing = document.getElementById("network-mismatch-banner");
+    if (existing) existing.remove();
+    if (!wallet.connected || !wallet.network) return;
+    var active = state.network || "testnet";
+    if (wallet.network === active) return;
+    var banner = document.createElement("div");
+    banner.id = "network-mismatch-banner";
+    banner.className = "network-mismatch-banner";
+    banner.setAttribute("role", "alert");
+    banner.style.cssText =
+      "margin:0 0 16px;padding:12px 16px;border-radius:8px;border:1px solid #b45309;" +
+      "background:rgba(180,83,9,.12);display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap";
+    banner.innerHTML =
+      '<span>⚠️ Your wallet is on <strong>' +
+      escapeHtml(wallet.network === "mainnet" ? "Mainnet" : wallet.network) +
+      "</strong> but the dashboard is set to <strong>" +
+      escapeHtml(active === "mainnet" ? "Mainnet" : active) +
+      "</strong>. Signing may fail.</span>" +
+      '<button type="button" class="btn btn-secondary" id="network-mismatch-switch">Switch dashboard network</button>';
+    var page = document.getElementById("page");
+    if (page && page.parentNode) page.parentNode.insertBefore(banner, page);
+    var btn = document.getElementById("network-mismatch-switch");
+    if (btn) {
+      btn.addEventListener("click", function () {
+        window.__openNetworkSwitcher();
+      });
+    }
+  }
+
+  function updateNetworkBadge() {
+    var nb = document.getElementById("network-badge");
+    if (!nb) return;
+    var active = state.network || "testnet";
+    var preset = presetFor(active);
+    nb.innerHTML =
+      '<span class="badge-dot"></span>' +
+      escapeHtml(preset && preset.label ? preset.label : active);
+  }
+
+  async function switchNetwork(networkId, opts) {
+    var options = opts || {};
+    var presets = await getNetworkPresets();
+    var preset = presets[networkId] || NETWORK_PRESETS[networkId];
+    if (!preset) {
+      toast("Unknown network: " + networkId, "error");
+      return false;
+    }
+    if (networkId === "mainnet" && !options.confirmed) {
+      var confirmed = await confirmMainnetSwitch();
+      if (!confirmed) return false;
+    }
+    // 1. Clear client-side caches so no stale data leaks across networks.
+    clearClientCaches();
+    // 2. Persist the selection.
+    state.network = networkId;
+    try { localStorage.setItem("bear-network", networkId); } catch (e) {}
+    // 3. Ask the server to drop its caches for the new network.
+    try {
+      await api("/network/cache", {
+        method: "POST",
+        body: { network: networkId },
+        _silent: true,
+      });
+    } catch (e) {
+      // Non-fatal — the server may not implement cache clearing yet.
+    }
+    // 4. Re-render the current view with fresh data.
+    updateNetworkBadge();
+    renderNetworkMismatchBanner();
+    toast("Switched to " + (preset.label || networkId));
+    navigate();
+    return true;
+  }
+
+  function confirmMainnetSwitch() {
+    return new Promise(function (resolve) {
+      var overlay = showModal(
+        '<h2 class="modal-title">Switch to Mainnet?</h2>' +
+          '<p style="color:var(--text-muted);margin-bottom:16px">Mainnet uses <strong>real funds</strong>. ' +
+          "Transactions signed on Mainnet are irreversible. Make sure you understand the risks before continuing.</p>" +
+          '<div class="modal-actions">' +
+          '<button class="btn btn-secondary" id="mainnet-cancel">Cancel</button>' +
+          '<button class="btn btn-primary" id="mainnet-confirm">Yes, switch to Mainnet</button>' +
+          "</div>",
+      );
+      var done = function (value) {
+        try { if (overlay) overlay.remove(); } catch (e) {}
+        resolve(value);
+      };
+      var cancelBtn = document.getElementById("mainnet-cancel");
+      var confirmBtn = document.getElementById("mainnet-confirm");
+      if (cancelBtn) cancelBtn.addEventListener("click", function () { done(false); });
+      if (confirmBtn) confirmBtn.addEventListener("click", function () { done(true); });
+    });
+  }
+
+  window.__openNetworkSwitcher = async function () {
+    var presets = await getNetworkPresets();
+    var active = state.network || "testnet";
+    var ids = Object.keys(presets);
+    var cards = "";
+    for (var i = 0; i < ids.length; i++) {
+      var id = ids[i];
+      var p = presets[id] || {};
+      var isActive = id === active;
+      cards +=
+        '<button type="button" class="network-preset-card' + (isActive ? " active" : "") + '" ' +
+        'data-network="' + escapeAttr(id) + '" ' +
+        'onclick="window.__selectNetwork(\'' + escapeAttr(id) + "')\">" +
+        '<span class="network-preset-name">' + escapeHtml(p.label || id) + "</span>" +
+        (p.realFunds ? '<span class="network-preset-warning">Real funds</span>' : "") +
+        (isActive ? '<span class="network-preset-active">Active</span>' : "") +
+        "</button>";
+    }
+    showModal(
+      '<h2 class="modal-title">Switch Network</h2>' +
+        '<p style="color:var(--text-muted);margin-bottom:16px">Switching networks clears cached data and re-fetches from the indexer.</p>' +
+        '<div class="network-preset-grid">' + cards + "</div>" +
+        '<div class="modal-actions">' +
+        '<button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button>' +
+        "</div>",
+    );
+  };
+
+  window.__selectNetwork = async function (networkId) {
+    var overlay = document.querySelector(".modal-overlay");
+    if (overlay) overlay.remove();
+    await switchNetwork(networkId);
   };
 
   // ── Router ──
@@ -3750,6 +4829,10 @@
   function navigate() {
     const route = getRoute();
     const parsed = parseRoute(route);
+
+    // Tear down any virtualized lists from the previous view so their scroll
+    // listeners and DOM nodes don't leak across navigations (#762).
+    destroyAllVirtualLists();
 
     // Update active nav
     document.querySelectorAll(".nav-item").forEach(function (el) {
@@ -4076,7 +5159,13 @@
   connectEventStream();
 
   // Initial render
+  state.network = readPersistedNetwork();
   renderNetworkBadge();
+  updateNetworkBadge();
+  getNetworkPresets().then(function () {
+    updateNetworkBadge();
+    renderNetworkMismatchBanner();
+  });
   navigate();
 
   // Sync the refresh-interval dropdown to the restored/default interval

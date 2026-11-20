@@ -340,9 +340,9 @@ document.addEventListener("DOMContentLoaded", () => {
   // Total Escrow Jobs (commerce.job_count), and Fee Revenue (USDC amount),
   // falling back gracefully to cached baseline figures if the network fails.
   const FALLBACK_STATS = {
-    totalAgents: 4,
-    totalJobs: 12,
-    feeRevenueFormatted: "$25.00 USDC",
+    totalAgents: null,
+    totalJobs: null,
+    feeRevenueFormatted: "Stats temporarily unavailable",
   };
 
   async function fetchProtocolStats() {
@@ -355,20 +355,20 @@ document.addEventListener("DOMContentLoaded", () => {
         agentsEl.textContent =
           stats.totalAgents !== undefined && stats.totalAgents !== null
             ? String(stats.totalAgents)
-            : "4";
+            : "—";
         agentsEl.classList.remove("loading");
       }
       if (jobsEl) {
         jobsEl.textContent =
           stats.totalJobs !== undefined && stats.totalJobs !== null
             ? String(stats.totalJobs)
-            : "12";
+            : "—";
         jobsEl.classList.remove("loading");
       }
       if (revenueEl) {
         revenueEl.textContent =
           stats.feeRevenueFormatted ||
-          (stats.feeRevenue ? `$${stats.feeRevenue} USDC` : "$25.00 USDC");
+          (stats.feeRevenue ? `$${stats.feeRevenue} USDC` : "Stats temporarily unavailable");
         revenueEl.classList.remove("loading");
       }
     }

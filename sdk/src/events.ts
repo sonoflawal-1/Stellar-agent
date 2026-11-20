@@ -20,6 +20,49 @@ import {
   type UriUpdatedEvent,
 } from "./types.js";
 
+/**
+ * Discriminated union of every decoded contract event.
+ *
+ * Consumers can switch on `event.type` and rely on the compiler to flag any
+ * unhandled case (see {@link assertNever}). This union is kept in sync with
+ * `docs/EVENTS.md`; the drift test in `events.test.ts` fails when a contract
+ * event is missing here.
+ */
+export type BearEvent =
+  | RegisteredEvent
+  | UriUpdatedEvent
+  | AgentDeregisteredEvent
+  | OwnerTransferredEvent
+  | BadgeIssuedEvent
+  | BadgeRevokedEvent
+  | JobCreatedEvent
+  | JobSubmittedEvent
+  | JobCompletedEvent
+  | JobCancelledEvent
+  | JobDisputedEvent
+  | JobRefundedEvent
+  | JobExpiredEvent
+  | BatchJobsCreatedEvent;
+
+/**
+ * Compile-time exhaustiveness guard for `switch` statements over `BearEvent`.
+ *
+ * ```ts
+ * switch (event.type) {
+ *   case IdentityEvents.Registered: ...
+ *   // ...
+ *   default:
+ *     return assertNever(event);
+ * }
+ * ```
+ *
+ * @param value - A value that must be `never`; passing anything else is a type error.
+ * @throws Always throws at runtime if reached with an unexpected value.
+ */
+export function assertNever(value: never): never {
+  throw new Error(`Unhandled BearEvent: ${JSON.stringify(value)}`);
+}
+
 /** Event response shape accepted by event decoders. */
 export type EventPayload =
   | rpc.Api.RawEventResponse
@@ -774,4 +817,34 @@ export function decodeCommerceEvent(event: EventPayload): JobEvent {
     default:
       throw new Error(`Unknown commerce event type: ${topicName}`);
   }
+}
+
+// ===========================================================================
+// Unified Event Decoding (#1048)
+// ===========================================================================
+
+/**
+ * Decode any supported contract event into a `BearEvent` discriminated union.
+ *
+ * Dispatches to {@link decodeIdentityEvent} or {@link decodeCommerceEvent}
+ * based on the event topic name.
+ *
+ * @param event - The raw event response from Soroban RPC or mock event payload.
+ * @returns The decoded `BearEvent` variant.
+ * @throws If the event topic is not a known identity or commerce event.
+ */
+export function decodeBearEvent(event: EventPayload): BearEvent {
+  const topicName = getEventTopicName(event);
+
+  const identityTopics: string[] = Object.values(IdentityEvents);
+  if (identityTopics.includes(topicName)) {
+    return decodeIdentityEvent(event);
+  }
+
+  const commerceTopics: string[] = Object.values(CommerceEvents);
+  if (commerceTopics.includes(topicName)) {
+    return decodeCommerceEvent(event);
+  }
+
+  throw new Error(`Unknown BearEvent type: ${topicName}`);
 }

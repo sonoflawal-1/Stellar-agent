@@ -16,6 +16,13 @@ import {
   validateAgentConfig,
   autoRegister,
   registerGracefulShutdown,
+  TaskQueue,
+  submitDeliverable,
+  computeDeliverableHash,
+  extractJsonObject,
+  parseLlmJson,
+  parseNamerResponse,
+  parseResearcherResponse,
 } from "./shared.js";
 
 test("makeSellerResponse - returns standard response format with success true and execution_time_ms >= 0", () => {
@@ -843,5 +850,391 @@ test("registerGracefulShutdown - unregister removes signal listeners", async () 
   } finally {
     console.error = originalError;
     console.log = originalLog;
+  }
+});
+
+function makeMemoryQueueStore() {
+  const rows = new Map<string, Record<string, unknown>>();
+  return {
+    rows,
+    async insert(row: Record<string, unknown>) {
+      rows.set(row.id as string, { ...row });
+      return { id: row.id };
+    },
+    async update(id: string, patch: Record<string, unknown>) {
+      const existing = rows.get(id);
+      if (existing) rows.set(id, { ...existing, ...patch });
+    },
+    async remove(id: string) {
+      rows.delete(id);
+    },
+    async list() {
+      return Array.from(rows.values());
+    },
+  };
+}
+
+test("TaskQueue - persists pending tasks and resumes them after a simulated restart", async () => {
+  const store = makeMemoryQueueStore();
+  const processed: string[] = [];
+
+  const queue = new TaskQueue<{ jobId: string }>({
+    store,
+    concurrency: 1,
+    maxRetries: 3,
+    handler: async (task) => {
+      processed.push(task.jobId);
+    },
+  });
+
+  await queue.enqueue({ jobId: "job-a" });
+  await queue.enqueue({ jobId: "job-b" });
+  await queue.enqueue({ jobId: "job-c" });
+
+  // Simulate a crash before any task is processed: a new queue instance
+  // backed by the same store must pick up the pending tasks.
+  const resumed: string[] = [];
+  const queueAfterRestart = new TaskQueue<{ jobId: string }>({
+    store,
+    concurrency: 1,
+    maxRetries: 3,
+    handler: async (task) => {
+      resumed.push(task.jobId);
+    },
+  });
+
+  await queueAfterRestart.resume();
+  await queueAfterRestart.drain();
+
+  assert.deepEqual(resumed.sort(), ["job-a", "job-b", "job-c"]);
+  assert.equal(store.rows.size, 0);
+});
+
+test("TaskQueue - enforces the configured concurrency limit", async () => {
+  const store = makeMemoryQueueStore();
+  let active = 0;
+  let maxActive = 0;
+
+  const queue = new TaskQueue<{ jobId: string }>({
+    store,
+    concurrency: 2,
+    maxRetries: 1,
+    handler: async () => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((r) => setTimeout(r, 10));
+      active--;
+    },
+  });
+
+  for (let i = 0; i < 6; i++) {
+    await queue.enqueue({ jobId: `job-${i}` });
+  }
+
+  await queue.drain();
+
+  assert.equal(maxActive, 2);
+  assert.equal(active, 0);
+});
+
+test("TaskQueue - retries failed tasks up to maxRetries then marks them failed", async () => {
+  const store = makeMemoryQueueStore();
+  let attempts = 0;
+
+  const queue = new TaskQueue<{ jobId: string }>({
+    store,
+    concurrency: 1,
+    maxRetries: 2,
+    handler: async () => {
+      attempts++;
+      throw new Error("boom");
+    },
+  });
+
+  await queue.enqueue({ jobId: "job-fail" });
+  await queue.drain();
+
+  // 1 initial attempt + 2 retries
+  assert.equal(attempts, 3);
+  const failed = await queue.listFailed();
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0].attempts, 3);
+});
+
+test("TaskQueue - successful tasks are removed from the store", async () => {
+  const store = makeMemoryQueueStore();
+  const queue = new TaskQueue<{ jobId: string }>({
+    store,
+    concurrency: 1,
+    maxRetries: 1,
+    handler: async () => {},
+  });
+
+  await queue.enqueue({ jobId: "job-ok" });
+  await queue.drain();
+
+  assert.equal(store.rows.size, 0);
+});
+
+test("computeDeliverableHash - same bytes produce the same hash", () => {
+  const bytes = new TextEncoder().encode("hello deliverable");
+  const h1 = computeDeliverableHash(bytes);
+  const h2 = computeDeliverableHash(bytes);
+  assert.equal(h1, h2);
+  assert.equal(typeof h1, "string");
+  assert.ok(h1.length > 0);
+});
+
+test("computeDeliverableHash - different bytes produce different hashes", () => {
+  const a = computeDeliverableHash(new TextEncoder().encode("alpha"));
+  const b = computeDeliverableHash(new TextEncoder().encode("beta"));
+  assert.notEqual(a, b);
+});
+
+test("computeDeliverableHash - matches the SDK client-side helper", async () => {
+  const { computeDeliverableHash: sdkHash } = await import(
+    "../sdk/src/deliverable.js"
+  );
+  const bytes = new TextEncoder().encode("reproducible deliverable content");
+  assert.equal(computeDeliverableHash(bytes), sdkHash(bytes));
+});
+
+test("submitDeliverable - computes hash, stores content and calls the contract", async () => {
+  const stored: Array<{ key: string; bytes: Uint8Array }> = [];
+  const storage = {
+    async put(key: string, bytes: Uint8Array) {
+      stored.push({ key, bytes });
+      return { key };
+    },
+  };
+
+  let submitted: { jobId: string; hash: string } | undefined;
+  const contract = {
+    async submit(jobId: string, hash: string) {
+      submitted = { jobId, hash };
+      return { txHash: "tx-1" };
+    },
+  };
+
+  const bytes = new TextEncoder().encode("final deliverable");
+  const result = await submitDeliverable(
+    { jobId: "job-42" },
+    bytes,
+    { storage, contract },
+  );
+
+  assert.equal(stored.length, 1);
+  assert.deepEqual(stored[0].bytes, bytes);
+  assert.equal(submitted?.jobId, "job-42");
+  assert.equal(submitted?.hash, computeDeliverableHash(bytes));
+  assert.equal(result.hash, computeDeliverableHash(bytes));
+  assert.equal(result.txHash, "tx-1");
+});
+
+// ---------------------------------------------------------------------------
+// LLM output parsing helpers (pure functions, no network)
+// ---------------------------------------------------------------------------
+
+test("extractJsonObject - extracts a JSON object from surrounding prose", () => {
+  const text = 'Sure! Here is the result:\n{"name":"Acme","score":9}\nHope that helps.';
+  const extracted = extractJsonObject(text);
+  assert.equal(extracted, '{"name":"Acme","score":9}');
+});
+
+test("extractJsonObject - extracts a JSON object from a fenced code block", () => {
+  const text = '```json\n{"name":"Acme"}\n```';
+  assert.equal(extractJsonObject(text), '{"name":"Acme"}');
+});
+
+test("extractJsonObject - returns null for empty string", () => {
+  assert.equal(extractJsonObject(""), null);
+});
+
+test("extractJsonObject - returns null for whitespace-only string", () => {
+  assert.equal(extractJsonObject("   \n\t "), null);
+});
+
+test("extractJsonObject - returns null for non-JSON input", () => {
+  assert.equal(extractJsonObject("I cannot help with that request."), null);
+});
+
+test("extractJsonObject - returns null for truncated JSON", () => {
+  assert.equal(extractJsonObject('{"name":"Acme","score":'), null);
+});
+
+test("parseLlmJson - parses a valid JSON object", () => {
+  const result = parseLlmJson('{"name":"Acme","score":9}');
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.value, { name: "Acme", score: 9 });
+  assert.equal(result.error, undefined);
+});
+
+test("parseLlmJson - parses JSON embedded in prose", () => {
+  const result = parseLlmJson('Here you go: {"name":"Acme"} done.');
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.value, { name: "Acme" });
+});
+
+test("parseLlmJson - returns controlled error for empty string", () => {
+  const result = parseLlmJson("");
+  assert.equal(result.ok, false);
+  assert.equal(typeof result.error, "string");
+  assert.equal(result.value, undefined);
+});
+
+test("parseLlmJson - returns controlled error for truncated JSON", () => {
+  const result = parseLlmJson('{"name":"Acme"');
+  assert.equal(result.ok, false);
+  assert.equal(typeof result.error, "string");
+});
+
+test("parseLlmJson - returns controlled error for non-JSON input", () => {
+  const result = parseLlmJson("not json at all");
+  assert.equal(result.ok, false);
+  assert.equal(typeof result.error, "string");
+});
+
+test("parseLlmJson - returns controlled error for JSON array (not an object)", () => {
+  const result = parseLlmJson("[1,2,3]");
+  assert.equal(result.ok, false);
+  assert.equal(typeof result.error, "string");
+});
+
+test("parseNamerResponse - parses a valid namer response", () => {
+  const raw = JSON.stringify({
+    names: ["Acme Labs", "BrightWorks"],
+    rationale: "Short, memorable, brandable.",
+  });
+  const result = parseNamerResponse(raw);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.value?.names, ["Acme Labs", "BrightWorks"]);
+  assert.equal(result.value?.rationale, "Short, memorable, brandable.");
+});
+
+test("parseNamerResponse - ignores extra fields", () => {
+  const raw = JSON.stringify({
+    names: ["Acme Labs"],
+    rationale: "ok",
+    extra: { nested: true },
+    confidence: 0.9,
+  });
+  const result = parseNamerResponse(raw);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.value?.names, ["Acme Labs"]);
+});
+
+test("parseNamerResponse - returns controlled error for empty string", () => {
+  const result = parseNamerResponse("");
+  assert.equal(result.ok, false);
+  assert.equal(typeof result.error, "string");
+  assert.equal(result.value, undefined);
+});
+
+test("parseNamerResponse - returns controlled error for truncated JSON", () => {
+  const result = parseNamerResponse('{"names":["Acme"');
+  assert.equal(result.ok, false);
+  assert.equal(typeof result.error, "string");
+});
+
+test("parseNamerResponse - returns controlled error for non-JSON input", () => {
+  const result = parseNamerResponse("I am unable to comply.");
+  assert.equal(result.ok, false);
+  assert.equal(typeof result.error, "string");
+});
+
+test("parseNamerResponse - returns controlled error for wrong types", () => {
+  const result = parseNamerResponse(JSON.stringify({ names: "Acme", rationale: 42 }));
+  assert.equal(result.ok, false);
+  assert.equal(typeof result.error, "string");
+});
+
+test("parseNamerResponse - returns controlled error when names is empty array", () => {
+  const result = parseNamerResponse(JSON.stringify({ names: [], rationale: "none" }));
+  assert.equal(result.ok, false);
+  assert.equal(typeof result.error, "string");
+});
+
+test("parseResearcherResponse - parses a valid researcher response", () => {
+  const raw = JSON.stringify({
+    summary: "The market is growing.",
+    findings: ["Finding one", "Finding two"],
+    sources: ["https://example.com/a"],
+  });
+  const result = parseResearcherResponse(raw);
+  assert.equal(result.ok, true);
+  assert.equal(result.value?.summary, "The market is growing.");
+  assert.deepEqual(result.value?.findings, ["Finding one", "Finding two"]);
+  assert.deepEqual(result.value?.sources, ["https://example.com/a"]);
+});
+
+test("parseResearcherResponse - ignores extra fields", () => {
+  const raw = JSON.stringify({
+    summary: "ok",
+    findings: ["f"],
+    sources: [],
+    metadata: { model: "x" },
+  });
+  const result = parseResearcherResponse(raw);
+  assert.equal(result.ok, true);
+  assert.equal(result.value?.summary, "ok");
+});
+
+test("parseResearcherResponse - returns controlled error for empty string", () => {
+  const result = parseResearcherResponse("");
+  assert.equal(result.ok, false);
+  assert.equal(typeof result.error, "string");
+  assert.equal(result.value, undefined);
+});
+
+test("parseResearcherResponse - returns controlled error for truncated JSON", () => {
+  const result = parseResearcherResponse('{"summary":"ok","findings":[');
+  assert.equal(result.ok, false);
+  assert.equal(typeof result.error, "string");
+});
+
+test("parseResearcherResponse - returns controlled error for non-JSON input", () => {
+  const result = parseResearcherResponse("Sorry, no results.");
+  assert.equal(result.ok, false);
+  assert.equal(typeof result.error, "string");
+});
+
+test("parseResearcherResponse - returns controlled error for wrong types", () => {
+  const result = parseResearcherResponse(
+    JSON.stringify({ summary: 123, findings: "not-an-array", sources: "nope" }),
+  );
+  assert.equal(result.ok, false);
+  assert.equal(typeof result.error, "string");
+});
+
+test("parseResearcherResponse - returns controlled error when summary is missing", () => {
+  const result = parseResearcherResponse(
+    JSON.stringify({ findings: ["f"], sources: [] }),
+  );
+  assert.equal(result.ok, false);
+  assert.equal(typeof result.error, "string");
+});
+
+test("parsers - never perform network calls (pure functions)", () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  // @ts-ignore
+  globalThis.fetch = (..._args: unknown[]) => {
+    fetchCalls++;
+    throw new Error("network access is not allowed in parser tests");
+  };
+
+  try {
+    parseLlmJson('{"a":1}');
+    parseLlmJson("garbage");
+    parseNamerResponse(JSON.stringify({ names: ["A"], rationale: "r" }));
+    parseNamerResponse("garbage");
+    parseResearcherResponse(
+      JSON.stringify({ summary: "s", findings: [], sources: [] }),
+    );
+    parseResearcherResponse("garbage");
+    extractJsonObject("garbage");
+    assert.equal(fetchCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });

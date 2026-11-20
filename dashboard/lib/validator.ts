@@ -15,7 +15,10 @@
 //   5. Structured result so the dashboard can render warning badges.
 
 import { promises as dns } from 'node:dns';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import net from 'node:net';
+import Ajv, { type ErrorObject, type ValidateFunction } from 'ajv';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -85,6 +88,87 @@ export interface DeliverableValidatorOptions {
   fetchImpl?: typeof fetch;
   /** Injectable DNS resolver (for testing SSRF checks). */
   resolveHostname?: (hostname: string) => Promise<string[]>;
+}
+
+// ---------------------------------------------------------------------------
+// Job creation form rules
+// ---------------------------------------------------------------------------
+//
+// These constants are the single source of truth for the client-side job
+// creation form (dashboard/public/app.js). The browser cannot import this
+// module directly, so the same values are mirrored there — keep them in sync.
+// The server-side contract enforces the same bounds; any change here MUST be
+// reflected in both the contract and the dashboard form validator.
+
+export interface JobFormRules {
+  /** Minimum job budget in whole USDC. */
+  budgetMinUsdc: number;
+  /** Maximum job budget in whole USDC. */
+  budgetMaxUsdc: number;
+  /** Maximum number of decimal places allowed for a budget amount. */
+  budgetDecimals: number;
+  /** Minimum description length (characters, trimmed). */
+  descriptionMinLength: number;
+  /** Maximum description length (characters, trimmed). */
+  descriptionMaxLength: number;
+  /** Maximum deliverable URI length (characters, trimmed). */
+  deliverableMaxLength: number;
+  /** Regex source (string form) for a Stellar account address (G...). */
+  stellarAddressPattern: string;
+  /** Regex source (string form) for a Soroban contract address (C...). */
+  contractAddressPattern: string;
+}
+
+export const JOB_FORM_RULES: Readonly<JobFormRules> = Object.freeze({
+  budgetMinUsdc: 1,
+  budgetMaxUsdc: 1_000_000,
+  budgetDecimals: 7,
+  descriptionMinLength: 10,
+  descriptionMaxLength: 2_000,
+  deliverableMaxLength: 2_048,
+  stellarAddressPattern: '^G[A-Z2-7]{55}$',
+  contractAddressPattern: '^C[A-Z2-7]{55}$',
+});
+
+/**
+ * Returns true if `value` is a valid Stellar account address (G..., 56 chars,
+ * base32 alphabet). Mirrors the contract's address validation.
+ */
+export function isValidStellarAddress(value: string): boolean {
+  return new RegExp(JOB_FORM_RULES.stellarAddressPattern).test(value);
+}
+
+/**
+ * Returns true if `value` is a valid Soroban contract address (C..., 56 chars,
+ * base32 alphabet). Mirrors the contract's address validation.
+ */
+export function isValidContractAddress(value: string): boolean {
+  return new RegExp(JOB_FORM_RULES.contractAddressPattern).test(value);
+}
+
+/**
+ * Returns true if `value` is a budget amount within the allowed bounds and
+ * decimal precision. Accepts a number or a numeric string.
+ */
+export function isValidBudget(value: number | string): boolean {
+  const amount = typeof value === 'string' ? Number(value) : value;
+  if (!Number.isFinite(amount)) return false;
+  if (amount < JOB_FORM_RULES.budgetMinUsdc) return false;
+  if (amount > JOB_FORM_RULES.budgetMaxUsdc) return false;
+  const decimals = (String(amount).split('.')[1] ?? '').length;
+  return decimals <= JOB_FORM_RULES.budgetDecimals;
+}
+
+/**
+ * Returns true if `value` is a description within the allowed length bounds
+ * (measured after trimming surrounding whitespace).
+ */
+export function isValidDescription(value: string): boolean {
+  const trimmed = value.trim();
+  return (
+    trimmed.length >= JOB_FORM_RULES.descriptionMinLength &&
+    trimmed.length <= JOB_FORM_RULES.descriptionMaxLength
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -266,6 +350,15 @@ export class DeliverableValidator {
       warnings.push({
         code: 'DISALLOWED_SCHEME',
         message: `Scheme "${parsed.protocol}" is not allowed. Only https:// and ipfs:// are permitted.`,
+      });
+      return { valid: false, warnings, metadata };
+    }
+
+    // --- 1b. Length bound (mirrors JOB_FORM_RULES.deliverableMaxLength) ----
+    if (trimmed.length > JOB_FORM_RULES.deliverableMaxLength) {
+      warnings.push({
+        code: 'INVALID_URI',
+        message: `Deliverable exceeds the ${JOB_FORM_RULES.deliverableMaxLength}-character limit.`,
       });
       return { valid: false, warnings, metadata };
     }
@@ -699,6 +792,124 @@ export class DeliverableValidator {
     } finally {
       clearTimeout(timer);
     }
+  }
+}
+
+export default DeliverableValidator;
+
+// ---------------------------------------------------------------------------
+// Agent metadata schema validation
+// ---------------------------------------------------------------------------
+//
+// Agent metadata is a free-form JSON blob attached to an agent profile. The
+// canonical shape is defined in `docs/agent-metadata-schema-v1.json`. We
+// validate it with ajv so the agent detail page can render a warning badge
+// instead of crashing when the metadata is malformed.
+
+export interface MetadataValidationError {
+  /** JSON pointer to the offending field (e.g. "/name"). */
+  instancePath: string;
+  /** ajv keyword that failed (e.g. "required", "type"). */
+  keyword: string;
+  /** Human-readable message suitable for rendering in the UI. */
+  message: string;
+  /** Additional keyword-specific context (e.g. missing property name). */
+  params?: Record<string, unknown>;
+}
+
+export interface MetadataValidationResult {
+  /** True only when the metadata fully conforms to the schema. */
+  valid: boolean;
+  errors: MetadataValidationError[];
+}
+
+export interface AgentMetadataValidatorOptions {
+  /** Override the schema object (useful for testing). */
+  schema?: object;
+  /** Override the path to the schema file. */
+  schemaPath?: string;
+}
+
+const DEFAULT_SCHEMA_PATH = path.resolve(
+  process.cwd(),
+  'docs',
+  'agent-metadata-schema-v1.json',
+);
+
+// Minimal fallback schema used when the on-disk schema cannot be loaded, so
+// that a missing/broken schema file degrades to a warning rather than a crash.
+const FALLBACK_SCHEMA: object = {
+  type: 'object',
+  properties: {
+    name: { type: 'string', minLength: 1 },
+    description: { type: 'string' },
+    version: { type: 'string' },
+  },
+  required: ['name'],
+  additionalProperties: true,
+};
+
+function toValidationErrors(errors: ErrorObject[] | null | undefined): MetadataValidationError[] {
+  if (!errors) return [];
+  return errors.map((err) => ({
+    instancePath: err.instancePath ?? '',
+    keyword: err.keyword,
+    message: err.message ?? `Failed "${err.keyword}" validation.`,
+    params: err.params as Record<string, unknown> | undefined,
+  }));
+}
+
+export class AgentMetadataValidator {
+  private readonly validateFn: ValidateFunction;
+
+  constructor(options: AgentMetadataValidatorOptions = {}) {
+    const ajv = new Ajv({ allErrors: true, strict: false });
+
+    let schema: object;
+    if (options.schema) {
+      schema = options.schema;
+    } else {
+      const schemaPath = options.schemaPath ?? DEFAULT_SCHEMA_PATH;
+      try {
+        schema = JSON.parse(readFileSync(schemaPath, 'utf8')) as object;
+      } catch {
+        schema = FALLBACK_SCHEMA;
+      }
+    }
+
+    this.validateFn = ajv.compile(schema);
+  }
+
+  /**
+   * Validate agent metadata. Accepts either a parsed object or a raw JSON
+   * string. Never throws: malformed JSON or schema violations are reported as
+   * structured errors so callers can render a warning.
+   */
+  validate(metadata: unknown): MetadataValidationResult {
+    let value: unknown = metadata;
+
+    if (typeof metadata === 'string') {
+      try {
+        value = JSON.parse(metadata);
+      } catch {
+        return {
+          valid: false,
+          errors: [
+            {
+              instancePath: '',
+              keyword: 'parse',
+              message: 'Metadata is not valid JSON.',
+            },
+          ],
+        };
+      }
+    }
+
+    const valid = this.validateFn(value) as boolean;
+    return {
+      valid,
+      errors: valid ? [] : toValidationErrors(this.validateFn.errors),
+    };
   }
 }
 

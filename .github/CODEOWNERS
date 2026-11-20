@@ -1,0 +1,8 @@
+# Default owner for the repository
+* @stellar/owners
+
+# Contract code requires owner review
+/contracts/ @stellar/owners
+
+# Deployment metadata requires owner review
+/deployments/ @stellar/owners

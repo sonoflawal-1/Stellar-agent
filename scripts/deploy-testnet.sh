@@ -77,21 +77,43 @@ fi
 ADMIN=$(stellar keys address "$IDENTITY")
 echo "==> Deployer address: $ADMIN"
 
-echo "==> Deploying agent_identity"
-# `stellar contract deploy` prints progress lines on stderr and the final
-# contract C... address on stdout, so capturing $(...) yields just the ID.
-IDENTITY_ADDR=$(stellar contract deploy \
-  --source-account "$IDENTITY" \
-  "${NETWORK_FLAGS[@]}" \
-  --wasm "$IDENTITY_WASM")
-echo "    agent_identity   = $IDENTITY_ADDR"
+IDENTITY_HASH=$(sha256sum "$IDENTITY_WASM" | awk '{print $1}')
+COMMERCE_HASH=$(sha256sum "$COMMERCE_WASM" | awk '{print $1}')
+echo "    agent_identity.wasm sha256   = $IDENTITY_HASH"
+echo "    agentic_commerce.wasm sha256 = $COMMERCE_HASH"
 
-echo "==> Deploying agentic_commerce"
-COMMERCE_ADDR=$(stellar contract deploy \
-  --source-account "$IDENTITY" \
-  "${NETWORK_FLAGS[@]}" \
-  --wasm "$COMMERCE_WASM")
-echo "    agentic_commerce = $COMMERCE_ADDR"
+IDENTITY_ADDR=""
+COMMERCE_ADDR=""
+if [[ -f "$OUT_FILE" ]]; then
+  IDENTITY_ADDR=$(jq -r '.agent_identity // empty' "$OUT_FILE")
+  COMMERCE_ADDR=$(jq -r '.agentic_commerce // empty' "$OUT_FILE")
+  EXISTING_ID_HASH=$(jq -r '.wasm_hashes.agent_identity // empty' "$OUT_FILE")
+  EXISTING_CM_HASH=$(jq -r '.wasm_hashes.agentic_commerce // empty' "$OUT_FILE")
+  if [[ -n "$IDENTITY_ADDR" && -n "$COMMERCE_ADDR" && "$EXISTING_ID_HASH" == "$IDENTITY_HASH" && "$EXISTING_CM_HASH" == "$COMMERCE_HASH" ]]; then
+    echo "==> Existing deployment matches WASM hashes; skipping redeploy"
+  else
+    IDENTITY_ADDR=""
+    COMMERCE_ADDR=""
+  fi
+fi
+
+if [[ -z "$IDENTITY_ADDR" ]]; then
+  echo "==> Deploying agent_identity"
+  IDENTITY_ADDR=$(stellar contract deploy \
+    --source-account "$IDENTITY" \
+    "${NETWORK_FLAGS[@]}" \
+    --wasm "$IDENTITY_WASM")
+  echo "    agent_identity   = $IDENTITY_ADDR"
+fi
+
+if [[ -z "$COMMERCE_ADDR" ]]; then
+  echo "==> Deploying agentic_commerce"
+  COMMERCE_ADDR=$(stellar contract deploy \
+    --source-account "$IDENTITY" \
+    "${NETWORK_FLAGS[@]}" \
+    --wasm "$COMMERCE_WASM")
+  echo "    agentic_commerce = $COMMERCE_ADDR"
+fi
 
 echo "==> Initializing agentic_commerce (admin=treasury=$ADMIN)"
 stellar contract invoke \
@@ -107,6 +129,10 @@ cat > "$OUT_FILE" <<EOF
   "deployer": "$ADMIN",
   "agent_identity": "$IDENTITY_ADDR",
   "agentic_commerce": "$COMMERCE_ADDR",
+  "wasm_hashes": {
+    "agent_identity": "$IDENTITY_HASH",
+    "agentic_commerce": "$COMMERCE_HASH"
+  },
   "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 EOF

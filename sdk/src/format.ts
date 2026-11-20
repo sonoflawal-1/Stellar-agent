@@ -154,6 +154,195 @@ export function parseAmount(input: string, decimals = 7): bigint {
   return wholeBig + fracBig;
 }
 
+/** Maximum token decimals supported by the multi-token helpers. */
+const MAX_DECIMALS = 18;
+
+function assertDecimals(decimals: number, fn: string): void {
+  if (!Number.isInteger(decimals) || decimals < 0 || decimals > MAX_DECIMALS) {
+    throw new RangeError(`${fn}: decimals must be an integer between 0 and ${MAX_DECIMALS}`);
+  }
+}
+
+/**
+ * Convert a human-readable decimal string into atomic base units for a token
+ * with the given `decimals`, using only string/BigInt arithmetic.
+ *
+ * Unlike `parseAmount`, this helper is token-aware: pass the `decimals` from
+ * the token allowlist (`TokenInfo.decimals`) so each token converts correctly.
+ * No floating-point math is used anywhere, so large amounts stay exact.
+ *
+ * @param amount   Human-readable amount, e.g. `"10.5"`, `"0.0000001"`, `"1000"`.
+ * @param decimals Token decimal places (0-18).
+ * @returns        Atomic bigint amount.
+ *
+ * @throws {RangeError} if `decimals` is not an integer in `[0, 18]`, or if the
+ *                      fractional part has more digits than `decimals`.
+ * @throws {TypeError}  if `amount` is empty, negative, or contains invalid
+ *                      characters (only digits and a single decimal point).
+ *
+ * @example
+ * toBaseUnits("10.5", 7)   // 105_000_000n
+ * toBaseUnits("1", 0)      // 1n
+ * toBaseUnits("0.5", 18)   // 500_000_000_000_000_000n
+ */
+export function toBaseUnits(amount: string, decimals: number): bigint {
+  assertDecimals(decimals, "toBaseUnits");
+
+  if (typeof amount !== "string") {
+    throw new TypeError("toBaseUnits: amount must be a string");
+  }
+
+  const trimmed = amount.trim();
+  if (trimmed.length === 0) {
+    throw new TypeError("toBaseUnits: amount must not be empty");
+  }
+  if (trimmed.startsWith("-")) {
+    throw new TypeError("toBaseUnits: negative amounts are not supported");
+  }
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) {
+    throw new TypeError(
+      `toBaseUnits: invalid characters in amount "${amount}". Only digits and a single decimal point are allowed.`,
+    );
+  }
+
+  const dotIndex = trimmed.indexOf(".");
+  const intPart = dotIndex === -1 ? trimmed : trimmed.slice(0, dotIndex);
+  const fracPart = dotIndex === -1 ? "" : trimmed.slice(dotIndex + 1);
+
+  if (fracPart.length > decimals) {
+    throw new RangeError(
+      `toBaseUnits: fractional part "${fracPart}" has ${fracPart.length} digits but token only supports ${decimals} decimal places`,
+    );
+  }
+
+  const factor = 10n ** BigInt(decimals);
+  const wholeBig = BigInt(intPart || "0") * factor;
+  const fracBig = BigInt(fracPart.padEnd(decimals, "0") || "0");
+
+  return wholeBig + fracBig;
+}
+
+/**
+ * Convert an atomic bigint amount into a human-readable decimal string for a
+ * token with the given `decimals`. Inverse of `toBaseUnits`.
+ *
+ * Trailing fractional zeros are trimmed; a whole-number result has no decimal
+ * point. All math is BigInt — no floating point.
+ *
+ * @param amount   Atomic amount in base units.
+ * @param decimals Token decimal places (0-18).
+ * @returns        Human-readable decimal string.
+ *
+ * @throws {RangeError} if `decimals` is not an integer in `[0, 18]`.
+ * @throws {TypeError}  if `amount` is not a bigint.
+ *
+ * @example
+ * fromBaseUnits(105_000_000n, 7)  // "10.5"
+ * fromBaseUnits(1n, 0)            // "1"
+ * fromBaseUnits(500_000_000_000_000_000n, 18) // "0.5"
+ */
+export function fromBaseUnits(amount: bigint, decimals: number): string {
+  assertDecimals(decimals, "fromBaseUnits");
+
+  if (typeof amount !== "bigint") {
+    throw new TypeError("fromBaseUnits: amount must be a bigint");
+  }
+
+  const sign = amount < 0n ? "-" : "";
+  const abs = amount < 0n ? -amount : amount;
+
+  if (decimals === 0) {
+    return `${sign}${abs.toString()}`;
+  }
+
+  const factor = 10n ** BigInt(decimals);
+  const whole = abs / factor;
+  const frac = abs % factor;
+
+  const fracStr = frac.toString().padStart(decimals, "0").replace(/0+$/, "");
+  return fracStr.length > 0 ? `${sign}${whole.toString()}.${fracStr}` : `${sign}${whole.toString()}`;
+}
+
+/** Minimal token info shape needed by `TokenRegistry`. */
+export interface TokenInfoLike {
+  decimals: number;
+}
+
+/**
+ * Caches per-token `decimals` (from `get_token_info`) so callers can convert
+ * amounts for any allowlisted token without re-fetching metadata.
+ *
+ * The fetcher is an async callback, e.g.
+ * `(token) => contract.get_token_info({ token })`. Results are cached by token
+ * address; concurrent lookups for the same token share one in-flight request.
+ *
+ * @example
+ * const registry = new TokenRegistry(async (token) => {
+ *   const info = await contract.get_token_info({ token });
+ *   return { decimals: info.decimals };
+ * });
+ * await registry.toBaseUnitsFor(usdc, "10.5");
+ */
+export class TokenRegistry {
+  private readonly cache = new Map<string, Promise<number>>();
+
+  constructor(private readonly fetcher: (token: string) => Promise<TokenInfoLike>) {}
+
+  /**
+   * Resolve the token's decimals, fetching and caching `get_token_info` on
+   * first use. Rejects if the fetcher fails or returns invalid decimals.
+   */
+  async getDecimals(token: string): Promise<number> {
+    if (typeof token !== "string" || token.length === 0) {
+      throw new TypeError("TokenRegistry.getDecimals: token must be a non-empty string");
+    }
+
+    let pending = this.cache.get(token);
+    if (!pending) {
+      pending = (async () => {
+        const info = await this.fetcher(token);
+        if (!info || typeof info.decimals !== "number") {
+          throw new TypeError(`TokenRegistry: get_token_info for ${token} returned no decimals`);
+        }
+        assertDecimals(info.decimals, "TokenRegistry.getDecimals");
+        return info.decimals;
+      })();
+      this.cache.set(token, pending);
+      // Drop failed lookups so a later call can retry.
+      pending.catch(() => {
+        if (this.cache.get(token) === pending) {
+          this.cache.delete(token);
+        }
+      });
+    }
+
+    return pending;
+  }
+
+  /** Convert a human-readable amount to base units using the token's decimals. */
+  async toBaseUnitsFor(token: string, amount: string): Promise<bigint> {
+    const decimals = await this.getDecimals(token);
+    return toBaseUnits(amount, decimals);
+  }
+
+  /** Convert a base-unit amount to a human-readable string using the token's decimals. */
+  async fromBaseUnitsFor(token: string, amount: bigint): Promise<string> {
+    const decimals = await this.getDecimals(token);
+    return fromBaseUnits(amount, decimals);
+  }
+
+  /** Seed the cache with known decimals (e.g. from an allowlist). */
+  setDecimals(token: string, decimals: number): void {
+    assertDecimals(decimals, "TokenRegistry.setDecimals");
+    this.cache.set(token, Promise.resolve(decimals));
+  }
+
+  /** Clear all cached decimals. */
+  clear(): void {
+    this.cache.clear();
+  }
+}
+
 /**
  * Validate an agent metadata URI to prevent SSRF and script-injection when
  * clients later fetch it.

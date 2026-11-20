@@ -1,5 +1,8 @@
 import { z } from "zod";
 import { Keypair, StrKey } from "@stellar/stellar-sdk";
+import { createHash } from "node:crypto";
+import { promises as fs } from "node:fs";
+import * as path from "node:path";
 
 /**
  * Validate a Stellar StrKey Ed25519 secret key (starts with "S").
@@ -385,9 +388,74 @@ async function callLlm(messages: LlmMessage[]): Promise<string> {
     : callOpenAi(messages);
 }
 
-function extractJson(raw: string): unknown {
+/**
+ * Error thrown when LLM output cannot be parsed or fails shape validation.
+ * Callers can catch this to return a controlled error instead of crashing.
+ */
+export class LlmParseError extends Error {
+  /** The raw model output that failed to parse (if available). */
+  readonly raw?: string;
+  /** The underlying cause, if any (e.g. a SyntaxError or ZodError). */
+  readonly cause?: unknown;
+
+  constructor(message: string, options: { raw?: string; cause?: unknown } = {}) {
+    super(message);
+    this.name = "LlmParseError";
+    this.raw = options.raw;
+    this.cause = options.cause;
+  }
+}
+
+/**
+ * Extract and parse a JSON value from raw LLM output. Tolerates surrounding
+ * prose by locating the first `{...}` block. Throws LlmParseError on failure.
+ */
+export function extractJson(raw: string): unknown {
+  if (typeof raw !== "string" || raw.trim().length === 0) {
+    throw new LlmParseError("LLM output was empty", { raw });
+  }
   const match = raw.match(/\{[\s\S]*\}/);
-  return JSON.parse(match ? match[0] : raw);
+  const candidate = match ? match[0] : raw;
+  try {
+    return JSON.parse(candidate);
+  } catch (cause) {
+    throw new LlmParseError("LLM output was not valid JSON", { raw, cause });
+  }
+}
+
+/**
+ * Parse raw LLM output and validate it against a Zod schema. Throws
+ * LlmParseError (with the raw output attached) when parsing or validation fails.
+ */
+export function parseLlmJson<T>(raw: string, schema: z.ZodType<T>): T {
+  const json = extractJson(raw);
+  const result = schema.safeParse(json);
+  if (!result.success) {
+    throw new LlmParseError(
+      `LLM output failed validation: ${result.error.issues
+        .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+        .join("; ")}`,
+      { raw, cause: result.error },
+    );
+  }
+  return result.data;
+}
+
+/**
+ * Validate an already-parsed value against a Zod schema, throwing LlmParseError
+ * on failure. Useful for shape validators shared across agents.
+ */
+export function validateLlmShape<T>(value: unknown, schema: z.ZodType<T>): T {
+  const result = schema.safeParse(value);
+  if (!result.success) {
+    throw new LlmParseError(
+      `LLM output failed validation: ${result.error.issues
+        .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+        .join("; ")}`,
+      { cause: result.error },
+    );
+  }
+  return result.data;
 }
 
 /**
@@ -404,7 +472,7 @@ export async function classifyTask(prompt: string): Promise<TaskClassification> 
     },
     { role: "user", content: prompt },
   ]);
-  return TaskClassificationSchema.parse(extractJson(raw));
+  return parseLlmJson(raw, TaskClassificationSchema);
 }
 
 /**
@@ -964,6 +1032,309 @@ export function registerGracefulShutdown(
     process.removeListener("SIGTERM", onSigterm);
     process.removeListener("SIGINT", onSigint);
   };
+}
+
+export type TaskQueueStatus = "pending" | "in-progress" | "done" | "failed";
+
+export interface QueuedTask<T = unknown> {
+  id: string;
+  payload: T;
+  status: TaskQueueStatus;
+  attempts: number;
+  lastError?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TaskQueueStore {
+  /** Load all persisted tasks (used to resume pending work on startup). */
+  load: () => Promise<QueuedTask[]>;
+  /** Persist (insert or update) a task. */
+  save: (task: QueuedTask) => Promise<void>;
+}
+
+/**
+ * Simple JSON-file backed store. Writes are atomic (temp file + rename) so a
+ * crash mid-write cannot corrupt the queue file.
+ */
+export function createFileTaskQueueStore(filePath: string): TaskQueueStore {
+  let writeChain: Promise<void> = Promise.resolve();
+
+  const readAll = async (): Promise<QueuedTask[]> => {
+    try {
+      const raw = await fs.readFile(filePath, "utf8");
+      const parsed = JSON.parse(raw) as QueuedTask[];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw err;
+    }
+  };
+
+  return {
+    load: readAll,
+    async save(task: QueuedTask) {
+      // Serialize writes to avoid interleaved read-modify-write cycles.
+      writeChain = writeChain.then(async () => {
+        const tasks = await readAll();
+        const idx = tasks.findIndex((t) => t.id === task.id);
+        if (idx >= 0) tasks[idx] = task;
+        else tasks.push(task);
+        await fs.mkdir(path.dirname(filePath), { recursive: true });
+        const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+        await fs.writeFile(tmp, JSON.stringify(tasks, null, 2), "utf8");
+        await fs.rename(tmp, filePath);
+      });
+      return writeChain;
+    },
+  };
+}
+
+export interface TaskQueueOptions<T = unknown> {
+  /** Handler that processes a single task payload. */
+  handler: (task: QueuedTask<T>) => Promise<unknown>;
+  /** Persistence backend. Defaults to a file store at AGENT_QUEUE_PATH. */
+  store?: TaskQueueStore;
+  /** Maximum number of tasks processed concurrently. */
+  concurrency?: number;
+  /** Maximum retry attempts per task before it is marked failed. */
+  maxRetries?: number;
+  /** Optional tracker used to drain in-flight tasks during shutdown. */
+  tracker?: ActiveTaskTracker;
+  /** Retry backoff options passed to withRetry. */
+  retryOptions?: RetryOptions;
+  logger?: Pick<Console, "log" | "warn" | "error">;
+}
+
+export interface TaskQueue {
+  /** Enqueue a new task and begin processing when a slot is free. */
+  enqueue: <T>(payload: T) => Promise<QueuedTask<T>>;
+  /** Resume any pending/in-progress tasks persisted from a previous run. */
+  resume: () => Promise<void>;
+  /** Wait for all currently queued/in-flight tasks to settle. */
+  drain: () => Promise<void>;
+  /** Current number of in-flight tasks. */
+  activeCount: () => number;
+  /** Snapshot of all known tasks. */
+  tasks: () => QueuedTask[];
+}
+
+function generateTaskId(): string {
+  return `task_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function resolveQueueConfig(options: TaskQueueOptions): {
+  concurrency: number;
+  maxRetries: number;
+  store: TaskQueueStore;
+} {
+  const concurrency = Math.max(
+    1,
+    Math.floor(
+      options.concurrency ??
+        Number(process.env.AGENT_QUEUE_CONCURRENCY ?? 2) ??
+        2,
+    ) || 1,
+  );
+  const maxRetries = Math.max(
+    0,
+    Math.floor(
+      options.maxRetries ??
+        Number(process.env.AGENT_QUEUE_MAX_RETRIES ?? 3) ??
+        3,
+    ) || 0,
+  );
+  const store =
+    options.store ??
+    createFileTaskQueueStore(
+      process.env.AGENT_QUEUE_PATH ??
+        path.join(process.cwd(), ".agent-queue", "tasks.json"),
+    );
+  return { concurrency, maxRetries, store };
+}
+
+/**
+ * Create a persistent task queue with configurable concurrency and retry
+ * limits. Pending tasks are resumed on startup via `resume()`, and in-flight
+ * work is registered with the supplied ActiveTaskTracker so graceful shutdown
+ * can drain it.
+ */
+export function createTaskQueue<T = unknown>(options: TaskQueueOptions<T>): TaskQueue {
+  const { concurrency, maxRetries, store } = resolveQueueConfig(options);
+  const logger = options.logger ?? console;
+  const tasks = new Map<string, QueuedTask<T>>();
+  const waiting: string[] = [];
+  const inFlight = new Set<Promise<unknown>>();
+  let draining: Promise<void> | undefined;
+
+  const persist = async (task: QueuedTask<T>) => {
+    try {
+      await store.save(task);
+    } catch (err) {
+      logger.error(`[queue] failed to persist task ${task.id}`, err);
+    }
+  };
+
+  const runTask = async (task: QueuedTask<T>): Promise<void> => {
+    task.status = "in-progress";
+    task.updatedAt = new Date().toISOString();
+    await persist(task);
+
+    const exec = (async () => {
+      try {
+        await withRetry(() => options.handler(task), {
+          maxRetries,
+          ...options.retryOptions,
+        });
+        task.status = "done";
+        task.lastError = undefined;
+      } catch (err) {
+        task.status = "failed";
+        task.lastError = err instanceof Error ? err.message : String(err);
+        logger.warn(`[queue] task ${task.id} failed: ${task.lastError}`);
+      } finally {
+        task.attempts += 1;
+        task.updatedAt = new Date().toISOString();
+        await persist(task);
+        inFlight.delete(exec);
+        pump();
+      }
+    })();
+
+    inFlight.add(exec);
+    options.tracker?.track(exec);
+    await exec;
+  };
+
+  const pump = () => {
+    while (inFlight.size < concurrency && waiting.length > 0) {
+      const id = waiting.shift()!;
+      const task = tasks.get(id);
+      if (!task || task.status === "done") continue;
+      void runTask(task);
+    }
+  };
+
+  return {
+    async enqueue<P>(payload: P): Promise<QueuedTask<P>> {
+      const now = new Date().toISOString();
+      const task: QueuedTask<P> = {
+        id: generateTaskId(),
+        payload,
+        status: "pending",
+        attempts: 0,
+        createdAt: now,
+        updatedAt: now,
+      };
+      tasks.set(task.id, task as unknown as QueuedTask<T>);
+      await persist(task as unknown as QueuedTask<T>);
+      waiting.push(task.id);
+      pump();
+      return task;
+    },
+    async resume() {
+      const persisted = await store.load();
+      for (const task of persisted) {
+        if (task.status === "done" || task.status === "failed") {
+          tasks.set(task.id, task as QueuedTask<T>);
+          continue;
+        }
+        // Reset interrupted tasks back to pending so they are re-run.
+        task.status = "pending";
+        task.updatedAt = new Date().toISOString();
+        tasks.set(task.id, task as QueuedTask<T>);
+        await persist(task as QueuedTask<T>);
+        waiting.push(task.id);
+      }
+      if (waiting.length > 0) {
+        logger.log(`[queue] resuming ${waiting.length} pending task(s)`);
+      }
+      pump();
+    },
+    async drain() {
+      if (draining) return draining;
+      draining = (async () => {
+        while (inFlight.size > 0 || waiting.length > 0) {
+          pump();
+          if (inFlight.size === 0 && waiting.length === 0) break;
+          await Promise.allSettled([...inFlight]);
+        }
+      })();
+      try {
+        await draining;
+      } finally {
+        draining = undefined;
+      }
+    },
+    activeCount: () => inFlight.size,
+    tasks: () => [...tasks.values()],
+  };
+}
+
+/**
+ * Compute the deterministic SHA-256 hash of a deliverable's canonical bytes.
+ * The same bytes always produce the same hex digest, so clients can reproduce
+ * and verify the hash independently.
+ */
+export function computeDeliverableHash(bytes: Uint8Array | string): string {
+  const buf = typeof bytes === "string" ? Buffer.from(bytes, "utf8") : Buffer.from(bytes);
+  return createHash("sha256").update(buf).digest("hex");
+}
+
+export interface DeliverableJob {
+  jobId: string;
+  /** Optional provider/agent id used for logging and directory layout. */
+  provider?: string;
+}
+
+export interface SubmitDeliverableDeps {
+  /** Commerce client exposing the contract submit path. */
+  commerce: {
+    submit: (input: {
+      jobId: string;
+      deliverableHash: string;
+      contentPath: string;
+    }) => Promise<{ txHash?: string; [key: string]: unknown }>;
+  };
+  /** Directory where deliverable content is persisted. */
+  outputDir?: string;
+}
+
+export interface SubmitDeliverableResult {
+  jobId: string;
+  hash: string;
+  contentPath: string;
+  tx: { txHash?: string; [key: string]: unknown };
+}
+
+/**
+ * Shared deliverable submission helper used by all sellers. Computes the
+ * reproducible SHA-256 hash of the deliverable bytes, persists the content to
+ * the seller output directory, and calls the commerce contract submit path.
+ */
+export async function submitDeliverable(
+  job: DeliverableJob,
+  bytes: Uint8Array | string,
+  deps: SubmitDeliverableDeps,
+): Promise<SubmitDeliverableResult> {
+  const hash = computeDeliverableHash(bytes);
+  const outputDir =
+    deps.outputDir ??
+    process.env.AGENT_OUTPUT_DIR ??
+    path.join(process.cwd(), "agent-output");
+  const safeJobId = job.jobId.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const contentPath = path.join(outputDir, `${safeJobId}.${hash}.bin`);
+  const buf = typeof bytes === "string" ? Buffer.from(bytes, "utf8") : Buffer.from(bytes);
+  await fs.mkdir(outputDir, { recursive: true });
+  await fs.writeFile(contentPath, buf);
+
+  const tx = await deps.commerce.submit({
+    jobId: job.jobId,
+    deliverableHash: hash,
+    contentPath,
+  });
+
+  return { jobId: job.jobId, hash, contentPath, tx };
 }
 
 /**
