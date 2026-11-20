@@ -17,6 +17,15 @@ export interface SorobanEvent {
   /** Ledger sequence number. */
   ledger?: number;
   ledger_sequence?: number;
+  /** Transaction hash the event was emitted in. */
+  tx_hash?: string;
+  txHash?: string;
+  /** Index of the operation within the transaction. */
+  op_index?: number;
+  opIndex?: number;
+  /** Index of the event within the operation. */
+  event_index?: number;
+  eventIndex?: number;
   /** Addresses / topics associated with the event. */
   address?: string;
   addresses?: string[];
@@ -120,6 +129,65 @@ function getAddresses(event: SorobanEvent): string[] {
 }
 
 /**
+ * Extract the ledger sequence from an event, tolerating both `ledger`
+ * and `ledger_sequence` field names.
+ */
+export function getLedger(event: SorobanEvent): number | undefined {
+  const value = event.ledger ?? event.ledger_sequence;
+  return typeof value === "number" ? value : undefined;
+}
+
+/**
+ * Extract the transaction hash from an event, tolerating both `tx_hash`
+ * and `txHash` field names.
+ */
+export function getTxHash(event: SorobanEvent): string | undefined {
+  const value = event.tx_hash ?? event.txHash;
+  return typeof value === "string" ? value : undefined;
+}
+
+/**
+ * Extract the operation index from an event, tolerating both `op_index`
+ * and `opIndex` field names.
+ */
+export function getOpIndex(event: SorobanEvent): number | undefined {
+  const value = event.op_index ?? event.opIndex;
+  return typeof value === "number" ? value : undefined;
+}
+
+/**
+ * Extract the event index from an event, tolerating both `event_index`
+ * and `eventIndex` field names.
+ */
+export function getEventIndex(event: SorobanEvent): number | undefined {
+  const value = event.event_index ?? event.eventIndex;
+  return typeof value === "number" ? value : undefined;
+}
+
+/**
+ * Compute the idempotency key for an event: (ledger, tx hash, op index,
+ * event index). Returns `undefined` when any component is missing, in
+ * which case the event cannot be deduplicated by key.
+ */
+export function getEventKey(
+  event: SorobanEvent
+): { ledger: number; txHash: string; opIndex: number; eventIndex: number } | undefined {
+  const ledger = getLedger(event);
+  const txHash = getTxHash(event);
+  const opIndex = getOpIndex(event);
+  const eventIndex = getEventIndex(event);
+  if (
+    ledger === undefined ||
+    txHash === undefined ||
+    opIndex === undefined ||
+    eventIndex === undefined
+  ) {
+    return undefined;
+  }
+  return { ledger, txHash, opIndex, eventIndex };
+}
+
+/**
  * Determine whether an event matches a filter. An empty filter matches
  * everything.
  */
@@ -177,11 +245,14 @@ export class EventHub {
   private readonly emitter: EventEmitter;
   private readonly subscriptions: Set<Subscription>;
   private readonly maxListeners: number;
+  /** Keys of events already published, used to drop duplicate ingestion. */
+  private readonly seenKeys: Set<string>;
 
   constructor(maxListeners = 0) {
     this.emitter = new EventEmitter();
     this.subscriptions = new Set();
     this.maxListeners = maxListeners;
+    this.seenKeys = new Set();
     // 0 means unlimited; useful for many concurrent SSE subscribers.
     this.emitter.setMaxListeners(maxListeners);
   }
@@ -222,8 +293,21 @@ export class EventHub {
   /**
    * Publish an event to all matching subscribers. Returns the number of
    * subscribers that received the event.
+   *
+   * Events carrying a complete idempotency key (ledger, tx hash, op
+   * index, event index) are deduplicated: re-publishing the same event
+   * is a no-op and returns 0.
    */
   publish(event: SorobanEvent): number {
+    const key = getEventKey(event);
+    if (key) {
+      const serialized = `${key.ledger}:${key.txHash}:${key.opIndex}:${key.eventIndex}`;
+      if (this.seenKeys.has(serialized)) {
+        return 0;
+      }
+      this.seenKeys.add(serialized);
+    }
+
     let delivered = 0;
     for (const subscription of this.subscriptions) {
       if (matchesFilter(event, subscription.filter)) {
@@ -248,6 +332,7 @@ export class EventHub {
       }
     }
     this.subscriptions.clear();
+    this.seenKeys.clear();
     this.emitter.removeAllListeners("event");
   }
 }

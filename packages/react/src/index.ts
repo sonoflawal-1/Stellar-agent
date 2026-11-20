@@ -11,6 +11,9 @@ export { useAsync } from './hooks/useAsync';
 export { useAgent, clearAgentCache } from './hooks/useAgent';
 export type { UseAgentOptions, UseAgentResult } from './hooks/useAgent';
 
+export { useAgents } from './hooks/useAgents';
+export type { UseAgentsOptions, UseAgentsResult } from './hooks/useAgents';
+
 export { useJob, clearJobCache, isTerminalJobStatus, parseJobId } from './hooks/useJob';
 export type { UseJobOptions, UseJobResult } from './hooks/useJob';
 

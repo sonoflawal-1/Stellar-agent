@@ -84,3 +84,151 @@ export function matchesJobEvent(
     eventJobId(event) === jobId
   );
 }
+
+export type JobLifecycleStepKey =
+  | "created"
+  | "funded"
+  | "submitted"
+  | "completed"
+  | "disputed";
+
+export interface JobLifecycleStep {
+  key: JobLifecycleStepKey;
+  label: string;
+  /** Order in which the step occurs in the job lifecycle. */
+  order: number;
+}
+
+export const JOB_LIFECYCLE_STEPS: readonly JobLifecycleStep[] = [
+  { key: "created", label: "Created", order: 0 },
+  { key: "funded", label: "Funded", order: 1 },
+  { key: "submitted", label: "Submitted", order: 2 },
+  { key: "completed", label: "Completed", order: 3 },
+  { key: "disputed", label: "Disputed", order: 3 },
+];
+
+const EVENT_TYPE_TO_STEP: Record<string, JobLifecycleStepKey> = {
+  JobCreated: "created",
+  JobFunded: "funded",
+  JobSubmitted: "submitted",
+  JobCompleted: "completed",
+  JobCancelled: "completed",
+  JobDisputed: "disputed",
+};
+
+/**
+ * Maps a raw event type (e.g. `JobSubmitted`) to its lifecycle step.
+ * Returns `null` for unknown or missing event types.
+ */
+export function getLifecycleStepForEventType(
+  eventType: string | null | undefined,
+): JobLifecycleStep | null {
+  if (!eventType) return null;
+  const key = EVENT_TYPE_TO_STEP[eventType];
+  if (!key) return null;
+  return JOB_LIFECYCLE_STEPS.find((step) => step.key === key) ?? null;
+}
+
+export interface NormalizedJobEvent {
+  type: string | null;
+  step: JobLifecycleStep | null;
+  /** Ledger close time in milliseconds since epoch, or `null` if unavailable. */
+  ledgerCloseTime: number | null;
+  /** Transaction hash, or `null` if unavailable. */
+  txHash: string | null;
+}
+
+function toLedgerCloseTime(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    // Heuristic: values below 1e12 are seconds, otherwise milliseconds.
+    return value < 1e12 ? Math.round(value * 1000) : Math.round(value);
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed === "") return null;
+    const asNumber = Number(trimmed);
+    if (Number.isFinite(asNumber)) return toLedgerCloseTime(asNumber);
+    const parsed = Date.parse(trimmed);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+  if (value instanceof Date) {
+    const time = value.getTime();
+    return Number.isNaN(time) ? null : time;
+  }
+  return null;
+}
+
+function firstString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim() !== "") return value.trim();
+  }
+  return null;
+}
+
+/**
+ * Normalizes the fields the timeline renderer needs from a raw event,
+ * tolerating missing or differently-named fields.
+ */
+export function normalizeJobEvent(
+  event: Record<string, unknown>,
+): NormalizedJobEvent {
+  const type = getJobEventType(event);
+  const ledgerCloseTime = toLedgerCloseTime(
+    event.ledger_close_time ??
+      event.ledgerCloseTime ??
+      event.ledger_closed_at ??
+      event.ledgerClosedAt ??
+      event.close_time ??
+      event.closeTime ??
+      event.timestamp ??
+      event.created_at,
+  );
+  const txHash = firstString(
+    event.tx_hash,
+    event.txHash,
+    event.transaction_hash,
+    event.transactionHash,
+    event.hash,
+  );
+  return {
+    type,
+    step: getLifecycleStepForEventType(type),
+    ledgerCloseTime,
+    txHash,
+  };
+}
+
+/**
+ * Builds an ordered lifecycle timeline from a list of raw events.
+ * Every lifecycle step is always present; steps without a matching event
+ * have `event: null` so the renderer can show a pending state.
+ */
+export interface JobTimelineEntry {
+  step: JobLifecycleStep;
+  event: NormalizedJobEvent | null;
+}
+
+export function buildJobTimeline(
+  events: readonly Record<string, unknown>[] | null | undefined,
+): JobTimelineEntry[] {
+  const byStep = new Map<JobLifecycleStepKey, NormalizedJobEvent>();
+  for (const raw of events ?? []) {
+    const normalized = normalizeJobEvent(raw);
+    if (!normalized.step) continue;
+    const existing = byStep.get(normalized.step.key);
+    // Keep the earliest event for each step.
+    if (
+      !existing ||
+      (normalized.ledgerCloseTime !== null &&
+        (existing.ledgerCloseTime === null ||
+          normalized.ledgerCloseTime < existing.ledgerCloseTime))
+    ) {
+      byStep.set(normalized.step.key, normalized);
+    }
+  }
+
+  return [...JOB_LIFECYCLE_STEPS]
+    .sort((a, b) => a.order - b.order)
+    .map((step) => ({ step, event: byStep.get(step.key) ?? null }));
+}

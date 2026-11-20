@@ -10,6 +10,9 @@ import { IdentityClient } from "./identity.js";
 import { CommerceClient } from "./commerce.js";
 export { createChannelVoucher, verifyChannelVoucher } from "./paymentChannels.js";
 export type { ChannelVoucher } from "./paymentChannels.js";
+export { IdentityClient } from "./identity.js";
+export { CommerceClient } from "./commerce.js";
+export type { Signer } from "./signer.js";
 
 /**
  * Error thrown when the Freighter browser extension is not available.

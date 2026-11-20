@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { Address, Keypair, nativeToScVal } from "@stellar/stellar-sdk";
 import {
+  BearEvent,
   CommerceEvents,
   IdentityEvents,
+  assertNever,
   decodeAgentDeregisteredEvent,
   decodeCommerceEvent,
   decodeIdentityEvent,
@@ -242,4 +247,109 @@ test("decoders reject mismatched event types", () => {
 
   assert.throws(() => decodeJobCreatedEvent(wrongEvent), /Expected JobCreated/);
   assert.throws(() => decodeRegisteredEvent(wrongEvent), /Expected Registered/);
+});
+
+const EVENTS_DOC_PATH = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../docs/EVENTS.md",
+);
+
+function extractDocEventNames(): string[] {
+  const doc = readFileSync(EVENTS_DOC_PATH, "utf8");
+  const jsonBlocks = [...doc.matchAll(/```json\s*\n([\s\S]*?)```/g)].map(
+    (match) => match[1],
+  );
+  assert.ok(jsonBlocks.length > 0, "docs/EVENTS.md must contain a JSON schema block");
+
+  const names = new Set<string>();
+  for (const block of jsonBlocks) {
+    const schema = JSON.parse(block) as {
+      $defs?: Record<string, unknown>;
+    };
+    if (!schema.$defs) continue;
+    for (const defName of Object.keys(schema.$defs)) {
+      const match = /^([A-Za-z]+)Event$/.exec(defName);
+      if (match) names.add(match[1]);
+    }
+  }
+  return [...names].sort();
+}
+
+function extractUnionEventNames(): string[] {
+  const names = new Set<string>();
+  for (const value of Object.values(IdentityEvents)) names.add(value);
+  for (const value of Object.values(CommerceEvents)) names.add(value);
+  return [...names].sort();
+}
+
+test("BearEvent union matches the contract event list in docs/EVENTS.md", () => {
+  const docNames = extractDocEventNames();
+  const unionNames = extractUnionEventNames();
+
+  const missing = docNames.filter((name) => !unionNames.includes(name));
+  const extra = unionNames.filter((name) => !docNames.includes(name));
+
+  assert.deepEqual(
+    missing,
+    [],
+    `BearEvent union is missing events documented in docs/EVENTS.md: ${missing.join(", ")}`,
+  );
+  assert.deepEqual(
+    extra,
+    [],
+    `BearEvent union has events not documented in docs/EVENTS.md: ${extra.join(", ")}`,
+  );
+  assert.deepEqual(unionNames, docNames);
+});
+
+function describeBearEvent(event: BearEvent): string {
+  switch (event.type) {
+    case IdentityEvents.Registered:
+      return `registered:${event.agentId}`;
+    case IdentityEvents.UriUpdated:
+      return `uri-updated:${event.agentId}`;
+    case IdentityEvents.AgentDeregistered:
+      return `deregistered:${event.agentId}`;
+    case IdentityEvents.OwnerTransferred:
+      return `owner-transferred:${event.agentId}`;
+    case CommerceEvents.JobCreated:
+      return `job-created:${event.jobId}`;
+    case CommerceEvents.JobSubmitted:
+      return `job-submitted:${event.jobId}`;
+    case CommerceEvents.JobCompleted:
+      return `job-completed:${event.jobId}`;
+    case CommerceEvents.JobCancelled:
+      return `job-cancelled:${event.jobId}`;
+    case CommerceEvents.JobDisputed:
+      return `job-disputed:${event.jobId}`;
+    case CommerceEvents.JobRefunded:
+      return `job-refunded:${event.jobId}`;
+    case CommerceEvents.JobExpired:
+      return `job-expired:${event.jobId}`;
+    default:
+      return assertNever(event);
+  }
+}
+
+test("exhaustive switch over BearEvent compiles and handles every event", () => {
+  const owner = Keypair.random().publicKey();
+  const client = Keypair.random().publicKey();
+
+  const registered = decodeRegisteredEvent({
+    topic: [
+      nativeToScVal(IdentityEvents.Registered, { type: "symbol" }),
+      new Address(owner).toScVal(),
+    ],
+    value: nativeToScVal(1n),
+  });
+  assert.equal(describeBearEvent(registered), "registered:1");
+
+  const jobCreated = decodeJobCreatedEvent({
+    topic: [
+      nativeToScVal(CommerceEvents.JobCreated, { type: "symbol" }),
+      new Address(client).toScVal(),
+    ],
+    value: [2n, 10_000_000n],
+  });
+  assert.equal(describeBearEvent(jobCreated), "job-created:2");
 });
