@@ -312,6 +312,54 @@
         }
       }
     },
+    "/healthz": {
+      "get": {
+        "tags": ["Dashboard Health"],
+        "summary": "Shallow liveness probe",
+        "description": "Returns 200 as long as the dashboard process is running. Does not check downstream dependencies; use /readyz for readiness.",
+        "responses": {
+          "200": {
+            "description": "Process is alive",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["status"],
+                  "properties": {
+                    "status": { "type": "string", "example": "ok" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/readyz": {
+      "get": {
+        "tags": ["Dashboard Health"],
+        "summary": "Readiness probe with dependency checks",
+        "description": "Checks downstream dependencies (Stellar RPC, indexer database, model availability) with per-check timeouts. Returns 200 when all required checks pass and 503 when any required dependency is unavailable. Used by docker-compose and the Dockerfile HEALTHCHECK.",
+        "responses": {
+          "200": {
+            "description": "All required dependencies are ready",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ReadinessReport" }
+              }
+            }
+          },
+          "503": {
+            "description": "One or more required dependencies are unavailable (e.g. RPC unreachable)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ReadinessReport" }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/auth/challenge": {
     "get": {
       "tags": ["Dashboard Auth"],
@@ -376,7 +424,12 @@
           }
         },
         "401": {
-          "description": "Invalid signature or expired nonce"
+          "description": "Invalid signature or expired nonce",
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ErrorResponse" }
+            }
+          }
         }
       }
     }
@@ -866,6 +919,66 @@
         "500": { "$ref": "#/components/responses/InternalError" }
       }
     }
+  },
+  "/api/admin/audit": {
+    "get": {
+      "tags": ["Dashboard Admin"],
+      "summary": "List admin audit trail entries",
+      "description": "Returns audit trail entries with optional filtering by actor, action, and time range, plus page/pageSize pagination. Filters are combined with AND logic. Entries are returned newest first. The JSONL audit log is indexed for efficient reads; performance with 100k entries is documented in docs/operations.md.",
+      "security": [{ "dashboardBearer": [] }],
+      "parameters": [
+        {
+          "name": "actor",
+          "in": "query",
+          "description": "Filter by exact actor (Stellar public key or system actor identifier)",
+          "schema": { "type": "string" }
+        },
+        {
+          "name": "action",
+          "in": "query",
+          "description": "Filter by exact action name",
+          "schema": { "type": "string", "example": "agent.register" }
+        },
+        {
+          "name": "from",
+          "in": "query",
+          "description": "Inclusive lower bound on entry timestamp (ISO 8601)",
+          "schema": { "type": "string", "format": "date-time" }
+        },
+        {
+          "name": "to",
+          "in": "query",
+          "description": "Inclusive upper bound on entry timestamp (ISO 8601)",
+          "schema": { "type": "string", "format": "date-time" }
+        },
+        {
+          "name": "page",
+          "in": "query",
+          "description": "Positive page number",
+          "schema": { "type": "integer", "minimum": 1, "default": 1 }
+        },
+        {
+          "name": "pageSize",
+          "in": "query",
+          "description": "Number of entries per page, up to 100",
+          "schema": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Page of audit entries",
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AuditPage" }
+            }
+          }
+        },
+        "400": { "$ref": "#/components/responses/BadRequest" },
+        "401": { "$ref": "#/components/responses/Unauthorized" },
+        "403": { "$ref": "#/components/responses/Forbidden" },
+        "500": { "$ref": "#/components/responses/InternalError" }
+      }
+    }
   }
   },
   "components": {
@@ -1018,353 +1131,9 @@
         "pattern": "^G[A-Z2-7]{55}$",
         "description": "Stellar Ed25519 public key"
       },
-      "ErrorResponse": {
+      "ErrorDetail": {
         "type": "object",
-        "required": ["error"],
+        "required": ["code", "message", "requestId"],
+        "description": "Structured error envelope returned by all /api routes.",
         "properties": {
-          "error": { "type": "string" },
-          "details": {
-            "type": "array",
-            "items": { "type": "object", "additionalProperties": true }
-          }
-        }
-      },
-      "AuthChallenge": {
-        "type": "object",
-        "required": ["nonce", "message", "xdr"],
-        "properties": {
-          "nonce": { "type": "string" },
-          "message": { "type": "string" },
-          "xdr": { "type": "string", "description": "Base64 Stellar transaction XDR to sign" }
-        }
-      },
-      "AuthVerifyRequest": {
-        "type": "object",
-        "required": ["publicKey", "nonce", "signedXdr"],
-        "properties": {
-          "publicKey": { "$ref": "#/components/schemas/StellarAddress" },
-          "nonce": { "type": "string", "minLength": 1 },
-          "signedXdr": { "type": "string", "minLength": 1 }
-        }
-      },
-      "AuthToken": {
-        "type": "object",
-        "required": ["token", "publicKey"],
-        "properties": {
-          "token": { "type": "string" },
-          "publicKey": { "$ref": "#/components/schemas/StellarAddress" }
-        }
-      },
-      "DemoMode": {
-        "type": "object",
-        "required": ["enabled"],
-        "properties": {
-          "enabled": { "type": "boolean" },
-          "buyer": { "$ref": "#/components/schemas/StellarAddress" },
-          "seller": { "$ref": "#/components/schemas/StellarAddress" }
-        }
-      },
-      "DashboardStats": {
-        "type": "object",
-        "required": ["totalAgents", "totalJobs", "activeJobs", "feeBps"],
-        "properties": {
-          "totalAgents": { "type": "integer" },
-          "totalJobs": { "type": "integer" },
-          "activeJobs": { "type": "integer" },
-          "feeBps": { "type": "integer" }
-        }
-      },
-      "DashboardWallet": {
-        "type": "object",
-        "required": ["address", "xlm", "musd"],
-        "properties": {
-          "address": { "$ref": "#/components/schemas/StellarAddress" },
-          "xlm": { "type": "string" },
-          "musd": { "type": "string" }
-        }
-      },
-      "WalletBalances": {
-        "type": "object",
-        "required": ["buyer", "seller"],
-        "properties": {
-          "buyer": { "$ref": "#/components/schemas/DashboardWallet" },
-          "seller": { "$ref": "#/components/schemas/DashboardWallet" }
-        }
-      },
-      "DashboardAgent": {
-        "type": "object",
-        "required": ["id", "owner", "uri"],
-        "properties": {
-          "id": { "type": "string" },
-          "owner": { "$ref": "#/components/schemas/StellarAddress" },
-          "uri": { "type": "string" }
-        }
-      },
-      "AgentPage": {
-        "type": "object",
-        "required": ["items", "page", "pageSize", "total", "hasNext"],
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": { "$ref": "#/components/schemas/DashboardAgent" }
-          },
-          "page": { "type": "integer" },
-          "pageSize": { "type": "integer" },
-          "total": { "type": "integer" },
-          "hasNext": { "type": "boolean" }
-        }
-      },
-      "RegisterAgentRequest": {
-        "type": "object",
-        "required": ["wallet"],
-        "properties": {
-          "wallet": { "type": "string", "enum": ["buyer", "seller", "freighter"] },
-          "publicKey": { "$ref": "#/components/schemas/StellarAddress" },
-          "uri": { "type": "string", "minLength": 1 }
-        }
-      },
-      "AgentIdResponse": {
-        "type": "object",
-        "required": ["agentId"],
-        "properties": { "agentId": { "type": "string" } }
-      },
-      "UnsignedTransaction": {
-        "type": "object",
-        "required": ["xdr"],
-        "properties": { "xdr": { "type": "string" } }
-      },
-      "DashboardJob": {
-        "type": "object",
-        "required": ["id", "client", "provider", "evaluator", "token", "budget", "status", "description", "deliverable"],
-        "properties": {
-          "id": { "type": "string" },
-          "client": { "$ref": "#/components/schemas/StellarAddress" },
-          "provider": { "$ref": "#/components/schemas/StellarAddress" },
-          "evaluator": { "$ref": "#/components/schemas/StellarAddress" },
-          "token": { "type": "string" },
-          "budget": { "type": "string" },
-          "status": {
-            "type": "string",
-            "enum": ["Open", "Funded", "Submitted", "Completed", "Rejected", "Cancelled", "Disputed"]
-          },
-          "description": { "type": "string" },
-          "deliverable": { "type": "string" },
-          "funded_at": { "type": "string" },
-          "created_at": { "type": "string" },
-          "updated_at": { "type": "string" }
-        }
-      },
-      "JobIdResponse": {
-        "type": "object",
-        "required": ["jobId"],
-        "properties": { "jobId": { "type": "string" } }
-      },
-      "CreateJobRequest": {
-        "type": "object",
-        "required": ["wallet"],
-        "properties": {
-          "wallet": { "$ref": "#/components/schemas/StellarAddress" },
-          "provider": { "$ref": "#/components/schemas/StellarAddress" },
-          "evaluator": { "$ref": "#/components/schemas/StellarAddress" },
-          "budget": { "oneOf": [{ "type": "string" }, { "type": "integer" }] },
-          "description": { "type": "string", "minLength": 1 }
-        }
-      },
-      "SubmitJobRequest": {
-        "type": "object",
-        "required": ["wallet"],
-        "properties": {
-          "wallet": { "$ref": "#/components/schemas/StellarAddress" },
-          "deliverable": { "type": "string", "minLength": 1 }
-        }
-      },
-      "WalletActionRequest": {
-        "type": "object",
-        "required": ["wallet"],
-        "properties": { "wallet": { "$ref": "#/components/schemas/StellarAddress" } }
-      },
-      "LegacyCancelRequest": {
-        "type": "object",
-        "required": ["action"],
-        "properties": {
-          "action": { "type": "string", "enum": ["cancel"] },
-          "publicKey": { "$ref": "#/components/schemas/StellarAddress" },
-          "wallet": { "type": "string", "enum": ["buyer", "seller"] }
-        }
-      },
-      "BuildRegisterRequest": {
-        "type": "object",
-        "required": ["publicKey"],
-        "properties": {
-          "publicKey": { "$ref": "#/components/schemas/StellarAddress" },
-          "uri": { "type": "string", "minLength": 1 }
-        }
-      },
-      "BuildCreateJobRequest": {
-        "type": "object",
-        "required": ["publicKey"],
-        "properties": {
-          "publicKey": { "$ref": "#/components/schemas/StellarAddress" },
-          "provider": { "$ref": "#/components/schemas/StellarAddress" },
-          "evaluator": { "$ref": "#/components/schemas/StellarAddress" },
-          "budget": { "oneOf": [{ "type": "string" }, { "type": "integer" }] },
-          "description": { "type": "string", "minLength": 1 }
-        }
-      },
-      "BuildActionRequest": {
-        "type": "object",
-        "required": ["publicKey", "jobId"],
-        "properties": {
-          "publicKey": { "$ref": "#/components/schemas/StellarAddress" },
-          "jobId": { "type": "string", "pattern": "^[0-9]+$" },
-          "deliverable": { "type": "string", "minLength": 1 }
-        }
-      },
-      "SubmitXdrRequest": {
-        "type": "object",
-        "required": ["signedXdr"],
-        "properties": { "signedXdr": { "type": "string", "minLength": 1 } }
-      },
-      "SubmitResult": {
-        "type": "object",
-        "required": ["hash", "returnValue"],
-        "properties": {
-          "hash": { "type": "string" },
-          "returnValue": { "type": "string" }
-        }
-      },
-      "Balance": {
-        "type": "object",
-        "required": ["address", "xlm", "musd"],
-        "properties": {
-          "address": { "$ref": "#/components/schemas/StellarAddress" },
-          "xlm": { "type": "string" },
-          "musd": { "type": "string" }
-        }
-      },
-      "SuccessResponse": {
-        "type": "object",
-        "required": ["success"],
-        "properties": { "success": { "type": "boolean" } }
-      }
-    },
-    "parameters": {
-      "JobId": {
-        "name": "id",
-        "in": "path",
-        "required": true,
-        "description": "Positive numeric job ID",
-        "schema": { "type": "string", "pattern": "^[0-9]+$" }
-      },
-      "PublicKeyPath": {
-        "name": "pubkey",
-        "in": "path",
-        "required": true,
-        "description": "Stellar Ed25519 public key",
-        "schema": { "$ref": "#/components/schemas/StellarAddress" }
-      }
-    },
-    "responses": {
-      "Success": {
-        "description": "Operation completed",
-        "content": {
-          "application/json": {
-            "schema": { "$ref": "#/components/schemas/SuccessResponse" }
-          }
-        }
-      },
-      "Unsigned": {
-        "description": "Unsigned Stellar transaction",
-        "content": {
-          "application/json": {
-            "schema": { "$ref": "#/components/schemas/UnsignedTransaction" }
-          }
-        }
-      },
-      "BadRequest": {
-        "description": "Invalid request",
-        "content": {
-          "application/json": {
-            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
-          }
-        }
-      },
-      "Unauthorized": {
-        "description": "Authentication is required or the session is invalid",
-        "content": {
-          "application/json": {
-            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
-          }
-        }
-      },
-      "Forbidden": {
-        "description": "The session cannot act for the requested wallet",
-        "content": {
-          "application/json": {
-            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
-          }
-        }
-      },
-      "InternalError": {
-        "description": "Internal server or RPC error",
-        "content": {
-          "application/json": {
-            "schema": { "$ref": "#/components/schemas/ErrorResponse" }
-          }
-        }
-      }
-    },
-    "securitySchemes": {
-      "bearerAuth": {
-        "type": "http",
-        "scheme": "bearer",
-        "description": "Optional Bearer token for registry services"
-      },
-      "registryApiKey": {
-        "type": "apiKey",
-        "in": "header",
-        "name": "X-API-Key",
-        "description": "Registry API key"
-      },
-      "dashboardBearer": {
-        "type": "http",
-        "scheme": "bearer",
-        "description": "Dashboard session token from /api/auth/verify"
-      }
-    }
-  },
-  "tags": [
-    {
-      "name": "Registry",
-      "description": "Agent discovery and lifecycle (port 4500)"
-    },
-    {
-      "name": "Agent",
-      "description": "Task execution endpoints (ports 4501-4504)"
-    },
-    {
-      "name": "Dashboard",
-      "description": "Dashboard overview, discovery, and real-time events"
-    },
-    {
-      "name": "Dashboard Auth",
-      "description": "Wallet nonce authentication and dashboard sessions"
-    },
-    {
-      "name": "Dashboard Agents",
-      "description": "Agent identity operations exposed by the dashboard"
-    },
-    {
-      "name": "Dashboard Jobs",
-      "description": "Job escrow lifecycle operations exposed by the dashboard"
-    },
-    {
-      "name": "Dashboard Transactions",
-      "description": "Unsigned transaction builders and signed XDR submission"
-    },
-    {
-      "name": "Dashboard Wallets",
-      "description": "Dashboard wallet and account balance reads"
-    }
-  ]
-}
+          "

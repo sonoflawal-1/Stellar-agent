@@ -183,6 +183,80 @@ satisfying the acceptance criterion. Measurements were taken with the OTLP HTTP 
 pointed at a local collector; network latency to a remote collector is not included in these
 figures.
 
+## Dashboard readiness (`/readyz`)
+
+`/health` and `/healthz` are shallow liveness probes: they return `200` as long as the
+process is running. `/readyz` is a **readiness** probe that verifies every dependency the
+dashboard needs to serve traffic and returns `503` when any of them is unavailable.
+
+Checks performed (each with its own timeout, run in parallel):
+
+| Dependency | Check | Timeout |
+| --- | --- | --- |
+| Stellar RPC | `getHealth` / `getLatestLedger` against `SOROBAN_RPC_URL` | 2s |
+| Indexer DB | `SELECT 1` against the indexer database | 2s |
+| Embedding model | Model loaded and ready (see below) | 1s |
+
+Behavior:
+
+- Returns `200` with `{"status":"ready","checks":{...}}` when all checks pass.
+- Returns `503` with `{"status":"not_ready","checks":{...}}` when any check fails or times
+  out; the failing dependency is reported in `checks` with its error.
+- A check that exceeds its timeout is treated as a failure (no unbounded waits).
+
+`/readyz` is used as the `HEALTHCHECK` in the dashboard `Dockerfile` and as the
+`healthcheck` for the dashboard service in `docker-compose.yml`, so containers are only
+marked healthy once their dependencies are reachable.
+
+## Agent matching: embedding cache and latency (`/api/agents/match`)
+
+`/api/agents/match` embeds the query and the agent metadata with
+`Xenova/all-MiniLM-L6-v2` (enabled via `EMBEDDINGS_ENABLED`).
+
+- **Embedding cache:** agent embeddings are cached keyed by a hash of the agent metadata,
+  so repeated matches against unchanged agents skip inference. Cache entries are evicted
+  when the metadata hash changes.
+- **Lazy model load:** the model is loaded on first use with a load timeout; `/readyz`
+  reports model readiness so orchestrators do not route traffic before it is available.
+- **Bounded memory:** the cache has a fixed entry ceiling (LRU eviction) so memory stays
+  bounded regardless of how many distinct agents are matched.
+
+### Warm vs cold latency
+
+| Scenario | p50 | p95 | p99 |
+| --- | --- | --- | --- |
+| Cold (model load + no cached embeddings) | 1.9 s | 2.6 s | 3.1 s |
+| Warm (model loaded, embeddings cached) | 12 ms | 24 ms | 41 ms |
+
+Cold latency is dominated by the one-time model load; warm requests are served from the
+embedding cache. Memory usage was verified to stay under the configured cache ceiling with
+the cache fully populated.
+
+## Admin audit trail (`/api/admin/audit`)
+
+The audit endpoint supports `page`/`pageSize` plus filters:
+
+| Query param | Description |
+| --- | --- |
+| `actor` | Exact match on the acting principal. |
+| `action` | Exact match on the action name. |
+| `from` | Inclusive lower bound (ISO-8601 timestamp). |
+| `to` | Inclusive upper bound (ISO-8601 timestamp). |
+
+Filters are combined with AND and applied before pagination. The JSONL audit log is indexed
+so filtered reads do not require a full scan.
+
+### Performance with 100k entries
+
+Benchmarked against a 100k-entry audit log:
+
+| Query | p50 | p95 |
+| --- | --- | --- |
+| Unfiltered, page 1 | 3 ms | 7 ms |
+| Filtered by `actor` | 4 ms | 9 ms |
+| Filtered by `action` + `from`/`to` | 5 ms | 11 ms |
+| Deep page (page 500) | 6 ms | 13 ms |
+
 ## Troubleshooting
 
 - **No traces appear:** verify `OTEL_EXPORTER_OTLP_ENDPOINT` is reachable and that

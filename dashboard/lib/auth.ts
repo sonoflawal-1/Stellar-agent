@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import crypto from "crypto";
+import { randomUUID } from "node:crypto";
 import jwt from "jsonwebtoken";
 import {
   Keypair,
@@ -166,17 +167,45 @@ export function verifyChallenge(signedXdr: string): string | null {
 export interface SessionClaims {
   /** The authenticated Stellar account (G...). */
   publicKey: string;
+  /** Unique token id for server-side revocation. */
+  jti?: string;
+  /** Refresh-token family id (rotation / reuse detection). */
+  family?: string;
   /** Issued-at (seconds since epoch). */
   iat: number;
   /** Expiration (seconds since epoch). */
   exp: number;
 }
 
+const revokedJtis = new Map<string, number>();
+const refreshFamilies = new Map<string, { publicKey: string; activeJti: string }>();
+const revokedFamilies = new Set<string>();
+
+function pruneRevokedJtis(nowSec = Math.floor(Date.now() / 1000)): void {
+  for (const [jti, exp] of revokedJtis.entries()) {
+    if (exp <= nowSec) revokedJtis.delete(jti);
+  }
+}
+
+function decodeJti(token: string): { jti?: string; exp?: number; family?: string; publicKey?: string } | null {
+  const decoded = jwt.decode(token) as SessionClaims | null;
+  if (!decoded || typeof decoded !== "object") return null;
+  return {
+    jti: typeof decoded.jti === "string" ? decoded.jti : undefined,
+    exp: typeof decoded.exp === "number" ? decoded.exp : undefined,
+    family: typeof decoded.family === "string" ? decoded.family : undefined,
+    publicKey: typeof decoded.publicKey === "string" ? decoded.publicKey : undefined,
+  };
+}
+
 /**
  * Issue a signed JWT session token (24-hour expiry) for an authenticated wallet.
  */
-export function createSession(publicKey: string): string {
-  return jwt.sign({ publicKey }, JWT_SECRET, {
+export function createSession(publicKey: string, familyId?: string): string {
+  const jti = randomUUID();
+  const family = familyId ?? randomUUID();
+  refreshFamilies.set(family, { publicKey, activeJti: jti });
+  return jwt.sign({ publicKey, jti, family }, JWT_SECRET, {
     expiresIn: JWT_EXPIRY_SECONDS,
     algorithm: "HS256",
   });
@@ -200,6 +229,14 @@ export function verifySession(token: string): string | null {
       return null;
     }
 
+    pruneRevokedJtis();
+    if (decoded.jti && revokedJtis.has(decoded.jti)) {
+      return null;
+    }
+    if (decoded.family && revokedFamilies.has(decoded.family)) {
+      return null;
+    }
+
     return decoded.publicKey;
   } catch {
     return null;
@@ -212,24 +249,190 @@ export function verifySession(token: string): string | null {
  * JWTs are stateless, so this is a no-op retained for API compatibility.
  * Clients should discard the token; short-lived tokens limit exposure.
  */
-export function invalidateSession(_token: string): void {
-  // Stateless JWT: nothing to revoke server-side.
+export function invalidateSession(token: string): void {
+  const meta = decodeJti(token);
+  if (meta?.jti) {
+    revokedJtis.set(meta.jti, meta.exp ?? Math.floor(Date.now() / 1000) + JWT_EXPIRY_SECONDS);
+  }
 }
 
 /**
- * Refresh a session token by issuing a new JWT for the same wallet.
+ * Refresh a session token with rotation. Reuse of a replaced refresh token revokes the family.
  */
 export function refreshSession(token: string): string | null {
+  const meta = decodeJti(token);
+  if (!meta?.publicKey || !meta.family || !meta.jti) return null;
+
+  if (revokedFamilies.has(meta.family)) return null;
+
+  const family = refreshFamilies.get(meta.family);
+  if (!family) {
+    return createSession(meta.publicKey, meta.family);
+  }
+
+  if (family.activeJti !== meta.jti) {
+    revokedFamilies.add(meta.family);
+    refreshFamilies.delete(meta.family);
+    return null;
+  }
+
   const publicKey = verifySession(token);
   if (!publicKey) return null;
-  return createSession(publicKey);
+
+  const next = createSession(publicKey, meta.family);
+  const nextMeta = decodeJti(next);
+  if (nextMeta?.jti) {
+    revokedJtis.set(meta.jti, meta.exp ?? Math.floor(Date.now() / 1000) + JWT_EXPIRY_SECONDS);
+    refreshFamilies.set(meta.family, { publicKey, activeJti: nextMeta.jti });
+  }
+  return next;
+}
+
+// ---------------------------------------------------------------------------
+// Token transport & CSRF protection (#961)
+// ---------------------------------------------------------------------------
+//
+// SECURITY MODEL: bearer-only token transport.
+//
+// Session tokens are issued by `/api/auth/token` and MUST be sent in the
+// `Authorization: Bearer <token>` header. They are never read from cookies.
+// Because the browser does not automatically attach the Authorization header
+// to cross-site requests, this model is inherently immune to CSRF.
+//
+// Cookie-based authentication is explicitly rejected. If a client (or a
+// legacy flow) presents an auth cookie, `requireAuth` refuses the request so
+// that a misconfigured deployment cannot silently fall back to a transport
+// that would be vulnerable to cross-site form POSTs.
+//
+// For defence in depth, `csrfProtection` can be mounted on mutating routes
+// (`/api/jobs/create`, `/api/dispute-job`, `/api/claim-refund`,
+// `/api/build/submit`). It rejects any request that carries an auth cookie
+// unless a valid double-submit CSRF token is also supplied, and otherwise
+// requires bearer-token authentication.
+
+/** Name of the cookie that would carry an auth token, if cookies were used. */
+export const AUTH_COOKIE_NAME = "token";
+
+/** Header used for the double-submit CSRF token. */
+export const CSRF_HEADER_NAME = "x-csrf-token";
+
+/** Cookie used to store the double-submit CSRF token. */
+export const CSRF_COOKIE_NAME = "csrf_token";
+
+/** HTTP methods considered safe (non-mutating) and therefore exempt from CSRF checks. */
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
+/**
+ * Parse the request's `Cookie` header into a name/value map.
+ */
+function parseCookies(req: Request): Record<string, string> {
+  const header = req.headers.cookie;
+  if (!header) return {};
+
+  const cookies: Record<string, string> = {};
+  for (const part of header.split(";")) {
+    const idx = part.indexOf("=");
+    if (idx === -1) continue;
+    const name = part.slice(0, idx).trim();
+    const value = part.slice(idx + 1).trim();
+    if (name) cookies[name] = decodeURIComponent(value);
+  }
+  return cookies;
+}
+
+/**
+ * Returns true if the request carries an authentication cookie.
+ *
+ * Auth is bearer-only, so the presence of such a cookie indicates either a
+ * misconfigured client or an attempted CSRF. Callers should reject the request.
+ */
+export function hasAuthCookie(req: Request): boolean {
+  const cookies = parseCookies(req);
+  return Boolean(cookies[AUTH_COOKIE_NAME]);
+}
+
+/**
+ * Reject cookie-based authentication.
+ *
+ * Responds with 401 and returns true if an auth cookie was present, so the
+ * caller can short-circuit. Returns false when no auth cookie is present.
+ */
+export function rejectAuthCookie(req: Request, res: Response): boolean {
+  if (!hasAuthCookie(req)) return false;
+  res.status(401).json({
+    error:
+      "Cookie-based authentication is not supported. Send the session token in the Authorization: Bearer header.",
+  });
+  return true;
+}
+
+/**
+ * Constant-time string comparison to avoid timing side channels.
+ */
+function safeEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+/**
+ * Middleware factory: CSRF protection for mutating routes.
+ *
+ * Behaviour:
+ *  - Safe methods (GET/HEAD/OPTIONS) pass through untouched.
+ *  - If an auth cookie is present, the request is rejected unless a
+ *    double-submit CSRF token is supplied: the `x-csrf-token` header must be
+ *    present and match the `csrf_token` cookie (constant-time comparison).
+ *  - Requests without an auth cookie must authenticate via bearer token;
+ *    this is enforced by `requireAuth`, which should be mounted alongside.
+ *
+ * Usage:
+ *   router.post("/api/jobs/create", csrfProtection(), requireAuth, handler);
+ */
+export function csrfProtection() {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if (SAFE_METHODS.has(req.method.toUpperCase())) {
+      next();
+      return;
+    }
+
+    if (hasAuthCookie(req)) {
+      const cookies = parseCookies(req);
+      const cookieToken = cookies[CSRF_COOKIE_NAME];
+      const headerToken = req.headers[CSRF_HEADER_NAME];
+
+      if (
+        typeof headerToken !== "string" ||
+        !cookieToken ||
+        !safeEqual(headerToken, cookieToken)
+      ) {
+        res.status(403).json({ error: "CSRF token missing or invalid" });
+        return;
+      }
+    }
+
+    next();
+  };
 }
 
 /**
  * Middleware: Require a valid JWT session token.
+ *
+ * Tokens are accepted ONLY via the `Authorization: Bearer` header. Requests
+ * carrying an auth cookie are rejected (see the security model above).
  */
 export function requireAuth(req: Request, res: Response, next: NextFunction): void {
-  const token = req.headers.authorization?.replace("Bearer ", "");
+  if (rejectAuthCookie(req, res)) {
+    return;
+  }
+
+  const authHeader = req.headers.authorization;
+  const token =
+    typeof authHeader === "string" && authHeader.startsWith("Bearer ")
+      ? authHeader.slice("Bearer ".length).trim()
+      : undefined;
+
   if (!token) {
     res.status(401).json({ error: "Missing authentication token" });
     return;

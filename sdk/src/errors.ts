@@ -16,6 +16,55 @@ export const KnownContractErrorCode = {
   AlreadyRegistered: 2,
 } as const;
 
+/** A single decoded contract error variant. */
+export interface ContractErrorEntry {
+  /** The variant name as declared in the contract `Error` enum. */
+  readonly name: string;
+  /** Human-readable explanation of the variant. */
+  readonly message: string;
+}
+
+/**
+ * Generated map of every variant of every MARC contract `Error` enum,
+ * keyed by contract name and then by numeric error code.
+ *
+ * This must stay in sync with the on-chain enums; `errors.test.ts` fails on drift.
+ */
+export const CONTRACT_ERRORS: Record<string, Record<number, ContractErrorEntry>> = {
+  "agentic-commerce": {
+    1: { name: "SelfEscrow", message: "client cannot escrow funds to themselves" },
+    2: {
+      name: "InvalidParties",
+      message: "provider and evaluator cannot be the same address",
+    },
+    3: {
+      name: "ContractPaused",
+      message: "contract is paused; state-changing operations are disabled",
+    },
+    4: { name: "JobNotFound", message: "no job found with the specified ID" },
+    5: { name: "JobNotOpen", message: "job is not open for applications" },
+    6: { name: "Unauthorized", message: "caller is not authorized for this action" },
+    7: { name: "InvalidState", message: "job is not in a valid state for this action" },
+    8: { name: "DeadlinePassed", message: "the job deadline has already passed" },
+    9: { name: "DeadlineNotPassed", message: "the job deadline has not yet passed" },
+    10: { name: "InvalidAmount", message: "amount is invalid or out of range" },
+    11: { name: "InsufficientEscrow", message: "escrow balance is insufficient" },
+    12: { name: "AlreadyApplied", message: "agent has already applied to this job" },
+    13: { name: "NotApplied", message: "agent has not applied to this job" },
+    14: { name: "SlippageExceeded", message: "slippage tolerance was exceeded" },
+  },
+  "agent-identity": {
+    1: { name: "AgentNotFound", message: "no agent found with the specified ID" },
+    2: { name: "AlreadyRegistered", message: "address is already registered to an agent" },
+    3: { name: "Unauthorized", message: "caller is not authorized for this action" },
+    4: { name: "InvalidMetadata", message: "agent metadata is invalid" },
+    5: { name: "AgentInactive", message: "agent is inactive" },
+    6: { name: "InvalidAddress", message: "address is invalid" },
+    7: { name: "DuplicateAgent", message: "an agent with this identity already exists" },
+    8: { name: "InvalidUri", message: "URI is malformed or unsupported" },
+  },
+};
+
 /** Human-readable explanation mapping for agentic-commerce error codes. */
 export const COMMERCE_ERROR_MESSAGES: Record<number, string> = {
   1: "SelfEscrow: client cannot escrow funds to themselves",
@@ -59,6 +108,66 @@ export class ContractError extends Error {
     this.explanation = resolvedExplanation;
     Object.setPrototypeOf(this, ContractError.prototype);
   }
+}
+
+/**
+ * Thrown when a contract invocation or simulation fails with a decoded on-chain
+ * Soroban contract error (#948).
+ *
+ * Unlike {@link ContractError}, this carries the decoded variant `name` from
+ * {@link CONTRACT_ERRORS} and the originating contract name.
+ */
+export class BearContractError extends Error {
+  /** The on-chain numeric error code (e.g. 1 for SelfEscrow). */
+  readonly code: number;
+  /** The decoded variant name (e.g. "SelfEscrow"), or `UnknownError` if unmapped. */
+  readonly name: string;
+  /** The contract name the error originated from (e.g. "agentic-commerce"). */
+  readonly contract: string;
+
+  constructor(code: number, contract: string, message?: string) {
+    const entry = CONTRACT_ERRORS[contract]?.[code];
+    const variantName = entry?.name ?? "UnknownError";
+    const explanation = entry?.message ?? `unknown contract error code #${code}`;
+    super(message || `Contract error ${variantName} (#${code}) on ${contract}: ${explanation}`);
+    this.name = variantName;
+    this.code = code;
+    this.contract = contract;
+    Object.setPrototypeOf(this, BearContractError.prototype);
+  }
+
+  /**
+   * Extract a contract error code from a raw error/message string.
+   *
+   * @returns The integer error code if found, or `null`.
+   */
+  static parseCode(message: string): number | null {
+    return extractContractErrorCode(message);
+  }
+}
+
+/**
+ * Convert a raw simulation or transaction error into a {@link BearContractError}
+ * when it carries a decodable `Error(Contract, #n)` code (#948).
+ *
+ * Non-contract errors are returned unchanged.
+ *
+ * @param err - The raw error thrown by the SDK or Soroban RPC.
+ * @param contract - The contract name used to decode the variant (e.g. "agentic-commerce").
+ */
+export function wrapContractError(err: unknown, contract: string): unknown {
+  if (err instanceof BearContractError) return err;
+  const raw =
+    err instanceof Error
+      ? err.message
+      : typeof err === "string"
+        ? err
+        : typeof err === "object" && err !== null && "message" in err
+          ? String((err as { message: unknown }).message)
+          : "";
+  const code = extractContractErrorCode(raw);
+  if (code === null) return err;
+  return new BearContractError(code, contract);
 }
 
 /**
@@ -127,6 +236,307 @@ export class MarcPaymentTimeoutError extends Error {
     this.attempts = attempts;
     this.durationMs = durationMs;
     Object.setPrototypeOf(this, MarcPaymentTimeoutError.prototype);
+  }
+}
+
+/**
+ * Thrown when a `marcFetch` request would exceed a configured spending budget
+ * guard (`maxPerRequest` or rolling `maxPerWindow`) (#955).
+ *
+ * The request is aborted before any funds are sent.
+ */
+export class BudgetExceededError extends Error {
+  /** Which budget limit was exceeded. */
+  readonly limitType: "perRequest" | "perWindow";
+  /** The configured limit that was exceeded (in stroops). */
+  readonly limit: number;
+  /** The amount that would have been spent (in stroops). */
+  readonly attempted: number;
+  /** Rolling window size in milliseconds (only set for `perWindow`). */
+  readonly windowMs?: number;
+  /** The request URL that triggered the budget check. */
+  readonly url: string;
+
+  constructor(
+    limitType: "perRequest" | "perWindow",
+    limit: number,
+    attempted: number,
+    url: string,
+    windowMs?: number,
+    message?: string,
+  ) {
+    const msg =
+      message ||
+      (limitType === "perRequest"
+        ? `Payment of ${attempted} for ${url} exceeds maxPerRequest limit of ${limit}`
+        : `Payment of ${attempted} for ${url} would exceed maxPerWindow limit of ${limit} over ${windowMs}ms`);
+    super(msg);
+    this.name = "BudgetExceededError";
+    this.limitType = limitType;
+    this.limit = limit;
+    this.attempted = attempted;
+    this.windowMs = windowMs;
+    this.url = url;
+    Object.setPrototypeOf(this, BudgetExceededError.prototype);
+  }
+}
+
+/**
+ * Thrown when the payment server rejects a submitted payment proof (#953).
+ *
+ * No retry is attempted; the server explicitly refused the proof.
+ */
+export class PaymentRejectedError extends Error {
+  /** The request URL whose payment proof was rejected. */
+  readonly url: string;
+  /** Human-readable reason supplied by the server (or a default). */
+  readonly reason: string;
+  /** HTTP status code returned by the server, if available. */
+  readonly status?: number;
+
+  constructor(url: string, reason: string, status?: number, message?: string) {
+    const msg = message || `Payment proof for ${url} was rejected: ${reason}`;
+    super(msg);
+    this.name = "PaymentRejectedError";
+    this.url = url;
+    this.reason = reason;
+    this.status = status;
+    Object.setPrototypeOf(this, PaymentRejectedError.prototype);
+  }
+}
+
+/**
+ * Thrown when the payer account does not hold enough funds to satisfy a
+ * payment challenge (#953).
+ *
+ * No funds are sent when this error is raised.
+ */
+export class InsufficientFundsError extends Error {
+  /** The request URL that required payment. */
+  readonly url: string;
+  /** The amount required by the challenge (in stroops). */
+  readonly required: number;
+  /** The amount available on the payer account (in stroops). */
+  readonly available: number;
+
+  constructor(url: string, required: number, available: number, message?: string) {
+    const msg =
+      message ||
+      `Insufficient funds for ${url}: required ${required}, available ${available}`;
+    super(msg);
+    this.name = "InsufficientFundsError";
+    this.url = url;
+    this.required = required;
+    this.available = available;
+    Object.setPrototypeOf(this, InsufficientFundsError.prototype);
+  }
+}
+
+/**
+ * Thrown when a submitted payment transaction does not reach a terminal state
+ * within the configured timeout (#953).
+ *
+ * Distinct from {@link MarcPaymentTimeoutError}, which covers exhausting all
+ * 402 retry attempts; this covers a single pending transaction timing out.
+ */
+export class PaymentPendingTimeoutError extends Error {
+  /** The request URL that required payment. */
+  readonly url: string;
+  /** The transaction hash that remained pending. */
+  readonly txHash: string;
+  /** Elapsed time before timeout in milliseconds. */
+  readonly durationMs: number;
+
+  constructor(url: string, txHash: string, durationMs: number, message?: string) {
+    const msg =
+      message ||
+      `Payment transaction ${txHash} for ${url} still pending after ${durationMs}ms`;
+    super(msg);
+    this.name = "PaymentPendingTimeoutError";
+    this.url = url;
+    this.txHash = txHash;
+    this.durationMs = durationMs;
+    Object.setPrototypeOf(this, PaymentPendingTimeoutError.prototype);
+  }
+}
+
+/** Known structured API error codes returned by the MARC dashboard/API (#967). */
+export const MarcApiErrorCode = {
+  BadRequest: "BAD_REQUEST",
+  Unauthorized: "UNAUTHORIZED",
+  Forbidden: "FORBIDDEN",
+  NotFound: "NOT_FOUND",
+  Conflict: "CONFLICT",
+  ValidationFailed: "VALIDATION_FAILED",
+  RateLimited: "RATE_LIMITED",
+  PaymentRequired: "PAYMENT_REQUIRED",
+  InternalError: "INTERNAL_ERROR",
+  ServiceUnavailable: "SERVICE_UNAVAILABLE",
+} as const;
+
+/** A known structured API error code value. */
+export type MarcApiErrorCodeValue =
+  (typeof MarcApiErrorCode)[keyof typeof MarcApiErrorCode];
+
+/** Structured error envelope returned by all `/api` routes (#967). */
+export interface MarcApiErrorEnvelope {
+  error: {
+    code: string;
+    message: string;
+    requestId?: string;
+  };
+}
+
+/** Parsed representation of a structured API error. */
+export interface MarcApiErrorDetails {
+  /** Machine-readable error code (e.g. `NOT_FOUND`). */
+  code: string;
+  /** Human-readable error message. */
+  message: string;
+  /** Correlation ID for the failed request, when supplied by the server. */
+  requestId?: string;
+}
+
+/**
+ * Thrown when a MARC dashboard/API request fails with a structured error
+ * envelope `{ error: { code, message, requestId } }` (#967).
+ *
+ * Falls back to legacy ad-hoc error shapes (`{ error: "..." }`,
+ * `{ message: "..." }`, or a plain string body) so older servers remain
+ * compatible.
+ */
+export class MarcApiError extends Error {
+  /** Machine-readable error code (e.g. `NOT_FOUND`). */
+  readonly code: string;
+  /** Correlation ID for the failed request, when supplied by the server. */
+  readonly requestId?: string;
+  /** HTTP status code returned by the server, if available. */
+  readonly status?: number;
+  /** Raw parsed response body, if available. */
+  readonly body?: unknown;
+
+  constructor(
+    code: string,
+    message: string,
+    options: { requestId?: string; status?: number; body?: unknown } = {},
+  ) {
+    super(message);
+    this.name = "MarcApiError";
+    this.code = code;
+    this.requestId = options.requestId;
+    this.status = options.status;
+    this.body = options.body;
+    Object.setPrototypeOf(this, MarcApiError.prototype);
+  }
+
+  /**
+   * Parse an API error response body into a {@link MarcApiError}.
+   *
+   * Accepts the structured envelope `{ error: { code, message, requestId } }`
+   * and legacy shapes (`{ error: "msg" }`, `{ message: "msg" }`, plain string).
+   *
+   * @param body - The parsed (or raw string) response body.
+   * @param status - Optional HTTP status code for context.
+   */
+  static fromResponse(body: unknown, status?: number): MarcApiError {
+    const details = MarcApiError.parse(body);
+    return new MarcApiError(details.code, details.message, {
+      requestId: details.requestId,
+      status,
+      body,
+    });
+  }
+
+  /**
+   * Extract structured error details from a response body, tolerating legacy
+   * shapes. Never throws.
+   */
+  static parse(body: unknown): MarcApiErrorDetails {
+    const fallbackCode =
+      typeof status === "number" ? `HTTP_${status}` : "UNKNOWN_ERROR";
+
+    if (typeof body === "string") {
+      const trimmed = body.trim();
+      if (trimmed.startsWith("{")) {
+        try {
+          return MarcApiError.parse(JSON.parse(trimmed));
+        } catch {
+          // fall through to plain-string handling
+        }
+      }
+      return { code: fallbackCode, message: trimmed || "Request failed" };
+    }
+
+    if (body && typeof body === "object") {
+      const record = body as Record<string, unknown>;
+      const err = record.error;
+
+      // Structured envelope: { error: { code, message, requestId } }
+      if (err && typeof err === "object") {
+        const inner = err as Record<string, unknown>;
+        const code =
+          typeof inner.code === "string" && inner.code
+            ? inner.code
+            : fallbackCode;
+        const message =
+          typeof inner.message === "string" && inner.message
+            ? inner.message
+            : "Request failed";
+        const requestId =
+          typeof inner.requestId === "string" ? inner.requestId : undefined;
+        return { code, message, requestId };
+      }
+
+      // Legacy: { error: "message" }
+      if (typeof err === "string" && err) {
+        return { code: fallbackCode, message: err };
+      }
+
+      // Legacy: { message: "message" }
+      if (typeof record.message === "string" && record.message) {
+        return { code: fallbackCode, message: record.message };
+      }
+    }
+
+    return { code: fallbackCode, message: "Request failed" };
+  }
+}
+
+/**
+ * Thrown when a 402 payment challenge fails client-side allowlist validation
+ * (#956): the requested `payTo`, `asset`, or `amount` is not permitted by the
+ * configured `allowedPayees` / `allowedAssets` / `maxAmount` policy.
+ *
+ * The challenge is rejected before any payment is constructed or submitted, so
+ * no network payment is made.
+ */
+export class ChallengeRejectedError extends Error {
+  /** The request URL whose 402 challenge was rejected. */
+  readonly url: string;
+  /** Which challenge field failed validation. */
+  readonly field: "payTo" | "asset" | "amount";
+  /** The value supplied by the (untrusted) server challenge. */
+  readonly value: string;
+  /** Human-readable reason for the rejection. */
+  readonly reason: string;
+
+  constructor(
+    url: string,
+    field: "payTo" | "asset" | "amount",
+    value: string,
+    reason: string,
+    message?: string,
+  ) {
+    const msg =
+      message ||
+      `402 challenge for ${url} rejected: ${field} "${value}" is not allowed (${reason})`;
+    super(msg);
+    this.name = "ChallengeRejectedError";
+    this.url = url;
+    this.field = field;
+    this.value = value;
+    this.reason = reason;
+    Object.setPrototypeOf(this, ChallengeRejectedError.prototype);
   }
 }
 

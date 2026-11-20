@@ -4,7 +4,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import rateLimit from "express-rate-limit";
 import Groq from "groq-sdk";
-import { CommerceClient } from "marc-stellar-sdk";
 import { trace, SpanStatusCode, type Span } from "@opentelemetry/api";
 import {
   createSellerAgent,
@@ -14,6 +13,8 @@ import {
   MOCK_DELIVERABLES,
   callLlmWithRetry,
   registerGracefulShutdown,
+  createTaskQueue,
+  submitDeliverable,
 } from "../shared.js";
 
 const config = loadAgentConfig({
@@ -96,12 +97,14 @@ app.get("/health", (_req, res) => {
     version: "1.0.0",
     uptime: Math.floor((Date.now() - startTime) / 1000),
     jobs: { active: jobsActive, completed: jobsCompleted, failed: jobsFailed },
+    queue: taskQueue.stats(),
     wallet: { address: config.SECRET_KEY ? "configured" : "not-configured" },
   });
 });
 
 app.get("/metrics", (_req, res) => {
   const uptime = Math.floor((Date.now() - startTime) / 1000);
+  const queueStats = taskQueue.stats();
   res.set("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
   res.send(
     [
@@ -114,6 +117,12 @@ app.get("/metrics", (_req, res) => {
       `# HELP bear_jobs_failed_total Total failed jobs`,
       `# TYPE bear_jobs_failed_total counter`,
       `bear_jobs_failed_total ${jobsFailed}`,
+      `# HELP bear_queue_pending Number of pending queued tasks`,
+      `# TYPE bear_queue_pending gauge`,
+      `bear_queue_pending ${queueStats.pending}`,
+      `# HELP bear_queue_running Number of running queued tasks`,
+      `# TYPE bear_queue_running gauge`,
+      `bear_queue_running ${queueStats.running}`,
       `# HELP bear_uptime_seconds Agent uptime in seconds`,
       `# TYPE bear_uptime_seconds gauge`,
       `bear_uptime_seconds ${uptime}`,
@@ -158,6 +167,12 @@ interface BuildSpec {
   theme?: string;
 }
 
+interface JobPayload {
+  jobId: string;
+  task: string;
+  buildSpec?: BuildSpec;
+}
+
 function buildPrompt(task: string, spec?: BuildSpec): string {
   const base = `You are a professional web developer. Build a complete, self-contained HTML/CSS website for:\n\n${task}`;
   if (!spec)
@@ -169,6 +184,56 @@ function buildPrompt(task: string, spec?: BuildSpec): string {
   if (spec.theme) constraints.push(`Color theme: ${spec.theme}`);
   return `${base}\n\nBuild specs:\n${constraints.join("\n")}\n\nReturn ONLY raw HTML — no markdown, no code fences. Must have inline CSS, ready to open in a browser.`;
 }
+
+async function processJob(payload: JobPayload): Promise<void> {
+  const { jobId, task, buildSpec } = payload;
+  jobsActive++;
+  try {
+    console.log(`[${AGENT_ID}] Calling Groq...`);
+    const html = await generate(buildPrompt(task, buildSpec));
+
+    const stripped = html
+      .replace(/```html\s*/gi, "")
+      .replace(/```/g, "")
+      .trim();
+    if (stripped.length < 50 || !/<!DOCTYPE html|<html/i.test(stripped)) {
+      throw new Error(
+        `Generated content is not valid HTML (${stripped.length} chars, no doctype/html tag)`,
+      );
+    }
+
+    fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+    const filename = `job-${jobId}.html`;
+    const filePath = path.join(OUTPUT_DIR, filename);
+    const bytes = Buffer.from(stripped, "utf8");
+    fs.writeFileSync(filePath, bytes);
+    const deliverable = `${publicUrl}/${OUTPUT_URL}/${filename}`;
+    console.log(`[${AGENT_ID}] Website built (${stripped.length} chars) → ${deliverable}`);
+
+    await submitDeliverable(
+      { jobId, cfg, seller, agentId: AGENT_ID },
+      bytes,
+      { deliverableUrl: deliverable },
+    );
+    console.log(`[${AGENT_ID}] ✓ Job #${jobId} submitted → ${deliverable}`);
+    jobsCompleted++;
+  } catch (err) {
+    jobsFailed++;
+    console.error(`[${AGENT_ID}] Error:`, (err as Error).message);
+    throw err;
+  } finally {
+    jobsActive--;
+  }
+}
+
+const taskQueue = createTaskQueue<JobPayload>({
+  agentId: AGENT_ID,
+  agentDir: AGENT_DIR,
+  concurrency: Number(process.env.QUEUE_CONCURRENCY ?? 2),
+  maxRetries: Number(process.env.QUEUE_MAX_RETRIES ?? 3),
+  handler: processJob,
+  tracker: activeTaskTracker,
+});
 
 const limiter = rateLimit({
   windowMs: 60_000,
@@ -229,53 +294,22 @@ app.post("/job", limiter, async (req, res) => {
   console.log(
     `[${AGENT_ID}] Job #${jobId}: ${task}${buildSpec ? ` (buildSpec: ${JSON.stringify(buildSpec)})` : ""}`,
   );
+
+  try {
+    await taskQueue.enqueue({ jobId, task: rawPrompt as string, buildSpec });
+  } catch (err) {
+    console.error(`[${AGENT_ID}] [req:${requestId}] Failed to enqueue:`, (err as Error).message);
+    res.status(500).json({
+      success: false,
+      error: "failed to enqueue job",
+      execution_time_ms: Date.now() - startedAt,
+    });
+    return;
+  }
+
   const response = makeSellerResponse({ status: "accepted", jobId }, startedAt);
   console.log(`[${AGENT_ID}] [req:${requestId}] Response: ${JSON.stringify(response)}`);
   res.json(response);
-
-  jobsActive++;
-  const jobWork = (async () => {
-    try {
-      console.log(`[${AGENT_ID}] Calling Groq...`);
-      const html = await generate(buildPrompt(task, buildSpec));
-
-      const stripped = html
-        .replace(/```html\s*/gi, "")
-        .replace(/```/g, "")
-        .trim();
-      if (stripped.length < 50 || !/<!DOCTYPE html|<html/i.test(stripped)) {
-        throw new Error(
-          `Generated content is not valid HTML (${stripped.length} chars, no doctype/html tag)`,
-        );
-      }
-
-      fs.mkdirSync(OUTPUT_DIR, { recursive: true });
-      const filename = `job-${jobId}.html`;
-      fs.writeFileSync(path.join(OUTPUT_DIR, filename), stripped);
-      const deliverable = `${publicUrl}/${OUTPUT_URL}/${filename}`;
-      console.log(`[${AGENT_ID}] Website built (${stripped.length} chars) → ${deliverable}`);
-
-      const commerce = new CommerceClient(cfg);
-      for (let attempt = 1; attempt <= 5; attempt++) {
-        try {
-          await commerce.submit(seller, BigInt(jobId), deliverable);
-          console.log(`[${AGENT_ID}] ✓ Job #${jobId} submitted → ${deliverable}`);
-          break;
-        } catch (e) {
-          if (attempt === 5) throw e;
-          console.log(`[${AGENT_ID}] submit attempt ${attempt} failed, retrying...`);
-          await new Promise((r) => setTimeout(r, 4000));
-        }
-      }
-      jobsCompleted++;
-    } catch (err) {
-      jobsFailed++;
-      console.error(`[${AGENT_ID}] Error:`, (err as Error).message);
-    } finally {
-      jobsActive--;
-    }
-  })();
-  activeTaskTracker.track(jobWork);
 });
 
 const server = app.listen(PORT, () => console.log(`[${AGENT_ID}] Listening on :${PORT}`));

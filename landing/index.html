@@ -13,6 +13,14 @@
        alongside this landing page). Override this content value when the landing page
        and dashboard are deployed to separate origins. -->
     <meta name="marc-dashboard-url" content="/app" />
+    <link rel="alternate" hreflang="en" href="https://marc-stellar.vercel.app/?lang=en" />
+    <link rel="alternate" hreflang="de" href="https://marc-stellar.vercel.app/?lang=de" />
+    <link rel="alternate" hreflang="es" href="https://marc-stellar.vercel.app/?lang=es" />
+    <link rel="alternate" hreflang="fr" href="https://marc-stellar.vercel.app/?lang=fr" />
+    <link rel="alternate" hreflang="ja" href="https://marc-stellar.vercel.app/?lang=ja" />
+    <link rel="alternate" hreflang="pt" href="https://marc-stellar.vercel.app/?lang=pt" />
+    <link rel="alternate" hreflang="zh-CN" href="https://marc-stellar.vercel.app/?lang=zh-CN" />
+    <link rel="alternate" hreflang="x-default" href="https://marc-stellar.vercel.app/" />
 
     <!-- External fonts (Google Fonts may set cookies in some regions). Defer loading until
        consent is given. See consent-banner.js for implementation. -->
@@ -29,6 +37,7 @@
     </script>
   </head>
   <body>
+    <a class="skip-link" href="#main-content">Skip to main content</a>
     <!-- Navigation -->
     <nav class="nav" id="nav">
       <div class="nav-inner">
@@ -120,7 +129,7 @@
       </div>
     </nav>
 
-    <main>
+    <main id="main-content">
       <!-- Hero -->
       <section class="hero" id="hero">
         <div class="hero-bg" aria-hidden="true">
@@ -787,6 +796,9 @@ const result = await marcFetch(
           </p>
         </div>
         <div class="footer-links">
+          <button type="button" id="consent-preferences" class="footer-link-btn">
+            Cookie preferences
+          </button>
           <a href="https://github.com/sonoflawal-1/Stellar-agent" target="_blank" rel="noopener"
             >GitHub</a
           >
@@ -803,14 +815,15 @@ const result = await marcFetch(
     <div
       id="consent-banner"
       class="consent-banner"
-      role="alertdialog"
-      aria-live="polite"
-      aria-label="Cookie and consent banner"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="consent-title"
+      aria-describedby="consent-description"
     >
       <div class="consent-content">
         <div class="consent-text">
-          <h3 class="consent-title" data-i18n="consent.title">Privacy & Cookies</h3>
-          <p class="consent-description" data-i18n="consent.description">
+          <h3 id="consent-title" class="consent-title" data-i18n="consent.title">Privacy & Cookies</h3>
+          <p id="consent-description" class="consent-description" data-i18n="consent.description">
             We use external fonts (Google Fonts) and analytics to improve your experience. These may
             set cookies in some regions. You can always change your preferences.
           </p>

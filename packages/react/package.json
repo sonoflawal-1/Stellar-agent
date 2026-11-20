@@ -12,6 +12,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
+    },
+    "./query": {
+      "types": "./dist/query.d.ts",
+      "import": "./dist/query.js",
+      "require": "./dist/query.cjs"
     }
   },
   "files": [
@@ -26,6 +31,8 @@
     "test:coverage": "vitest run --coverage",
     "size": "size-limit",
     "typecheck": "tsc --noEmit",
+    "lint:pkg": "publint",
+    "check:exports": "attw --pack .",
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build",
     "storybook:ci": "storybook build --output-dir storybook-static"
@@ -45,13 +52,20 @@
     "sdk"
   ],
   "peerDependencies": {
+    "@tanstack/react-query": ">=5.0.0",
     "react": ">=17.0.0",
     "react-dom": ">=17.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@tanstack/react-query": {
+      "optional": true
+    }
   },
   "dependencies": {
     "marc-stellar-sdk": "workspace:*"
   },
   "devDependencies": {
+    "@arethetypeswrong/cli": "^0.16.0",
     "@size-limit/preset-small-lib": "^11.1.0",
     "@storybook/addon-actions": "^8.0.0",
     "@storybook/addon-controls": "^8.0.0",
@@ -61,12 +75,14 @@
     "@storybook/blocks": "^8.0.0",
     "@storybook/react": "^8.0.0",
     "@storybook/react-vite": "^8.0.0",
+    "@tanstack/react-query": "^5.0.0",
     "@testing-library/jest-dom": "^6.4.0",
     "@testing-library/react": "^16.0.0",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "@vitest/coverage-v8": "^1.6.0",
     "jsdom": "^24.0.0",
+    "publint": "^0.2.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
     "size-limit": "^11.1.0",
