@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from 'crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
 
 /**
  * Outbound webhook notification dispatcher for new escrow jobs.
@@ -42,6 +42,200 @@ export interface DispatchResult {
   attempts: number;
   status?: number;
   error?: string;
+}
+
+/** Number of consecutive failed deliveries before a failure alert fires. */
+export const FAILURE_ALERT_THRESHOLD = MAX_ATTEMPTS;
+
+/** Default grace window (ms) during which the previous secret is still accepted. */
+export const SECRET_GRACE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+export interface WebhookSubscription {
+  id: string;
+  agentId: string;
+  url: string;
+  secret: string;
+  /** Previous secret kept valid for verification during rotation grace window. */
+  previousSecret?: string | null;
+  /** Epoch ms after which `previousSecret` is no longer accepted. */
+  previousSecretExpiresAt?: number | null;
+  active: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface DeliveryLogEntry {
+  subscriptionId: string;
+  jobId?: string;
+  ok: boolean;
+  attempts: number;
+  status?: number;
+  error?: string;
+  timestamp: number;
+}
+
+export interface FailureAlert {
+  subscriptionId: string;
+  agentId: string;
+  url: string;
+  attempts: number;
+  status?: number;
+  error?: string;
+  timestamp: number;
+}
+
+export type FailureAlertHandler = (alert: FailureAlert) => void | Promise<void>;
+
+export interface SubscriptionStore {
+  create(input: {
+    agentId: string;
+    url: string;
+    secret?: string;
+  }): WebhookSubscription;
+  list(agentId?: string): WebhookSubscription[];
+  get(id: string): WebhookSubscription | null;
+  update(
+    id: string,
+    patch: Partial<Pick<WebhookSubscription, 'url' | 'active'>>
+  ): WebhookSubscription | null;
+  delete(id: string): boolean;
+  rotateSecret(id: string, graceWindowMs?: number): WebhookSubscription | null;
+  recordDelivery(entry: DeliveryLogEntry): void;
+  listDeliveries(subscriptionId: string): DeliveryLogEntry[];
+}
+
+/** Generate a cryptographically random hex secret suitable for HMAC signing. */
+export function generateSecret(bytes = 32): string {
+  return randomBytes(bytes).toString('hex');
+}
+
+/**
+ * In-memory subscription store with CRUD, secret rotation and delivery logs.
+ *
+ * The store is intentionally dependency-free so it can back the indexer's
+ * HTTP endpoints and be swapped for a persistent implementation later.
+ */
+export function createSubscriptionStore(options: {
+  onFailureAlert?: FailureAlertHandler;
+  failureThreshold?: number;
+  now?: () => number;
+  idFactory?: () => string;
+} = {}): SubscriptionStore {
+  const now = options.now ?? (() => Date.now());
+  const failureThreshold = options.failureThreshold ?? FAILURE_ALERT_THRESHOLD;
+  const idFactory = options.idFactory ?? (() => randomBytes(16).toString('hex'));
+  const subscriptions = new Map<string, WebhookSubscription>();
+  const deliveries = new Map<string, DeliveryLogEntry[]>();
+
+  return {
+    create(input) {
+      const ts = now();
+      const sub: WebhookSubscription = {
+        id: idFactory(),
+        agentId: input.agentId,
+        url: input.url.trim(),
+        secret: input.secret && input.secret !== '' ? input.secret : generateSecret(),
+        previousSecret: null,
+        previousSecretExpiresAt: null,
+        active: true,
+        createdAt: ts,
+        updatedAt: ts,
+      };
+      subscriptions.set(sub.id, sub);
+      deliveries.set(sub.id, []);
+      return { ...sub };
+    },
+
+    list(agentId) {
+      const all = Array.from(subscriptions.values());
+      const filtered = agentId ? all.filter((s) => s.agentId === agentId) : all;
+      return filtered.map((s) => ({ ...s }));
+    },
+
+    get(id) {
+      const sub = subscriptions.get(id);
+      return sub ? { ...sub } : null;
+    },
+
+    update(id, patch) {
+      const sub = subscriptions.get(id);
+      if (!sub) return null;
+      if (patch.url !== undefined) sub.url = patch.url.trim();
+      if (patch.active !== undefined) sub.active = patch.active;
+      sub.updatedAt = now();
+      return { ...sub };
+    },
+
+    delete(id) {
+      deliveries.delete(id);
+      return subscriptions.delete(id);
+    },
+
+    rotateSecret(id, graceWindowMs = SECRET_GRACE_WINDOW_MS) {
+      const sub = subscriptions.get(id);
+      if (!sub) return null;
+      const ts = now();
+      sub.previousSecret = sub.secret;
+      sub.previousSecretExpiresAt = ts + graceWindowMs;
+      sub.secret = generateSecret();
+      sub.updatedAt = ts;
+      return { ...sub };
+    },
+
+    recordDelivery(entry) {
+      const log = deliveries.get(entry.subscriptionId);
+      if (!log) return;
+      log.push({ ...entry });
+      if (!entry.ok && entry.attempts >= failureThreshold && options.onFailureAlert) {
+        const sub = subscriptions.get(entry.subscriptionId);
+        if (sub) {
+          const alert: FailureAlert = {
+            subscriptionId: sub.id,
+            agentId: sub.agentId,
+            url: sub.url,
+            attempts: entry.attempts,
+            status: entry.status,
+            error: entry.error,
+            timestamp: entry.timestamp,
+          };
+          try {
+            void options.onFailureAlert(alert);
+          } catch {
+            // Never let an alert handler break delivery recording.
+          }
+        }
+      }
+    },
+
+    listDeliveries(subscriptionId) {
+      const log = deliveries.get(subscriptionId);
+      return log ? log.map((e) => ({ ...e })) : [];
+    },
+  };
+}
+
+/**
+ * Verify a signature against a subscription, accepting either the current
+ * secret or the previous secret while its grace window is still open.
+ */
+export function verifySubscriptionSignature(
+  subscription: Pick<
+    WebhookSubscription,
+    'secret' | 'previousSecret' | 'previousSecretExpiresAt'
+  >,
+  rawBody: string,
+  signature: string,
+  nowMs: number = Date.now()
+): boolean {
+  if (verifySignature(rawBody, subscription.secret, signature)) return true;
+  if (
+    subscription.previousSecret &&
+    subscription.previousSecretExpiresAt != null &&
+    nowMs <= subscription.previousSecretExpiresAt
+  ) {
+    return verifySignature(rawBody, subscription.previousSecret, signature);
+  }
+  return false;
 }
 
 /**

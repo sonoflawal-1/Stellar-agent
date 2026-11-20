@@ -598,6 +598,416 @@ curl -X POST http://localhost:4504/job \
 
 ---
 
+## Indexer REST API
+
+The indexer service exposes read-only REST endpoints over indexed on-chain data (events, reputation, jobs) plus webhook subscription management. All list endpoints use **cursor pagination** and enforce a server-side maximum page size — there are no unbounded queries.
+
+### Authentication
+
+Optional. Set `INDEXER_API_KEY` to require Bearer auth on all endpoints. Subscription management endpoints always require auth when the key is configured.
+
+```bash
+Authorization: Bearer <INDEXER_API_KEY>
+```
+
+### Cursor Pagination
+
+All list endpoints accept the same pagination parameters:
+
+| Parameter | Type    | Default | Description                                                        |
+| --------- | ------- | ------- | ------------------------------------------------------------------ |
+| `limit`   | integer | `50`    | Page size. Clamped to `1..200`; values above 200 are rejected (400). |
+| `cursor`  | string  | —       | Opaque cursor from a previous response's `next_cursor`.            |
+| `order`   | enum    | `desc`  | Sort order by ledger sequence: `asc` or `desc`.                    |
+
+Responses use a uniform envelope:
+
+```json
+{
+  "data": [],
+  "next_cursor": "eyJsZWRnZXIiOjEyMzQ1LCJpZCI6N30",
+  "has_more": true
+}
+```
+
+| Field         | Description                                                       |
+| ------------- | ----------------------------------------------------------------- |
+| `data`        | Array of result objects for this page                             |
+| `next_cursor` | Opaque cursor for the next page, or `null` when exhausted         |
+| `has_more`    | `true` when `next_cursor` is non-null                             |
+
+Cursors are stable across inserts: new rows arriving during pagination do not cause duplicates or skips for `desc` order.
+
+---
+
+### `GET /events`
+
+List indexed protocol events.
+
+**Query Parameters:**
+
+| Parameter    | Type    | Description                                                       |
+| ------------ | ------- | ----------------------------------------------------------------- |
+| `limit`      | integer | Page size (see pagination)                                        |
+| `cursor`     | string  | Pagination cursor                                                 |
+| `order`      | enum    | `asc` / `desc` (default `desc`)                                   |
+| `type`       | string  | Filter by event type (e.g. `job_created`, `job_completed`)        |
+| `agent_id`   | string  | Filter by agent ID                                                |
+| `job_id`     | string  | Filter by job ID                                                  |
+| `from_ledger`| integer | Inclusive lower bound on ledger sequence                          |
+| `to_ledger`  | integer | Inclusive upper bound on ledger sequence                          |
+
+**Response (200 OK):**
+
+```json
+{
+  "data": [
+    {
+      "id": 7,
+      "ledger": 12345,
+      "tx_hash": "ab12...",
+      "type": "job_completed",
+      "agent_id": "seller-webbuilder",
+      "job_id": "12345",
+      "payload": { "amount_usdc": 50000000 },
+      "created_at": "2026-07-29T09:19:36.884Z"
+    }
+  ],
+  "next_cursor": "eyJsZWRnZXIiOjEyMzQ1LCJpZCI6N30",
+  "has_more": true
+}
+```
+
+**Error Responses:**
+
+| Status | Description                                  |
+| ------ | -------------------------------------------- |
+| 400    | Invalid `limit`, `cursor`, or ledger bounds  |
+| 401    | Unauthorized (if API key is required)        |
+
+**Example:**
+
+```bash
+curl "http://localhost:4600/events?type=job_completed&limit=25&order=desc"
+```
+
+---
+
+### `GET /agents/:id/reputation`
+
+Retrieve aggregated reputation for a single agent, plus a paginated history of reputation-affecting events.
+
+**Parameters:**
+
+| Parameter | Type   | Description                          |
+| --------- | ------ | ------------------------------------ |
+| `id`      | string | Agent ID (e.g. `seller-webbuilder`)  |
+
+**Query Parameters:** `limit`, `cursor`, `order` (applies to the `history` array).
+
+**Response (200 OK):**
+
+```json
+{
+  "agent_id": "seller-webbuilder",
+  "score": 92,
+  "jobs_completed": 41,
+  "jobs_failed": 3,
+  "avg_rating": 4.7,
+  "updated_at": "2026-07-29T09:19:36.884Z",
+  "history": {
+    "data": [
+      {
+        "id": 3,
+        "ledger": 12340,
+        "type": "job_completed",
+        "job_id": "12345",
+        "delta": 2,
+        "created_at": "2026-07-29T09:10:00.000Z"
+      }
+    ],
+    "next_cursor": null,
+    "has_more": false
+  }
+}
+```
+
+**Error Responses:**
+
+| Status | Description             |
+| ------ | ----------------------- |
+| 404    | Agent has no reputation |
+
+---
+
+### `GET /jobs/:id`
+
+Retrieve a single job with its lifecycle events.
+
+**Parameters:**
+
+| Parameter | Type   | Description                          |
+| --------- | ------ | ------------------------------------ |
+| `id`      | string | Job ID from the commerce contract    |
+
+**Query Parameters:** `limit`, `cursor`, `order` (applies to the `events` array).
+
+**Response (200 OK):**
+
+```json
+{
+  "job_id": "12345",
+  "buyer": "GBXXXX...",
+  "seller": "GCXXXX...",
+  "agent_id": "seller-webbuilder",
+  "status": "completed",
+  "amount_usdc": 50000000,
+  "deliverable_url": "http://localhost:4501/deliverables/12345.html",
+  "created_at": "2026-07-29T09:00:00.000Z",
+  "updated_at": "2026-07-29T09:19:36.884Z",
+  "events": {
+    "data": [],
+    "next_cursor": null,
+    "has_more": false
+  }
+}
+```
+
+**Error Responses:**
+
+| Status | Description       |
+| ------ | ----------------- |
+| 404    | Job not found     |
+
+---
+
+### Webhook Subscriptions
+
+Manage webhook subscriptions, rotate HMAC secrets, and inspect delivery logs. All endpoints require auth when `INDEXER_API_KEY` is set.
+
+#### `POST /webhooks/subscriptions`
+
+Create a subscription. The response includes the signing secret **once** — store it securely.
+
+**Request Body:**
+
+```json
+{
+  "url": "https://example.com/hooks/bear",
+  "event_types": ["job_created", "job_completed"],
+  "description": "Production listener"
+}
+```
+
+| Field         | Type     | Required | Description                                              |
+| ------------- | -------- | -------- | -------------------------------------------------------- |
+| `url`         | string   | ✓        | HTTPS endpoint to deliver events to                      |
+| `event_types` | string[] | ✓        | Event types to deliver; `["*"]` for all                  |
+| `description` | string   | —        | Human-readable label                                     |
+
+**Response (201 Created):**
+
+```json
+{
+  "id": "wh_01H...",
+  "url": "https://example.com/hooks/bear",
+  "event_types": ["job_created", "job_completed"],
+  "description": "Production listener",
+  "secret": "whsec_9f2c...",
+  "active": true,
+  "created_at": "2026-07-29T09:19:36.884Z"
+}
+```
+
+#### `GET /webhooks/subscriptions`
+
+List subscriptions (cursor paginated: `limit`, `cursor`, `order`). Secrets are never returned.
+
+#### `GET /webhooks/subscriptions/:id`
+
+Retrieve a single subscription (without secret).
+
+#### `PATCH /webhooks/subscriptions/:id`
+
+Update `url`, `event_types`, `description`, or `active`.
+
+#### `DELETE /webhooks/subscriptions/:id`
+
+Delete a subscription. Returns `204 No Content`.
+
+#### `POST /webhooks/subscriptions/:id/rotate-secret`
+
+Rotate the HMAC signing secret. The previous secret remains valid for a configurable grace period (`WEBHOOK_SECRET_GRACE_SEC`, default 24h) so in-flight deliveries verify.
+
+**Response (200 OK):**
+
+```json
+{
+  "id": "wh_01H...",
+  "secret": "whsec_new...",
+  "previous_secret_expires_at": "2026-07-30T09:19:36.884Z"
+}
+```
+
+#### `GET /webhooks/subscriptions/:id/deliveries`
+
+Delivery logs for a subscription (cursor paginated: `limit`, `cursor`, `order`). Filter with `status=success|failed|pending`.
+
+**Response (200 OK):**
+
+```json
+{
+  "data": [
+    {
+      "id": "dlv_01H...",
+      "event_id": 7,
+      "status": "failed",
+      "attempts": 5,
+      "response_status": 500,
+      "error": "upstream 500",
+      "next_retry_at": "2026-07-29T09:25:00.000Z",
+      "created_at": "2026-07-29T09:19:36.884Z"
+    }
+  ],
+  "next_cursor": null,
+  "has_more": false
+}
+```
+
+#### Failure Alerts
+
+After `WEBHOOK_MAX_RETRIES` consecutive failed attempts (default `5`), the subscription is marked `degraded` and a `webhook.failing` alert is emitted (logged and, if configured, forwarded to `WEBHOOK_ALERT_URL`). Deliveries continue with exponential backoff until the subscription is disabled or succeeds.
+
+---
+
+### Webhook Signature Verification
+
+Every delivery includes:
+
+```
+X-Bear-Signature: t=1690732000,v1=<hex hmac>
+X-Bear-Event-Id: 7
+X-Bear-Delivery-Id: dlv_01H...
+```
+
+`v1` is `HMAC-SHA256(secret, "<t>.<raw_body>")`. Verify against the **raw** request body before parsing JSON, and reject timestamps older than 5 minutes to prevent replay. During secret rotation, accept a signature matching either the current or previous secret.
+
+**SDK helper:**
+
+```typescript
+import { verifyWebhookSignature } from "@bear/sdk";
+
+const ok = verifyWebhookSignature({
+  payload: rawBody, // string or Buffer, unparsed
+  header: req.headers["x-bear-signature"],
+  secrets: [process.env.BEAR_WEBHOOK_SECRET!],
+  toleranceSec: 300,
+});
+```
+
+**Manual verification (Node.js):**
+
+```typescript
+import crypto from "node:crypto";
+
+function verify(rawBody: string, header: string, secrets: string[]) {
+  const parts = Object.fromEntries(
+    header.split(",").map((p) => p.split("=") as [string, string]),
+  );
+  const t = Number(parts.t);
+  if (!t || Math.abs(Date.now() / 1000 - t) > 300) return false;
+  const expected = crypto
+    .createHmac("sha256", secrets[0])
+    .update(`${t}.${rawBody}`)
+    .digest("hex");
+  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(parts.v1));
+}
+```
+
+---
+
+## Dashboard Security Model
+
+The dashboard service (`server.ts`) serves the landing site and the `/app` static bundle, and exposes the mutating routes `/api/jobs/create`, `/api/dispute-job`, `/api/claim-refund`, and `/api/build/submit`. The following controls apply to all of them.
+
+### Authentication: Bearer-Only
+
+Tokens are issued by `POST /api/auth/token` and **must** be sent in the `Authorization` header:
+
+```bash
+Authorization: Bearer <token>
+```
+
+Cookie-based authentication is **not** supported. Requests that present a token only via a cookie (e.g. `Cookie: token=...`) are rejected with `401 Unauthorized`. This removes the ambient-authority vector that CSRF attacks rely on; clients must attach the header explicitly on every request.
+
+### CSRF Protection for Mutating Routes
+
+Because auth is bearer-only, cross-site form POSTs cannot carry credentials and are rejected. As defence in depth, mutating routes additionally enforce a **double-submit CSRF token**:
+
+1. `GET /api/auth/csrf` issues a random token and sets it in a cookie with `SameSite=Strict; Secure; HttpOnly=false` (readable by `public/app.js`).
+2. The client echoes the token in the `X-CSRF-Token` header on every mutating request.
+3. The server rejects the request with `403 Forbidden` if the header is missing or does not match the cookie.
+
+Cross-site form submissions cannot set custom headers, so they fail both the bearer check and the CSRF check.
+
+### Security Headers and CSP
+
+All responses include a consistent header set applied via `helmet`:
+
+| Header                      | Value / Notes                                                        |
+| --------------------------- | -------------------------------------------------------------------- |
+| `Content-Security-Policy`   | Tailored to `public/app.js`; see allow-list below                    |
+| `X-Content-Type-Options`    | `nosniff`                                                            |
+| `X-Frame-Options`           | `DENY`                                                               |
+| `Referrer-Policy`           | `no-referrer`                                                        |
+| `Strict-Transport-Security` | `max-age=31536000; includeSubDomains`                                |
+
+CSP allow-list (configurable via `CSP_CONNECT_SRC` / `CSP_SCRIPT_SRC`):
+
+- `default-src 'self'`
+- `script-src 'self'` (no inline scripts; `public/app.js` is served as an external file)
+- `style-src 'self' 'unsafe-inline'` (inline styles used by the static bundle)
+- `connect-src 'self' <STELLAR_RPC_URL> <allow-listed CDN origins>`
+- `img-src 'self' data:`
+- `frame-ancestors 'none'`
+
+### Request Body Size Limits
+
+Body parsing is bounded per route rather than by a single global limit:
+
+| Route                 | Default limit | Env override             |
+| --------------------- | ------------- | ------------------------ |
+| Global (`express.json`) | `100kb`     | `BODY_LIMIT_DEFAULT`     |
+| `/api/build/submit`   | `2mb`         | `BODY_LIMIT_BUILD_SUBMIT`|
+| `/api/jobs/create`    | `256kb`       | `BODY_LIMIT_JOBS_CREATE` |
+
+Requests exceeding the applicable limit are rejected with `413 Payload Too Large` before any handler runs.
+
+### Rate Limiting Buckets
+
+Rate limits are applied per-IP **and** per-wallet/per-token, with cost-weighted buckets for embedding-heavy routes. Each bucket is independent; a request is rejected if any bucket is exhausted.
+
+| Bucket            | Key                    | Scope                                  | Default                |
+| ----------------- | ---------------------- | -------------------------------------- | ---------------------- |
+| `ip`              | client IP              | All routes                             | 120 req/min            |
+| `wallet`          | authenticated wallet   | Mutating + wallet-scoped reads         | 30 req/min             |
+| `token`           | bearer token hash      | All authenticated routes               | 60 req/min             |
+| `cost:embeddings` | wallet                 | `/api/agents/match`, embedding routes  | 600 cost units/min     |
+
+Embedding-heavy routes charge a cost per request (e.g. `10` units per `/api/agents/match` call) against the `cost:embeddings` bucket, so a single wallet cannot fan out across many IPs to bypass limits.
+
+All `429 Too Many Requests` responses include a `Retry-After` header (seconds until the earliest bucket refills) plus `RateLimit-*` headers:
+
+```
+HTTP/1.1 429 Too Many Requests
+Retry-After: 12
+RateLimit-Limit: 30
+RateLimit-Remaining: 0
+RateLimit-Reset: 1690732012
+```
+
+---
+
 ## Request/Response Conventions
 
 ### Request Headers
@@ -625,11 +1035,39 @@ All responses are JSON with standard fields:
 
 **Error (4xx/5xx):**
 
+All dashboard `/api` routes return a single structured error shape, produced by one Express error handler:
+
 ```json
 {
-  "error": "Human-readable error message"
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "invalid jobId",
+    "requestId": "req_01H8Z9..."
+  }
 }
 ```
+
+| Field       | Description                                                              |
+| ----------- | ------------------------------------------------------------------------ |
+| `code`      | Stable, machine-readable error code (see table below)                    |
+| `message`   | Human-readable description (safe to display; never contains stack traces) |
+| `requestId` | Correlation ID for the request; also returned in the `X-Request-Id` header |
+
+**Error codes:**
+
+| Code                | Status | Meaning                                          |
+| ------------------- | ------ | ------------------------------------------------ |
+| `VALIDATION_ERROR`  | 400    | Invalid or missing request parameters/body       |
+| `UNAUTHORIZED`      | 401    | Missing or invalid credentials                   |
+| `FORBIDDEN`         | 403    | Authenticated but not permitted                  |
+| `NOT_FOUND`         | 404    | Resource does not exist                          |
+| `CONFLICT`          | 409    | Request conflicts with current state             |
+| `RATE_LIMITED`      | 429    | Rate limit exceeded                              |
+| `UPSTREAM_ERROR`    | 502    | Dependency (RPC, indexer) returned an error      |
+| `NOT_READY`         | 503    | Service not ready (see `/readyz`)                |
+| `INTERNAL_ERROR`    | 500    | Unexpected server error                          |
+
+Clients should branch on `code`, not on `message`. The dashboard client and `@bear/sdk` parse this shape and surface `requestId` in logs.
 
 ### Common Status Codes
 
@@ -638,10 +1076,14 @@ All responses are JSON with standard fields:
 | 200  | Request succeeded                      |
 | 400  | Bad request (validation error)         |
 | 401  | Unauthorized (authentication required) |
+| 403  | Forbidden (CSRF token missing/invalid) |
 | 404  | Resource not found                     |
+| 413  | Payload too large (body limit exceeded)|
 | 422  | Unprocessable entity (malformed data)  |
 | 429  | Too many requests (rate limited)       |
 | 500  | Internal server error                  |
+| 502  | Upstream dependency error              |
+| 503  | Service not ready                      |
 
 ---
 
@@ -688,12 +1130,37 @@ REGISTRY_API_KEY=secret-key        # Registry auth token (if required)
 PUBLIC_URL=http://localhost:4501   # Public URL for deliverables
 ```
 
+### Indexer
+
+```bash
+INDEXER_PORT=4600                  # Indexer REST port (default: 4600)
+INDEXER_API_KEY=secret-key         # Optional: enable Bearer auth
+INDEXER_MAX_PAGE_SIZE=200          # Hard cap on `limit` for list endpoints
+WEBHOOK_MAX_RETRIES=5              # Failures before `webhook.failing` alert
+WEBHOOK_SECRET_GRACE_SEC=86400     # Previous secret validity after rotation
+WEBHOOK_ALERT_URL=https://...      # Optional: forward failure alerts here
+```
+
 ### Buyer Agent
 
 ```bash
 BUYER_SECRET=SBXXXXXXXX...         # Buyer keypair secret
 STELLAR_RPC_URL=https://...        # Stellar RPC endpoint
 STELLAR_NETWORK_PASSPHRASE=...     # Network passphrase
+```
+
+### Dashboard
+
+```bash
+BODY_LIMIT_DEFAULT=100kb           # Global express.json limit
+BODY_LIMIT_BUILD_SUBMIT=2mb        # Limit for /api/build/submit
+BODY_LIMIT_JOBS_CREATE=256kb       # Limit for /api/jobs/create
+CSP_CONNECT_SRC=https://...        # Extra connect-src origins (RPC/CDN)
+CSP_SCRIPT_SRC=https://...         # Extra script-src origins
+RATE_LIMIT_IP_PER_MIN=120          # Per-IP bucket
+RATE_LIMIT_WALLET_PER_MIN=30       # Per-wallet bucket
+RATE_LIMIT_TOKEN_PER_MIN=60        # Per-token bucket
+RATE_LIMIT_EMBEDDING_COST_PER_MIN=600 # Cost-weighted embedding bucket
 ```
 
 ---
@@ -728,9 +1195,114 @@ RateLimit-Reset: 1690732000
 
 ```json
 {
-  "error": "service unavailable"
+  "error": {
+    "code": "NOT_READY",
+    "message": "service unavailable: rpc unreachable",
+    "requestId": "req_01H8Z9..."
+  }
 }
 ```
+
+---
+
+## Dashboard Health & Readiness
+
+The dashboard service exposes two probes:
+
+### `GET /health` and `GET /healthz`
+
+Shallow liveness probes. Return `200` with `{ "status": "ok" }` as long as the process is running. They do **not** check dependencies.
+
+### `GET /readyz`
+
+Deep readiness probe. Checks each dependency with a per-check timeout (default `2000ms`, configurable via `READYZ_TIMEOUT_MS`):
+
+| Check     | Description                                                       |
+| --------- | ----------------------------------------------------------------- |
+| `rpc`     | Stellar RPC reachable (`getHealth`/`getLatestLedger`)             |
+| `indexer` | Indexer database reachable and queryable                          |
+| `model`   | LLM model provider configured and reachable                       |
+
+**Response (200 OK — all checks pass):**
+
+```json
+{
+  "status": "ready",
+  "checks": {
+    "rpc": { "ok": true, "latencyMs": 42 },
+    "indexer": { "ok": true, "latencyMs": 7 },
+    "model": { "ok": true, "latencyMs": 118 }
+  }
+}
+```
+
+**Response (503 Service Unavailable — any check fails):**
+
+```json
+{
+  "status": "not_ready",
+  "checks": {
+    "rpc": { "ok": false, "latencyMs": 2000, "error": "timeout" },
+    "indexer": { "ok": true, "latencyMs": 7 },
+    "model": { "ok": true, "latencyMs": 118 }
+  }
+}
+```
+
+`/readyz` returns `503` whenever the RPC is unreachable (or any other check fails), so orchestrators stop routing traffic to the instance. Docker `HEALTHCHECK` and the compose `healthcheck` use `/readyz`; liveness probes should keep using `/healthz`.
+
+```bash
+curl -fsS http://localhost:4700/readyz || echo "not ready"
+```
+
+---
+
+## Dashboard Admin API
+
+### `GET /api/admin/audit`
+
+Read the admin audit trail. Entries are appended to a JSONL log and indexed for efficient filtered reads.
+
+**Query Parameters:**
+
+| Parameter   | Type    | Default | Description                                                       |
+| ----------- | ------- | ------- | ----------------------------------------------------------------- |
+| `page`      | integer | `1`     | 1-based page number                                               |
+| `pageSize`  | integer | `50`    | Page size, clamped to `1..200`                                    |
+| `actor`     | string  | —       | Filter by actor (exact match)                                     |
+| `action`    | string  | —       | Filter by action (exact match, e.g. `agent.deregister`)           |
+| `from`      | string  | —       | Inclusive lower bound on timestamp (ISO-8601)                     |
+| `to`        | string  | —       | Inclusive upper bound on timestamp (ISO-8601)                     |
+
+**Response (200 OK):**
+
+```json
+{
+  "data": [
+    {
+      "id": "aud_01H...",
+      "timestamp": "2026-07-29T09:19:36.884Z",
+      "actor": "admin@example.com",
+      "action": "agent.deregister",
+      "target": "seller-webbuilder",
+      "requestId": "req_01H8Z9..."
+    }
+  ],
+  "page": 1,
+  "pageSize": 50,
+  "total": 1,
+  "hasMore": false
+}
+```
+
+**Error Responses:**
+
+| Status | Description                                        |
+| ------ | -------------------------------------------------- |
+| 400    | Invalid `page`, `pageSize`, `from`, or `to`        |
+| 401    | Unauthorized                                       |
+
+**Performance:** the JSONL audit log is indexed by actor, action, and timestamp, so filtered queries over 100k entries return in well under 100ms (see `docs/audit-performance.md`).
 
 ---
 
@@ -783,6 +1355,21 @@ console.log(result); // { status: "accepted", jobId: "1" }
 ---
 
 ## Changelog
+
+### v1.2 (2026-07-29)
+
+- Documented dashboard security model: bearer-only auth (cookie auth rejected)
+- CSRF double-submit token (`X-CSRF-Token`) required on mutating routes
+- Security headers via `helmet` with a CSP allow-list for `public/app.js` and RPC/CDN origins
+- Per-route request body size limits with `413 Payload Too Large`
+- Per-IP, per-wallet, per-token, and cost-weighted rate-limit buckets; `429` includes `Retry-After`
+
+### v1.1 (2026-07-29)
+
+- Added Indexer REST API: `/events`, `/agents/:id/reputation`, `/jobs/:id`
+- Cursor pagination with bounded page sizes on all list endpoints
+- Webhook subscription CRUD, HMAC secret rotation, and delivery logs
+- Webhook signature verification helper and failure alerts after N retries
 
 ### v1.0 (2026-07-29)
 

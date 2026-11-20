@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { decodeBase64, formatAmount, isValidMetadataUri, parseAmount } from "./format.js";
+import {
+  decodeBase64,
+  formatAmount,
+  fromBaseUnits,
+  isValidMetadataUri,
+  parseAmount,
+  toBaseUnits,
+  TokenRegistry,
+} from "./format.js";
 
 test("decodeBase64 decodes ASCII and UTF-8 strings", () => {
   assert.equal(decodeBase64(Buffer.from("payment").toString("base64")), "payment");
@@ -332,6 +340,173 @@ test("parseAmount throws RangeError for fractional digits exceeding decimals", (
 test("parseAmount throws RangeError for negative decimals", () => {
   assert.throws(
     () => parseAmount("1", -1),
+    (err) => err instanceof RangeError,
+  );
+});
+
+// ===========================================================================
+// toBaseUnits / fromBaseUnits — round-trip for decimals 0-18
+// ===========================================================================
+
+test("toBaseUnits/fromBaseUnits round-trip for decimals 0 through 18", () => {
+  for (let decimals = 0; decimals <= 18; decimals++) {
+    const scale = 10n ** BigInt(decimals);
+    const samples = [0n, 1n, scale, scale * 3n + 1n, scale * 123_456_789n];
+    for (const base of samples) {
+      const human = fromBaseUnits(base, decimals);
+      const back = toBaseUnits(human, decimals);
+      assert.equal(
+        back,
+        base,
+        `round-trip failed for decimals=${decimals}, base=${base}, human="${human}"`,
+      );
+    }
+  }
+});
+
+test("toBaseUnits uses exact BigInt math (no floating-point drift)", () => {
+  // 10^30 with 18 decimals should be exactly 10^48 base units.
+  const huge = 10n ** 30n;
+  const base = toBaseUnits("1000000000000000000000000000000", 18);
+  assert.equal(base, huge * 10n ** 18n);
+  assert.equal(fromBaseUnits(base, 18), "1000000000000000000000000000000");
+});
+
+test("toBaseUnits handles fractional inputs exactly", () => {
+  assert.equal(toBaseUnits("1.5", 6), 1_500_000n);
+  assert.equal(toBaseUnits("0.0000001", 7), 1n);
+  assert.equal(toBaseUnits("1.234567890123456789", 18), 1_234_567_890_123_456_789n);
+  assert.equal(toBaseUnits("42", 0), 42n);
+});
+
+test("fromBaseUnits strips trailing zeros and handles zero decimals", () => {
+  assert.equal(fromBaseUnits(0n, 7), "0");
+  assert.equal(fromBaseUnits(1_500_000n, 6), "1.5");
+  assert.equal(fromBaseUnits(42n, 0), "42");
+  assert.equal(fromBaseUnits(1_000_000_000_000_000_000n, 18), "1");
+});
+
+test("toBaseUnits throws RangeError for invalid decimals", () => {
+  assert.throws(
+    () => toBaseUnits("1", -1),
+    (err) => err instanceof RangeError,
+  );
+  assert.throws(
+    () => toBaseUnits("1", 1.5),
+    (err) => err instanceof RangeError,
+  );
+});
+
+test("fromBaseUnits throws RangeError for invalid decimals", () => {
+  assert.throws(
+    () => fromBaseUnits(1n, -1),
+    (err) => err instanceof RangeError,
+  );
+  assert.throws(
+    () => fromBaseUnits(1n, 2.5),
+    (err) => err instanceof RangeError,
+  );
+});
+
+test("toBaseUnits throws TypeError for malformed input", () => {
+  for (const bad of ["", "   ", "-1", "1abc", "1,000", "1e7", "1.2.3"]) {
+    assert.throws(
+      () => toBaseUnits(bad, 7),
+      (err) => err instanceof TypeError,
+      `expected TypeError for "${bad}"`,
+    );
+  }
+});
+
+test("toBaseUnits throws RangeError when fractional digits exceed decimals", () => {
+  assert.throws(
+    () => toBaseUnits("0.12345678", 7),
+    (err) => err instanceof RangeError,
+  );
+});
+
+// ===========================================================================
+// TokenRegistry — caching of get_token_info
+// ===========================================================================
+
+test("TokenRegistry caches decimals per token address", async () => {
+  const calls: string[] = [];
+  const registry = new TokenRegistry(async (address: string) => {
+    calls.push(address);
+    return { address, decimals: 6 };
+  });
+
+  const first = await registry.toBaseUnits("1.5", "TOKEN_A");
+  const second = await registry.toBaseUnits("2", "TOKEN_A");
+  const third = await registry.fromBaseUnits(1_500_000n, "TOKEN_A");
+
+  assert.equal(first, 1_500_000n);
+  assert.equal(second, 2_000_000n);
+  assert.equal(third, "1.5");
+  assert.equal(calls.length, 1, "fetcher should be called once per address");
+  assert.deepEqual(calls, ["TOKEN_A"]);
+});
+
+test("TokenRegistry fetches decimals separately for distinct tokens", async () => {
+  const calls: string[] = [];
+  const decimalsByAddress: Record<string, number> = {
+    TOKEN_A: 6,
+    TOKEN_B: 18,
+  };
+  const registry = new TokenRegistry(async (address: string) => {
+    calls.push(address);
+    return { address, decimals: decimalsByAddress[address] };
+  });
+
+  assert.equal(await registry.toBaseUnits("1", "TOKEN_A"), 1_000_000n);
+  assert.equal(await registry.toBaseUnits("1", "TOKEN_B"), 1_000_000_000_000_000_000n);
+  // Repeat to confirm cache reuse.
+  assert.equal(await registry.toBaseUnits("1", "TOKEN_A"), 1_000_000n);
+  assert.equal(await registry.toBaseUnits("1", "TOKEN_B"), 1_000_000_000_000_000_000n);
+
+  assert.deepEqual(calls, ["TOKEN_A", "TOKEN_B"]);
+});
+
+test("TokenRegistry deduplicates concurrent fetches for the same token", async () => {
+  let calls = 0;
+  const registry = new TokenRegistry(async (address: string) => {
+    calls++;
+    return { address, decimals: 7 };
+  });
+
+  const results = await Promise.all([
+    registry.toBaseUnits("1", "TOKEN_A"),
+    registry.toBaseUnits("1", "TOKEN_A"),
+    registry.toBaseUnits("1", "TOKEN_A"),
+  ]);
+
+  assert.deepEqual(results, [10_000_000n, 10_000_000n, 10_000_000n]);
+  assert.equal(calls, 1);
+});
+
+test("TokenRegistry propagates fetcher errors and does not cache failures", async () => {
+  let calls = 0;
+  const registry = new TokenRegistry(async (address: string) => {
+    calls++;
+    if (calls === 1) {
+      throw new Error("rpc unavailable");
+    }
+    return { address, decimals: 6 };
+  });
+
+  await assert.rejects(() => registry.toBaseUnits("1", "TOKEN_A"), /rpc unavailable/);
+  assert.equal(await registry.toBaseUnits("1", "TOKEN_A"), 1_000_000n);
+  assert.equal(calls, 2);
+});
+
+test("TokenRegistry rejects tokens with invalid decimals", async () => {
+  const registry = new TokenRegistry(async (address: string) => ({
+    address,
+    decimals: -1,
+  }));
+
+  await assert.rejects(
+    () => registry.toBaseUnits("1", "TOKEN_A"),
     (err) => err instanceof RangeError,
   );
 });

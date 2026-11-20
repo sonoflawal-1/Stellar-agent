@@ -1,14 +1,54 @@
 export * from "./types.js";
 export * from "./events.js";
+// #1048 — typed event decoding: exhaustive BearEvent union + assertNever helper
+export {
+  decodeBearEvent,
+  assertNever,
+  type BearEvent,
+  type BearEventType,
+} from "./events.js";
 export * from "./subscribeJob.js";
 export * from "./errors.js";
+// #953/#955 — typed payment failure + budget guard errors
+export {
+  BudgetExceededError,
+  PaymentRejectedError,
+  InsufficientFundsError,
+  // #956 — 402 challenge validation against payee/asset allowlists
+  ChallengeValidationError,
+} from "./errors.js";
+// #967 — structured API error format `{ error: { code, message, requestId } }`
+export {
+  MarcApiError,
+  isMarcApiError,
+  parseApiError,
+  type ApiErrorBody,
+  type ApiErrorCode,
+} from "./errors.js";
+// #948 — decoded contract error names + typed contract errors
+export {
+  CONTRACT_ERRORS,
+  BearContractError,
+  wrapContractError,
+} from "./contractErrors.js";
 export { formatAmount, parseAmount, isValidMetadataUri } from "./format.js";
+// #952 — multi-token amount helpers using on-chain decimals
+export { toBaseUnits, fromBaseUnits, TokenRegistry } from "./format.js";
+// #954/#955 — payment receipt + budget guard types
+export type {
+  PaymentReceipt,
+  MarcFetchResult,
+  BudgetOptions,
+  BudgetExceededInfo,
+} from "./types.js";
 // #706 — SHA-256 deliverable payload content hash helpers
 export {
   computeDeliverableHash,
   verifyDeliverableHash,
   type DeliverableHashInput,
 } from "./deliverableHash.js";
+// #994 — deliverable hashing and submission helper shared by all sellers
+export { submitDeliverable, type SubmitDeliverableResult } from "./commerce.js";
 export { IdentityClient } from "./identity.js";
 export { CommerceClient } from "./commerce.js";
 export type {
@@ -35,11 +75,14 @@ export {
   marcFetch,
   marcFetchStream,
   parsePaymentRequiredHeader,
+  // #956 — validate 402 challenges against payee/asset allowlists
+  validatePaymentRequirement,
   type MarcFetchOptions,
   type MarcStreamOptions,
   type StreamChunk,
   type PaymentStatus,
   type ParsedPaymentRequirement,
+  type ChallengeAllowlistOptions,
 } from "./marcFetch.js";
 
 // Core configuration types (framework-agnostic)
@@ -101,3 +144,6 @@ export type { Milestone, MilestoneInput } from './types.js';
 
 // #698 — atomic batch job creation
 export type { JobRequest, BatchJobsCreatedEvent } from './commerce.js';
+
+// #979 — webhook subscription management: timing-safe HMAC-SHA256 signature verification
+export { verifyWebhookSignature } from "./webhookSignature.js";

@@ -1,0 +1,28 @@
+name: Verify mainnet (release gate)
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Script helper unit tests
+        run: npx tsx --test scripts/script-helpers.test.ts
+      - name: Run mainnet verification
+        run: npx tsx scripts/verify-mainnet.ts
+      - name: Upload verification report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mainnet-verification
+          path: reports/
+          if-no-files-found: ignore

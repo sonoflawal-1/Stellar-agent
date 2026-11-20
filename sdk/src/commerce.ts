@@ -16,6 +16,7 @@ import type { Signer } from "./signer.js";
 import { signerPublicKey, toSigner } from "./signer.js";
 import { createChannelVoucher } from "./paymentChannels.js";
 import type { ChannelVoucher } from "./paymentChannels.js";
+import { BearContractError } from "./errors.js";
 
 export type { ChannelVoucher } from "./paymentChannels.js";
 
@@ -29,6 +30,48 @@ export interface EvaluatorProgress {
   threshold: number;
   approvals: number;
 }
+
+/**
+ * Result of a simulation-only dry run of a write operation.
+ *
+ * Returned by every method on {@link CommerceClient.simulate}. Nothing is
+ * submitted to the network and no funded signer is required.
+ */
+export interface SimulationResult<T = unknown> {
+  /** The decoded return value the contract would produce. */
+  result: T;
+  /** Total resource fee (inclusion fee + resource fee) in stroops. */
+  resourceFee: bigint;
+  /** Inclusion (base) fee portion in stroops. */
+  inclusionFee: bigint;
+  /** Contract events the invocation would emit, decoded to native values. */
+  events: Array<{ contractId?: string; topics: unknown[]; value: unknown }>;
+  /** The base64-encoded, simulated (unsigned) transaction envelope. */
+  transactionXdr: string;
+}
+
+/** Options accepted by {@link CommerceClient.watchJob}. */
+export interface WatchJobOptions {
+  /** Aborts the iterator and closes the underlying event source. */
+  signal?: AbortSignal;
+  /** Polling interval in milliseconds. Defaults to the client configuration. */
+  pollIntervalMs?: number;
+}
+
+/** A single parsed job event yielded by {@link CommerceClient.watchJob}. */
+export interface JobEvent {
+  /** The job ID the event relates to. */
+  jobId: bigint;
+  /** The event name (e.g. `job_created`, `job_completed`). */
+  type: string;
+  /** The decoded event payload. */
+  data: Record<string, unknown>;
+  /** Ledger sequence in which the event was emitted, when known. */
+  ledger?: number;
+}
+
+/** Placeholder source account used for simulation-only dry runs. */
+const SIMULATION_SOURCE = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
 
 /**
  * A single job definition for {@link CommerceClient.batchCreateJobs}.
@@ -1500,6 +1543,531 @@ export class CommerceClient extends BaseClient {
         approved: Boolean(m.approved),
       })) as import('./types.js').Milestone[];
     });
+  }
+
+  // -------------------------------------------------------------------------
+  // #950 — Async iterator over job events
+  // -------------------------------------------------------------------------
+
+  /**
+   * Watch a job's lifecycle events as an async iterator.
+   *
+   * Built on the same polling/stream core as `subscribeJob`, but yields parsed
+   * {@link JobEvent} objects instead of invoking callbacks. The iterator ends
+   * cleanly when the supplied {@link AbortSignal} fires, closing the underlying
+   * event source.
+   *
+   * @param jobId - The on-chain job ID to watch.
+   * @param options - Optional abort signal and polling interval.
+   * @returns An async generator yielding {@link JobEvent} objects.
+   *
+   * @example
+   * ```typescript
+   * const controller = new AbortController();
+   * for await (const ev of commerce.watchJob(jobId, { signal: controller.signal })) {
+   *   console.log(ev.type, ev.data);
+   *   if (ev.type === "job_completed") controller.abort();
+   * }
+   * ```
+   */
+  async *watchJob(jobId: bigint, options: WatchJobOptions = {}): AsyncGenerator<JobEvent> {
+    const { signal, pollIntervalMs } = options;
+    if (signal?.aborted) return;
+
+    const queue: JobEvent[] = [];
+    let notify: (() => void) | null = null;
+    let closed = false;
+
+    const push = (event: JobEvent) => {
+      if (closed) return;
+      queue.push(event);
+      notify?.();
+    };
+
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      notify?.();
+    };
+
+    const unsubscribe = this.subscribeJob(jobId, (event) => {
+      push({
+        jobId,
+        type: String((event as { type?: unknown }).type ?? "update"),
+        data: (event as { data?: Record<string, unknown> }).data ?? {},
+        ledger: (event as { ledger?: number }).ledger,
+      });
+    });
+
+    const onAbort = () => {
+      unsubscribe();
+      close();
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+
+    try {
+      while (!closed) {
+        if (queue.length > 0) {
+          yield queue.shift()!;
+          continue;
+        }
+        await new Promise<void>((resolve) => {
+          notify = resolve;
+          if (pollIntervalMs !== undefined) {
+            setTimeout(resolve, pollIntervalMs);
+          }
+        });
+        notify = null;
+      }
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+      if (!closed) {
+        unsubscribe();
+        closed = true;
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // #951 — Simulation-only dry runs for every write
+  // -------------------------------------------------------------------------
+
+  /**
+   * Simulation-only dry-run helpers for every write operation.
+   *
+   * Each method builds the exact same contract operation as its write
+   * counterpart but only simulates it — nothing is submitted and no funded
+   * signer is required. Contract failures are surfaced as
+   * {@link BearContractError}; success returns a {@link SimulationResult}
+   * containing resource fees, expected events and the decoded return value.
+   *
+   * @example
+   * ```typescript
+   * const sim = await commerce.simulate.createJob(
+   *   clientAddress, provider, evaluator, TESTNET.usdcToken, 10_000_000n, "Do work",
+   * );
+   * console.log(sim.resourceFee, sim.events);
+   * ```
+   */
+  readonly simulate = {
+    createJob: (
+      clientAddress: string,
+      provider: string,
+      evaluator: string,
+      token: string,
+      budget: bigint,
+      description: string,
+      options: CreateJobOptions = {},
+    ): Promise<SimulationResult<bigint>> => {
+      if (budget <= 0n) throw new Error("budget must be greater than 0");
+      if (budget > MAX_I128) throw new Error("budget exceeds i128 max");
+      const op = this.contract.call(
+        "create_job",
+        new Address(clientAddress).toScVal(),
+        new Address(provider).toScVal(),
+        new Address(evaluator).toScVal(),
+        new Address(token).toScVal(),
+        nativeToScVal(budget, { type: "i128" }),
+        nativeToScVal(description, { type: "string" }),
+        nativeToScVal(options.slaDeadline ?? 0n, { type: "u64" }),
+        nativeToScVal(options.penaltyBpsPerHour ?? 0, { type: "u32" }),
+      );
+      return this.runSimulation(op, (v) => BigInt(scValToNative(v) as string));
+    },
+
+    batchCreateJobs: (
+      clientAddress: string,
+      requests: JobRequest[],
+    ): Promise<SimulationResult<bigint[]>> => {
+      if (requests.length === 0) throw new Error("requests must contain at least one job");
+      if (requests.length > MAX_BATCH_JOBS) {
+        throw new Error(`requests must contain at most ${MAX_BATCH_JOBS} jobs`);
+      }
+      for (const request of requests) {
+        if (request.budget <= 0n) throw new Error("budget must be greater than 0");
+        if (request.budget > MAX_I128) throw new Error("budget exceeds i128 max");
+      }
+      const requestsScVal = xdr.ScVal.scvVec(
+        requests.map((request) =>
+          nativeToScVal(
+            {
+              provider: new Address(request.provider).toScVal(),
+              evaluator: new Address(request.evaluator).toScVal(),
+              token: new Address(request.token).toScVal(),
+              budget: nativeToScVal(request.budget, { type: "i128" }),
+              description: nativeToScVal(request.description, { type: "string" }),
+            },
+            { type: "map" },
+          ),
+        ),
+      );
+      const op = this.contract.call(
+        "batch_create_jobs",
+        new Address(clientAddress).toScVal(),
+        requestsScVal,
+      );
+      return this.runSimulation(op, (v) => {
+        const native = scValToNative(v);
+        if (!Array.isArray(native)) return [];
+        return native.map((id) => BigInt(id as string));
+      });
+    },
+
+    createJobMultiEval: (
+      clientAddress: string,
+      provider: string,
+      evaluators: string[],
+      threshold: number,
+      token: string,
+      budget: bigint,
+      description: string,
+    ): Promise<SimulationResult<bigint>> => {
+      if (budget <= 0n) throw new Error("budget must be greater than 0");
+      if (budget > MAX_I128) throw new Error("budget exceeds i128 max");
+      if (evaluators.length === 0 || evaluators.length > 5) {
+        throw new Error("evaluators must contain between 1 and 5 addresses");
+      }
+      if (!Number.isInteger(threshold) || threshold < 1 || threshold > evaluators.length) {
+        throw new Error("threshold must be between 1 and the evaluator count");
+      }
+      if (new Set(evaluators).size !== evaluators.length) {
+        throw new Error("evaluators must be unique");
+      }
+      const evaluatorScVal = xdr.ScVal.scvVec(
+        evaluators.map((address) => new Address(address).toScVal()),
+      );
+      const op = this.contract.call(
+        "create_job_multi_eval",
+        new Address(clientAddress).toScVal(),
+        new Address(provider).toScVal(),
+        evaluatorScVal,
+        nativeToScVal(threshold, { type: "u32" }),
+        new Address(token).toScVal(),
+        nativeToScVal(budget, { type: "i128" }),
+        nativeToScVal(description, { type: "string" }),
+      );
+      return this.runSimulation(op, (v) => BigInt(scValToNative(v) as string));
+    },
+
+    approveJob: (evaluatorAddress: string, jobId: bigint): Promise<SimulationResult<number>> => {
+      const op = this.contract.call(
+        "approve_job",
+        new Address(evaluatorAddress).toScVal(),
+        nativeToScVal(jobId, { type: "u64" }),
+      );
+      return this.runSimulation(op, (v) => Number(scValToNative(v)));
+    },
+
+    submit: async (
+      providerAddress: string,
+      jobId: bigint,
+      deliverable: string,
+      deliverableHash?: Uint8Array,
+    ): Promise<SimulationResult<void>> => {
+      const hash = deliverableHash ?? (await computeDeliverableHash(deliverable));
+      const op = this.contract.call(
+        "submit",
+        new Address(providerAddress).toScVal(),
+        nativeToScVal(jobId, { type: "u64" }),
+        nativeToScVal(deliverable, { type: "string" }),
+        sha256ToScVal(hash),
+      );
+      return this.runSimulation(op, () => undefined);
+    },
+
+    complete: (
+      evaluatorAddress: string,
+      jobId: bigint,
+      expectedHash?: Uint8Array,
+    ): Promise<SimulationResult<void>> => {
+      const args: xdr.ScVal[] = [
+        new Address(evaluatorAddress).toScVal(),
+        nativeToScVal(jobId, { type: "u64" }),
+      ];
+      if (expectedHash !== undefined) args.push(sha256ToScVal(expectedHash));
+      const op = this.contract.call("complete", ...args);
+      return this.runSimulation(op, () => undefined);
+    },
+
+    cancel: (clientAddress: string, jobId: bigint): Promise<SimulationResult<void>> => {
+      const op = this.contract.call(
+        "cancel",
+        new Address(clientAddress).toScVal(),
+        nativeToScVal(jobId, { type: "u64" }),
+      );
+      return this.runSimulation(op, () => undefined);
+    },
+
+    dispute: (clientAddress: string, jobId: bigint): Promise<SimulationResult<void>> => {
+      const op = this.contract.call(
+        "dispute",
+        new Address(clientAddress).toScVal(),
+        nativeToScVal(jobId, { type: "u64" }),
+      );
+      return this.runSimulation(op, () => undefined);
+    },
+
+    claimRefund: (clientAddress: string, jobId: bigint): Promise<SimulationResult<void>> => {
+      const op = this.contract.call(
+        "claim_refund",
+        new Address(clientAddress).toScVal(),
+        nativeToScVal(jobId, { type: "u64" }),
+      );
+      return this.runSimulation(op, () => undefined);
+    },
+
+    claimExpired: (providerAddress: string, jobId: bigint): Promise<SimulationResult<void>> => {
+      const op = this.contract.call(
+        "claim_expired",
+        new Address(providerAddress).toScVal(),
+        nativeToScVal(jobId, { type: "u64" }),
+      );
+      return this.runSimulation(op, () => undefined);
+    },
+
+    approve: (
+      ownerAddress: string,
+      spender: string,
+      token: string,
+      amount: bigint,
+      expirationLedger: number = 100_000_000,
+    ): Promise<SimulationResult<void>> => {
+      const tokenContract = new Contract(token);
+      const op = tokenContract.call(
+        "approve",
+        new Address(ownerAddress).toScVal(),
+        new Address(spender).toScVal(),
+        nativeToScVal(amount, { type: "i128" }),
+        nativeToScVal(expirationLedger, { type: "u32" }),
+      );
+      return this.runSimulation(op, () => undefined);
+    },
+
+    approveAndCreateJob: (
+      clientAddress: string,
+      provider: string,
+      evaluator: string,
+      token: string,
+      budget: bigint,
+      description: string,
+      options: CreateJobOptions = {},
+    ): Promise<SimulationResult<bigint>> =>
+      this.simulate.createJob(
+        clientAddress,
+        provider,
+        evaluator,
+        token,
+        budget,
+        description,
+        options,
+      ),
+
+    createJobWithApproval: (
+      clientAddress: string,
+      provider: string,
+      evaluator: string,
+      token: string,
+      budget: bigint,
+      description: string,
+    ): Promise<SimulationResult<bigint>> =>
+      this.simulate.createJob(clientAddress, provider, evaluator, token, budget, description),
+
+    openChannel: (
+      payerAddress: string,
+      provider: string,
+      deposit: bigint,
+      voucherPublicKey: Uint8Array,
+      token: string = this.cfg.usdcToken,
+    ): Promise<SimulationResult<bigint>> => {
+      if (deposit <= 0n || deposit > MAX_I128) {
+        throw new Error("deposit must be a positive i128 amount");
+      }
+      const op = this.contract.call(
+        "open_channel",
+        new Address(payerAddress).toScVal(),
+        new Address(provider).toScVal(),
+        new Address(token).toScVal(),
+        nativeToScVal(deposit, { type: "i128" }),
+        nativeToScVal(voucherPublicKey, { type: "bytes" }),
+      );
+      return this.runSimulation(op, (v) => BigInt(scValToNative(v) as string));
+    },
+
+    closeChannel: (
+      participantAddress: string,
+      channelId: bigint,
+      voucher: ChannelVoucher,
+    ): Promise<SimulationResult<void>> => {
+      if (voucher.channelId !== channelId) throw new Error("voucher channel ID does not match");
+      const voucherScVal = nativeToScVal(
+        {
+          channel_id: nativeToScVal(voucher.channelId, { type: "u64" }),
+          amount: nativeToScVal(voucher.amount, { type: "i128" }),
+          nonce: nativeToScVal(voucher.nonce, { type: "u64" }),
+        },
+        { type: "map" },
+      );
+      const op = this.contract.call(
+        "close_channel",
+        new Address(participantAddress).toScVal(),
+        nativeToScVal(channelId, { type: "u64" }),
+        voucherScVal,
+        nativeToScVal(voucher.signature, { type: "bytes" }),
+      );
+      return this.runSimulation(op, () => undefined);
+    },
+
+    forceClose: (callerAddress: string, channelId: bigint): Promise<SimulationResult<void>> => {
+      const op = this.contract.call(
+        "force_close",
+        new Address(callerAddress).toScVal(),
+        nativeToScVal(channelId, { type: "u64" }),
+      );
+      return this.runSimulation(op, () => undefined);
+    },
+
+    setTreasury: (adminAddress: string, newTreasury: string): Promise<SimulationResult<void>> => {
+      const op = this.contract.call(
+        "set_treasury",
+        new Address(adminAddress).toScVal(),
+        new Address(newTreasury).toScVal(),
+      );
+      return this.runSimulation(op, () => undefined);
+    },
+
+    setFeeBps: (adminAddress: string, newBps: number): Promise<SimulationResult<void>> => {
+      const op = this.contract.call(
+        "set_fee_bps",
+        new Address(adminAddress).toScVal(),
+        nativeToScVal(newBps, { type: "u32" }),
+      );
+      return this.runSimulation(op, () => undefined);
+    },
+
+    setMultiEvalThreshold: (
+      adminAddress: string,
+      threshold: bigint,
+    ): Promise<SimulationResult<void>> => {
+      if (threshold < 0n || threshold > MAX_I128) {
+        throw new Error("threshold must fit in a non-negative i128");
+      }
+      const op = this.contract.call(
+        "set_multi_eval_threshold",
+        new Address(adminAddress).toScVal(),
+        nativeToScVal(threshold, { type: "i128" }),
+      );
+      return this.runSimulation(op, () => undefined);
+    },
+
+    createMilestoneJob: (
+      clientAddress: string,
+      provider: string,
+      evaluator: string,
+      token: string,
+      budget: bigint,
+      description: string,
+      milestones: Array<{ amount: bigint; description: string }>,
+    ): Promise<SimulationResult<bigint>> => {
+      if (budget <= 0n) throw new Error("budget must be greater than 0");
+      if (budget > MAX_I128) throw new Error("budget exceeds i128 max");
+      if (milestones.length === 0 || milestones.length > 20) {
+        throw new Error("milestones must contain between 1 and 20 entries");
+      }
+      const total = milestones.reduce((acc, m) => acc + m.amount, 0n);
+      if (total !== budget) throw new Error("sum of milestone amounts must equal budget");
+      const milestoneScVals = milestones.map((m, i) =>
+        nativeToScVal(
+          {
+            index: nativeToScVal(i, { type: "u32" }),
+            amount: nativeToScVal(m.amount, { type: "i128" }),
+            description: nativeToScVal(m.description, { type: "string" }),
+            deliverable: nativeToScVal("", { type: "string" }),
+            approved: nativeToScVal(false, { type: "bool" }),
+          },
+          { type: "map" },
+        ),
+      );
+      const op = this.contract.call(
+        "create_milestone_job",
+        new Address(clientAddress).toScVal(),
+        new Address(provider).toScVal(),
+        new Address(evaluator).toScVal(),
+        new Address(token).toScVal(),
+        nativeToScVal(budget, { type: "i128" }),
+        nativeToScVal(description, { type: "string" }),
+        xdr.ScVal.scvVec(milestoneScVals),
+      );
+      return this.runSimulation(op, (v) => BigInt(scValToNative(v) as string));
+    },
+
+    submitMilestone: async (
+      providerAddress: string,
+      jobId: bigint,
+      milestoneIdx: number,
+      deliverable: string,
+      deliverableHash?: Uint8Array,
+    ): Promise<SimulationResult<void>> => {
+      const hash = deliverableHash ?? (await computeDeliverableHash(deliverable));
+      const op = this.contract.call(
+        "submit_milestone",
+        new Address(providerAddress).toScVal(),
+        nativeToScVal(jobId, { type: "u64" }),
+        nativeToScVal(milestoneIdx, { type: "u32" }),
+        nativeToScVal(deliverable, { type: "string" }),
+        sha256ToScVal(hash),
+      );
+      return this.runSimulation(op, () => undefined);
+    },
+
+    approveMilestone: (
+      evaluatorAddress: string,
+      jobId: bigint,
+      milestoneIdx: number,
+    ): Promise<SimulationResult<void>> => {
+      const op = this.contract.call(
+        "approve_milestone",
+        new Address(evaluatorAddress).toScVal(),
+        nativeToScVal(jobId, { type: "u64" }),
+        nativeToScVal(milestoneIdx, { type: "u32" }),
+      );
+      return this.runSimulation(op, () => undefined);
+    },
+
+    cancelUncompletedMilestones: (
+      clientAddress: string,
+      jobId: bigint,
+    ): Promise<SimulationResult<void>> => {
+      const op = this.contract.call(
+        "cancel_uncompleted_milestones",
+        new Address(clientAddress).toScVal(),
+        nativeToScVal(jobId, { type: "u64" }),
+      );
+      return this.runSimulation(op, () => undefined);
+    },
+  };
+
+  /**
+   * Shared core for {@link simulate}: runs a simulation-only dry run of `op`
+   * against a placeholder source account and decodes the result.
+   */
+  private async runSimulation<T>(
+    op: xdr.Operation,
+    decode: (value: xdr.ScVal) => T,
+  ): Promise<SimulationResult<T>> {
+    const sim = await this.simulateOperation(op, SIMULATION_SOURCE);
+    if (!sim.success) {
+      throw new BearContractError(sim.error ?? "simulation failed", {
+        operation: "simulate",
+      });
+    }
+    const result = sim.result !== undefined ? decode(sim.result) : decode(undefined as never);
+    return {
+      result,
+      resourceFee: sim.resourceFee,
+      inclusionFee: sim.inclusionFee,
+      events: sim.events,
+      transactionXdr: sim.transactionXdr,
+    };
   }
 
   /**
