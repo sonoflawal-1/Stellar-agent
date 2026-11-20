@@ -1,0 +1,51 @@
+name: Container image scan
+
+on:
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  trivy-sbom:
+    name: Trivy image scan + SBOM
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - { name: dashboard, dockerfile: dashboard/Dockerfile }
+          - { name: indexer, dockerfile: indexer/Dockerfile }
+          - { name: buyer, dockerfile: agents/buyer/Dockerfile }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -f "${{ matrix.image.dockerfile }}" -t "marc-${{ matrix.image.name }}:scan" .
+
+      - name: Generate SBOM
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: "marc-${{ matrix.image.name }}:scan"
+          format: spdx-json
+          output: "sbom-${{ matrix.image.name }}.spdx.json"
+          scanners: vuln
+
+      - name: Scan for critical vulnerabilities
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: "marc-${{ matrix.image.name }}:scan"
+          format: table
+          exit-code: 1
+          severity: CRITICAL
+          ignore-unfixed: true
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ matrix.image.name }}
+          path: sbom-${{ matrix.image.name }}.spdx.json
