@@ -8,6 +8,18 @@ on:
     - cron: '0 3 * * *'
 
 jobs:
+  validate-testnet-deployments:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: README vs deployments/testnet.json
+        run: node scripts/validate-readme-deployments.mjs
+      - name: Script helper unit tests
+        run: npx tsx --test scripts/script-helpers.test.ts
+
   build:
     runs-on: ubuntu-latest
     steps:
