@@ -250,6 +250,128 @@ describe('useWallet', () => {
     });
   });
 
+  describe('error paths', () => {
+    it('surfaces an error when Freighter is not installed', async () => {
+      freighterMock.isConnected.mockResolvedValue(false);
+      freighterMock.requestAccess.mockRejectedValue(
+        new Error('Freighter not found'),
+      );
+
+      const { result } = renderHook(() => useWallet());
+
+      await act(async () => {
+        await result.current.connect('freighter');
+      });
+
+      await waitFor(() => {
+        expect(result.current.error).toBeTruthy();
+      });
+
+      expect(result.current.error).toMatch(/freighter/i);
+      expect(result.current.isConnected).toBe(false);
+      expect(result.current.publicKey).toBeNull();
+      expect(result.current.isConnecting).toBe(false);
+      expect(result.current.status).toBe('error');
+    });
+
+    it('surfaces an error when the user rejects the Freighter prompt', async () => {
+      freighterMock.requestAccess.mockRejectedValue(
+        new Error('User declined access'),
+      );
+
+      const { result } = renderHook(() => useWallet());
+
+      await act(async () => {
+        await result.current.connect('freighter');
+      });
+
+      await waitFor(() => {
+        expect(result.current.error).toBeTruthy();
+      });
+
+      expect(result.current.error).toMatch(/declined|reject/i);
+      expect(result.current.isConnected).toBe(false);
+      expect(result.current.isConnecting).toBe(false);
+      expect(result.current.status).toBe('error');
+    });
+
+    it('surfaces a network mismatch error when Freighter reports a different network', async () => {
+      freighterMock.getNetwork.mockResolvedValue('PUBLIC');
+
+      const { result } = renderHook(() => useWallet());
+
+      await act(async () => {
+        await result.current.connect('freighter');
+      });
+
+      await waitFor(() => {
+        expect(result.current.error).toBeTruthy();
+      });
+
+      expect(result.current.error).toMatch(/network/i);
+      expect(result.current.isConnected).toBe(false);
+      expect(result.current.isConnecting).toBe(false);
+      expect(result.current.status).toBe('error');
+    });
+
+    it('surfaces an error when the user rejects the xBull prompt', async () => {
+      xbullMock.connect.mockRejectedValue(new Error('User rejected request'));
+
+      const { result } = renderHook(() => useWallet());
+
+      await act(async () => {
+        await result.current.connect('xbull');
+      });
+
+      await waitFor(() => {
+        expect(result.current.error).toBeTruthy();
+      });
+
+      expect(result.current.error).toMatch(/reject/i);
+      expect(result.current.isConnected).toBe(false);
+      expect(result.current.isConnecting).toBe(false);
+      expect(result.current.status).toBe('error');
+    });
+
+    it('surfaces an error when the user rejects the Albedo prompt', async () => {
+      albedoMock.connect.mockRejectedValue(new Error('User rejected request'));
+
+      const { result } = renderHook(() => useWallet());
+
+      await act(async () => {
+        await result.current.connect('albedo');
+      });
+
+      await waitFor(() => {
+        expect(result.current.error).toBeTruthy();
+      });
+
+      expect(result.current.error).toMatch(/reject/i);
+      expect(result.current.isConnected).toBe(false);
+      expect(result.current.isConnecting).toBe(false);
+      expect(result.current.status).toBe('error');
+    });
+
+    it('surfaces an error for an unsupported wallet provider', async () => {
+      const { result } = renderHook(() => useWallet());
+
+      await act(async () => {
+        // @ts-expect-error intentionally passing an unsupported provider
+        await result.current.connect('unknown-wallet');
+      });
+
+      await waitFor(() => {
+        expect(result.current.error).toBeTruthy();
+      });
+
+      expect(result.current.error).toMatch(/unsupported wallet provider/i);
+      expect(result.current.isConnected).toBe(false);
+      expect(result.current.publicKey).toBeNull();
+      expect(result.current.isConnecting).toBe(false);
+      expect(result.current.status).toBe('error');
+    });
+  });
+
   describe('disconnect', () => {
     it('disconnects and resets state', async () => {
       const { result } = renderHook(() => useWallet());

@@ -3,6 +3,9 @@
     "test": "tsx --test shared.test.ts",
     "typecheck": "tsc --noEmit -p registry/tsconfig.json && tsc --noEmit -p buyer/tsconfig.json && tsc --noEmit -p seller-webbuilder/tsconfig.json && tsc --noEmit -p seller-copywriter/tsconfig.json"
   },
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "express-rate-limit": "^8.5.2",
     "better-sqlite3": "^11.3.0"

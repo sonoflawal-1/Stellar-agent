@@ -544,6 +544,37 @@ app.get("/metrics", (_req, res) => {
   );
 });
 
+/**
+ * Registry HTTP API reference
+ * ---------------------------
+ * Full documentation lives in `docs/AGENTS_REGISTRY_API.md`. Keep the endpoint
+ * list below in sync with the routes registered on `app`:
+ *
+ *   GET    /agents          List agents (filters: include_inactive, status, tags,
+ *                           min_price, max_price). Public. Response: array of
+ *                           manifests + `tags`, `alive`, `status`, `reputation`.
+ *   GET    /agents/:id      Fetch a single alive agent + reputation.
+ *                           Rate limited (60 req/min/IP). 404 if not alive.
+ *   DELETE /agents/:id      Deregister an agent from the in-memory registry.
+ *                           404 if unknown.
+ *   POST   /heartbeat       Body `{ agentId }`. Auth required (see below).
+ *                           400 missing id, 404 unknown manifest, 422 invalid
+ *                           manifest, 200 `{ status, agentId, tags }`.
+ *   GET    /health          Liveness/status JSON (uptime, registered, alive,
+ *                           timeoutSec). Public.
+ *   GET    /metrics         Prometheus text metrics. Public.
+ *
+ * Authentication: when `REGISTRY_API_KEY` is set, `/heartbeat` uses
+ * `requireRegistryAuth` (`Authorization: Bearer <key>`); otherwise it falls
+ * back to `requireApiKey` (`x-api-key: <key>`, default `dev-registry-key`).
+ * All other endpoints are unauthenticated.
+ *
+ * Manifest schema: see `docs/agent-metadata-schema-v1.json` for the
+ * `metadata_uri` document schema. Manifests are validated by
+ * `validateManifest()` below and covered by `agents/registry/manifest.test.ts`
+ * (run `npm test` from `agents/registry`).
+ */
+
 const isDirectExecution =
   process.argv[1] &&
   (path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url)) ||
