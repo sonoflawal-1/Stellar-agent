@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import Fastify, { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { marcPaywallFastify } from '@marc/sdk';
 
@@ -21,6 +22,63 @@ export interface SellerConfig {
   network: 'testnet' | 'mainnet';
   /** Optional facilitator URL used to verify/settle payments. */
   facilitatorUrl?: string;
+}
+
+/** Minimal job shape required to submit a deliverable. */
+export interface DeliverableJob {
+  /** On-chain job identifier. */
+  id: string | number;
+  /** Optional contract client used to submit the deliverable on-chain. */
+  contract?: {
+    submit(jobId: string | number, hash: string, content: string): Promise<unknown>;
+  };
+}
+
+/** Result returned by {@link submitDeliverable}. */
+export interface DeliverableSubmission {
+  /** SHA-256 hash of the deliverable bytes, hex encoded. */
+  hash: string;
+  /** Base64 encoded deliverable content. */
+  content: string;
+  /** Raw contract response, if a contract client was provided. */
+  receipt?: unknown;
+}
+
+/**
+ * Compute the reproducible SHA-256 hash of a deliverable.
+ *
+ * All sellers must use this helper so the hash can be independently
+ * reproduced by the client from the same bytes.
+ */
+export function hashDeliverable(bytes: Uint8Array | string): string {
+  const data = typeof bytes === 'string' ? Buffer.from(bytes, 'utf8') : Buffer.from(bytes);
+  return createHash('sha256').update(data).digest('hex');
+}
+
+/**
+ * Prepare and submit a deliverable for a job.
+ *
+ * Computes the deliverable hash, stores the content and, when a contract
+ * client is available, calls the contract's `submit` method. This helper is
+ * shared by all seller templates to guarantee consistent hashing and
+ * submission behaviour.
+ */
+export async function submitDeliverable(
+  job: DeliverableJob,
+  bytes: Uint8Array | string,
+): Promise<DeliverableSubmission> {
+  const hash = hashDeliverable(bytes);
+  const content = typeof bytes === 'string'
+    ? Buffer.from(bytes, 'utf8').toString('base64')
+    : Buffer.from(bytes).toString('base64');
+
+  const submission: DeliverableSubmission = { hash, content };
+
+  if (job.contract) {
+    submission.receipt = await job.contract.submit(job.id, hash, content);
+  }
+
+  return submission;
 }
 
 export function loadConfig(): SellerConfig {
@@ -49,6 +107,36 @@ export function buildServer(config: SellerConfig = loadConfig()): FastifyInstanc
   });
 
   app.get('/health', async () => ({ status: 'ok' }));
+
+  // Deliverable submission endpoint. Uses the shared `submitDeliverable`
+  // helper so the hash is reproducible by the client and consistent across
+  // all seller templates.
+  app.post(
+    '/api/deliverable',
+    {
+      preHandler: (request: FastifyRequest, reply: FastifyReply) =>
+        app.marcPaywall(request, reply),
+    },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const body = (request.body ?? {}) as {
+        jobId?: string | number;
+        bytes?: string;
+      };
+
+      if (body.jobId === undefined || typeof body.bytes !== 'string') {
+        return reply.code(400).send({
+          error: 'jobId and base64 encoded bytes are required',
+        });
+      }
+
+      const submission = await submitDeliverable(
+        { id: body.jobId },
+        Buffer.from(body.bytes, 'base64'),
+      );
+
+      return submission;
+    },
+  );
 
   // Sample paid endpoint. The paywall issues HTTP 402 when no valid payment
   // is present and validates Stellar payments before invoking the handler.

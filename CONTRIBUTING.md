@@ -7,12 +7,13 @@ Thank you for contributing to Bear — the commerce layer for AI agent payments 
 1. [Commit Message Format](#commit-message-format)
 2. [Test-Driven Development (TDD)](#test-driven-development-tdd)
 3. [Running Tests](#running-tests)
-4. [CLAUDE.md Update Protocol](#claudemd-update-protocol)
-5. [Self-Audit Checklist](#self-audit-checklist)
-6. [Workflow](#workflow)
-7. [Pre-Commit Hooks](#pre-commit-hooks)
-8. [WASM Size Budgets](#wasm-size-budgets)
-9. [Protected Paths & CODEOWNERS](#protected-paths--codeowners)
+4. [Node Version Policy](#node-version-policy)
+5. [CLAUDE.md Update Protocol](#claudemd-update-protocol)
+6. [Self-Audit Checklist](#self-audit-checklist)
+7. [Workflow](#workflow)
+8. [Pre-Commit Hooks](#pre-commit-hooks)
+9. [WASM Size Budgets](#wasm-size-budgets)
+10. [Protected Paths & CODEOWNERS](#protected-paths--codeowners)
 
 ---
 
@@ -281,6 +282,53 @@ cargo fmt --check
 
 ---
 
+## Node Version Policy
+
+All JavaScript/TypeScript packages (`sdk`, `dashboard`, `indexer`, `agents`,
+`landing`, `react`) share a single Node version policy so local development and
+CI behave identically.
+
+### Supported Versions
+
+- **Pinned version:** the repository-root `.nvmrc` holds the exact version used
+  for local development and for the primary CI job.
+- **Supported range:** every package's `package.json` declares an `engines.node`
+  range. The minimum of that range is the oldest version we support; the pinned
+  `.nvmrc` version must always fall inside it.
+- **CI matrix:** CI runs the JavaScript/TypeScript checks across the supported
+  versions (the minimum supported version and the pinned `.nvmrc` version), so a
+  change that breaks either end of the range fails before merge.
+
+When bumping Node, update `.nvmrc` and the `engines.node` field in **every**
+package in the same pull request. A mismatch between `.nvmrc` and `engines`
+will fail CI.
+
+### Switching Versions Locally
+
+Use a version manager so your shell picks up `.nvmrc` automatically:
+
+```bash
+# nvm
+nvm install   # installs the version from .nvmrc
+nvm use       # switches to the version from .nvmrc
+
+# fnm
+fnm install
+fnm use
+```
+
+Verify you're on the expected version before running installs or tests:
+
+```bash
+node --version
+npm --version
+```
+
+If `npm install` warns about `EBADENGINE`, your Node version is outside the
+supported range — switch to the pinned version with the commands above.
+
+---
+
 ## CLAUDE.md Update Protocol
 
 **CLAUDE.md is the project memory for AI-assisted work.** After every task, update it so future sessions don't re-learn the same lessons. This is mandatory.
@@ -378,6 +426,25 @@ limits. Every CI run reports both exact sizes and configured limits.
 The size check uses the workspace's `wasm32v1-none` target and the Stellar CLI
 optimizer, matching the artifacts produced by `scripts/build.sh`.
 
+### Root Workspace & Lockfile
+
+The repository is an npm workspaces monorepo. Install dependencies **once at
+the root**:
+
+```bash
+npm ci
+```
+
+This installs every package (`sdk`, `dashboard`, `demo`, `landing`, etc.) from
+the single root `package-lock.json`. Do **not** run `npm install` inside a
+package directory and do **not** commit per-package `package-lock.json` files —
+they cause version drift and slow installs. If a package needs a dependency,
+add it from the root:
+
+```bash
+npm install <package> --workspace ./sdk
+```
+
 ### Protected Paths & CODEOWNERS
 
 Changes to contract code and deployment metadata always require review from a
@@ -412,6 +479,55 @@ protection rule, and re-verify after any repository ownership change:
 
 Keep `.github/CODEOWNERS` in sync with the team: when ownership changes, update
 the file in the same pull request as the change that requires it.
+
+---
+
+## Release Process (Changesets)
+
+Versioning and publishing for the TypeScript packages (`sdk` and
+`@bear-protocol/react`) is automated with
+[Changesets](https://github.com/changesets/changesets). Do not bump versions or
+edit changelogs by hand.
+
+### Authoring a Changeset
+
+When your PR changes a published package, add a changeset before opening it:
+
+```bash
+npx changeset
+```
+
+The prompt asks which packages changed, whether the bump is `patch`, `minor`,
+or `major`, and for a short summary. This writes a markdown file under
+`.changeset/` — commit it with your PR. For docs-only or internal changes that
+don't affect a published package, run `npx changeset --empty` (or skip it if no
+published package is touched).
+
+### The Version PR
+
+On every push to `main`, the Changesets GitHub Action opens (or updates) a
+single PR titled **"chore: version packages"**. That PR:
+
+- Bumps `version` in each affected package's `package.json`
+- Updates each package's `CHANGELOG.md` with the summaries from the changesets
+- Deletes the consumed `.changeset/*.md` files
+
+Review it like any other PR. Merging it is what triggers publishing.
+
+### Publishing on Merge
+
+When the version PR is merged, the same workflow builds the packages and
+publishes them to npm, then creates GitHub releases with the changelog notes.
+`@bear-protocol/react` depends on `sdk`, so a `sdk` bump also bumps the React
+package's dependency range automatically. Never publish manually from a local
+machine.
+
+### Contributor Checklist for Releases
+
+- [ ] Added a changeset (`npx changeset`) if a published package changed
+- [ ] Wrote a user-facing summary (it becomes the changelog entry)
+- [ ] Did not edit `version` fields or `CHANGELOG.md` by hand
+- [ ] Did not commit per-package lockfiles
 
 ### For Feature Work
 
@@ -456,6 +572,9 @@ the file in the same pull request as the change that requires it.
 Before pushing any branch, run:
 
 ```bash
+# Node (must match .nvmrc)
+node --version
+
 # Rust
 cargo test
 cargo clippy -- -D warnings
@@ -466,6 +585,9 @@ npm test --workspace ./sdk
 npm run lint --workspace ./sdk
 npm run format --workspace ./sdk
 ```
+
+If you changed a published package (`sdk`, `@bear-protocol/react`), also run
+`npx changeset` and commit the generated file.
 
 ---
 

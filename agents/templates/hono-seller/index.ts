@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { logger } from 'hono/logger';
 import { marcPaywallHono } from '@marc/sdk/hono';
+import { submitDeliverable } from '@marc/sdk/agents';
 
 /**
  * Hono seller agent template.
@@ -54,6 +55,7 @@ export function createApp(env: Env) {
         'GET /health': 'Free health check',
         'GET /': 'Free metadata',
         'GET /api/paid': 'Paid endpoint (x402)',
+        'POST /api/deliverables/:jobId': 'Submit a deliverable (hashed via submitDeliverable)',
       },
     }),
   );
@@ -78,6 +80,35 @@ export function createApp(env: Env) {
         },
       }),
   );
+
+  // Deliverable submission endpoint.
+  //
+  // Sellers should always submit deliverables through the shared
+  // `submitDeliverable(job, bytes)` helper so that the deliverable hash is
+  // computed reproducibly (identical on the client and the seller) and the
+  // content is stored before the contract call is made.
+  app.post('/api/deliverables/:jobId', async (c) => {
+    const jobId = c.req.param('jobId');
+    const bytes = new Uint8Array(await c.req.arrayBuffer());
+
+    try {
+      const result = await submitDeliverable(
+        { id: jobId, stellarAddress: env.SELLER_STELLAR_ADDRESS },
+        bytes,
+      );
+
+      return c.json({
+        success: true,
+        jobId,
+        hash: result.hash,
+        uri: result.uri,
+        txHash: result.txHash,
+      });
+    } catch (err) {
+      console.error('[hono-seller] Deliverable submission failed:', err);
+      return c.json({ error: 'Deliverable submission failed' }, 500);
+    }
+  });
 
   // 404 fallback.
   app.notFound((c) =>

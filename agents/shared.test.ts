@@ -16,6 +16,11 @@ import {
   validateAgentConfig,
   autoRegister,
   registerGracefulShutdown,
+  createBudgetPolicy,
+  BudgetExceededError,
+  TaskQueue,
+  submitDeliverable,
+  computeDeliverableHash,
   extractJsonObject,
   parseLlmJson,
   parseNamerResponse,
@@ -850,7 +855,429 @@ test("registerGracefulShutdown - unregister removes signal listeners", async () 
   }
 });
 
+function makeMemoryQueueStore() {
+  const rows = new Map<string, Record<string, unknown>>();
+  return {
+    rows,
+    async insert(row: Record<string, unknown>) {
+      rows.set(row.id as string, { ...row });
+      return { id: row.id };
+    },
+    async update(id: string, patch: Record<string, unknown>) {
+      const existing = rows.get(id);
+      if (existing) rows.set(id, { ...existing, ...patch });
+    },
+    async remove(id: string) {
+      rows.delete(id);
+    },
+    async list() {
+      return Array.from(rows.values());
+    },
+  };
+}
+
+test("TaskQueue - persists pending tasks and resumes them after a simulated restart", async () => {
+  const store = makeMemoryQueueStore();
+  const processed: string[] = [];
+
+  const queue = new TaskQueue<{ jobId: string }>({
+    store,
+    concurrency: 1,
+    maxRetries: 3,
+    handler: async (task) => {
+      processed.push(task.jobId);
+    },
+  });
+
+  await queue.enqueue({ jobId: "job-a" });
+  await queue.enqueue({ jobId: "job-b" });
+  await queue.enqueue({ jobId: "job-c" });
+
+  // Simulate a crash before any task is processed: a new queue instance
+  // backed by the same store must pick up the pending tasks.
+  const resumed: string[] = [];
+  const queueAfterRestart = new TaskQueue<{ jobId: string }>({
+    store,
+    concurrency: 1,
+    maxRetries: 3,
+    handler: async (task) => {
+      resumed.push(task.jobId);
+    },
+  });
+
+  await queueAfterRestart.resume();
+  await queueAfterRestart.drain();
+
+  assert.deepEqual(resumed.sort(), ["job-a", "job-b", "job-c"]);
+  assert.equal(store.rows.size, 0);
+});
+
+test("TaskQueue - enforces the configured concurrency limit", async () => {
+  const store = makeMemoryQueueStore();
+  let active = 0;
+  let maxActive = 0;
+
+  const queue = new TaskQueue<{ jobId: string }>({
+    store,
+    concurrency: 2,
+    maxRetries: 1,
+    handler: async () => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((r) => setTimeout(r, 10));
+      active--;
+    },
+  });
+
+  for (let i = 0; i < 6; i++) {
+    await queue.enqueue({ jobId: `job-${i}` });
+  }
+
+  await queue.drain();
+
+  assert.equal(maxActive, 2);
+  assert.equal(active, 0);
+});
+
+test("TaskQueue - retries failed tasks up to maxRetries then marks them failed", async () => {
+  const store = makeMemoryQueueStore();
+  let attempts = 0;
+
+  const queue = new TaskQueue<{ jobId: string }>({
+    store,
+    concurrency: 1,
+    maxRetries: 2,
+    handler: async () => {
+      attempts++;
+      throw new Error("boom");
+    },
+  });
+
+  await queue.enqueue({ jobId: "job-fail" });
+  await queue.drain();
+
+  // 1 initial attempt + 2 retries
+  assert.equal(attempts, 3);
+  const failed = await queue.listFailed();
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0].attempts, 3);
+});
+
+test("TaskQueue - successful tasks are removed from the store", async () => {
+  const store = makeMemoryQueueStore();
+  const queue = new TaskQueue<{ jobId: string }>({
+    store,
+    concurrency: 1,
+    maxRetries: 1,
+    handler: async () => {},
+  });
+
+  await queue.enqueue({ jobId: "job-ok" });
+  await queue.drain();
+
+  assert.equal(store.rows.size, 0);
+});
+
+test("computeDeliverableHash - same bytes produce the same hash", () => {
+  const bytes = new TextEncoder().encode("hello deliverable");
+  const h1 = computeDeliverableHash(bytes);
+  const h2 = computeDeliverableHash(bytes);
+  assert.equal(h1, h2);
+  assert.equal(typeof h1, "string");
+  assert.ok(h1.length > 0);
+});
+
+test("computeDeliverableHash - different bytes produce different hashes", () => {
+  const a = computeDeliverableHash(new TextEncoder().encode("alpha"));
+  const b = computeDeliverableHash(new TextEncoder().encode("beta"));
+  assert.notEqual(a, b);
+});
+
+test("computeDeliverableHash - matches the SDK client-side helper", async () => {
+  const { computeDeliverableHash: sdkHash } = await import(
+    "../sdk/src/deliverable.js"
+  );
+  const bytes = new TextEncoder().encode("reproducible deliverable content");
+  assert.equal(computeDeliverableHash(bytes), sdkHash(bytes));
+});
+
+test("submitDeliverable - computes hash, stores content and calls the contract", async () => {
+  const stored: Array<{ key: string; bytes: Uint8Array }> = [];
+  const storage = {
+    async put(key: string, bytes: Uint8Array) {
+      stored.push({ key, bytes });
+      return { key };
+    },
+  };
+
+  let submitted: { jobId: string; hash: string } | undefined;
+  const contract = {
+    async submit(jobId: string, hash: string) {
+      submitted = { jobId, hash };
+      return { txHash: "tx-1" };
+    },
+  };
+
+  const bytes = new TextEncoder().encode("final deliverable");
+  const result = await submitDeliverable(
+    { jobId: "job-42" },
+    bytes,
+    { storage, contract },
+  );
+
+  assert.equal(stored.length, 1);
+  assert.deepEqual(stored[0].bytes, bytes);
+  assert.equal(submitted?.jobId, "job-42");
+  assert.equal(submitted?.hash, computeDeliverableHash(bytes));
+  assert.equal(result.hash, computeDeliverableHash(bytes));
+  assert.equal(result.txHash, "tx-1");
+});
+
 // ---------------------------------------------------------------------------
+// Buyer budget policy
+// ---------------------------------------------------------------------------
+
+function makeFakeClock(startIso = "2024-06-01T10:00:00.000Z") {
+  let now = new Date(startIso).getTime();
+  return {
+    now: () => new Date(now),
+    advanceMs: (ms: number) => {
+      now += ms;
+    },
+    set: (iso: string) => {
+      now = new Date(iso).getTime();
+    },
+  };
+}
+
+function makeFakeFetch(response: { ok?: boolean; status?: number; body?: unknown }) {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const fetchImpl = async (url: string, init?: RequestInit) => {
+    calls.push({ url, init });
+    const status = response.status ?? (response.ok === false ? 400 : 200);
+    const ok = response.ok ?? status < 400;
+    return {
+      ok,
+      status,
+      async json() {
+        return response.body ?? {};
+      },
+      async text() {
+        return typeof response.body === "string"
+          ? response.body
+          : JSON.stringify(response.body ?? {});
+      },
+    } as unknown as Response;
+  };
+  return { fetchImpl, calls };
+}
+
+test("createBudgetPolicy - refuses a job priced above BUDGET_MAX_PER_JOB", async () => {
+  const clock = makeFakeClock();
+  const policy = createBudgetPolicy({
+    maxPerJob: 100,
+    dailyCap: 1000,
+    now: clock.now,
+  });
+
+  await assert.rejects(
+    async () => {
+      await policy.authorize({ jobId: "job-over", amount: 150 });
+    },
+    (err: unknown) => {
+      assert.ok(err instanceof BudgetExceededError);
+      assert.equal(err.reason, "per-job");
+      assert.equal(err.amount, 150);
+      assert.equal(err.limit, 100);
+      return true;
+    },
+  );
+
+  // Nothing should have been charged against the daily cap.
+  assert.equal(policy.getSpentToday(), 0);
+});
+
+test("createBudgetPolicy - allows a job priced exactly at BUDGET_MAX_PER_JOB", async () => {
+  const clock = makeFakeClock();
+  const policy = createBudgetPolicy({
+    maxPerJob: 100,
+    dailyCap: 1000,
+    now: clock.now,
+  });
+
+  const decision = await policy.authorize({ jobId: "job-exact", amount: 100 });
+  assert.equal(decision.approved, true);
+  assert.equal(decision.requiresApproval, false);
+  assert.equal(policy.getSpentToday(), 100);
+});
+
+test("createBudgetPolicy - enforces the daily cap across multiple jobs", async () => {
+  const clock = makeFakeClock();
+  const policy = createBudgetPolicy({
+    maxPerJob: 100,
+    dailyCap: 250,
+    now: clock.now,
+  });
+
+  await policy.authorize({ jobId: "job-1", amount: 100 });
+  await policy.authorize({ jobId: "job-2", amount: 100 });
+  assert.equal(policy.getSpentToday(), 200);
+
+  await assert.rejects(
+    async () => {
+      await policy.authorize({ jobId: "job-3", amount: 100 });
+    },
+    (err: unknown) => {
+      assert.ok(err instanceof BudgetExceededError);
+      assert.equal(err.reason, "daily-cap");
+      assert.equal(err.amount, 100);
+      assert.equal(err.limit, 250);
+      return true;
+    },
+  );
+
+  // The refused job must not be charged.
+  assert.equal(policy.getSpentToday(), 200);
+});
+
+test("createBudgetPolicy - resets the daily counter at UTC midnight", async () => {
+  const clock = makeFakeClock("2024-06-01T23:30:00.000Z");
+  const policy = createBudgetPolicy({
+    maxPerJob: 100,
+    dailyCap: 150,
+    now: clock.now,
+  });
+
+  await policy.authorize({ jobId: "job-before-midnight", amount: 150 });
+  assert.equal(policy.getSpentToday(), 150);
+
+  // Still the same UTC day -> cap is exhausted.
+  clock.set("2024-06-01T23:59:59.000Z");
+  await assert.rejects(
+    async () => {
+      await policy.authorize({ jobId: "job-same-day", amount: 10 });
+    },
+    (err: unknown) => {
+      assert.ok(err instanceof BudgetExceededError);
+      assert.equal(err.reason, "daily-cap");
+      return true;
+    },
+  );
+
+  // Cross UTC midnight -> counter resets.
+  clock.set("2024-06-02T00:00:01.000Z");
+  assert.equal(policy.getSpentToday(), 0);
+
+  const decision = await policy.authorize({ jobId: "job-next-day", amount: 150 });
+  assert.equal(decision.approved, true);
+  assert.equal(policy.getSpentToday(), 150);
+});
+
+test("createBudgetPolicy - skips approval when amount is below the approval threshold", async () => {
+  const clock = makeFakeClock();
+  const { fetchImpl, calls } = makeFakeFetch({ body: { approved: true } });
+  const policy = createBudgetPolicy({
+    maxPerJob: 1000,
+    dailyCap: 5000,
+    approvalThreshold: 500,
+    approvalWebhookUrl: "https://approvals.example.test/hook",
+    fetchImpl,
+    now: clock.now,
+  });
+
+  const decision = await policy.authorize({ jobId: "job-small", amount: 100 });
+  assert.equal(decision.approved, true);
+  assert.equal(decision.requiresApproval, false);
+  assert.equal(calls.length, 0, "webhook must not be called below threshold");
+  assert.equal(policy.getSpentToday(), 100);
+});
+
+test("createBudgetPolicy - calls approval webhook and proceeds when approved", async () => {
+  const clock = makeFakeClock();
+  const { fetchImpl, calls } = makeFakeFetch({ body: { approved: true } });
+  const policy = createBudgetPolicy({
+    maxPerJob: 1000,
+    dailyCap: 5000,
+    approvalThreshold: 500,
+    approvalWebhookUrl: "https://approvals.example.test/hook",
+    fetchImpl,
+    now: clock.now,
+  });
+
+  const decision = await policy.authorize({
+    jobId: "job-large",
+    amount: 750,
+    prompt: "Build a landing page",
+  });
+
+  assert.equal(decision.approved, true);
+  assert.equal(decision.requiresApproval, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://approvals.example.test/hook");
+  assert.equal(calls[0].init?.method, "POST");
+
+  const sentBody = JSON.parse(String(calls[0].init?.body));
+  assert.equal(sentBody.jobId, "job-large");
+  assert.equal(sentBody.amount, 750);
+
+  assert.equal(policy.getSpentToday(), 750);
+});
+
+test("createBudgetPolicy - refuses the job when the approval webhook denies it", async () => {
+  const clock = makeFakeClock();
+  const { fetchImpl, calls } = makeFakeFetch({ body: { approved: false } });
+  const policy = createBudgetPolicy({
+    maxPerJob: 1000,
+    dailyCap: 5000,
+    approvalThreshold: 500,
+    approvalWebhookUrl: "https://approvals.example.test/hook",
+    fetchImpl,
+    now: clock.now,
+  });
+
+  await assert.rejects(
+    async () => {
+      await policy.authorize({ jobId: "job-denied", amount: 750 });
+    },
+    (err: unknown) => {
+      assert.ok(err instanceof BudgetExceededError);
+      assert.equal(err.reason, "approval-denied");
+      return true;
+    },
+  );
+
+  assert.equal(calls.length, 1);
+  assert.equal(policy.getSpentToday(), 0);
+});
+
+test("createBudgetPolicy - refuses the job when the approval webhook errors", async () => {
+  const clock = makeFakeClock();
+  const fetchImpl = async () => {
+    throw new Error("network down");
+  };
+  const policy = createBudgetPolicy({
+    maxPerJob: 1000,
+    dailyCap: 5000,
+    approvalThreshold: 500,
+    approvalWebhookUrl: "https://approvals.example.test/hook",
+    fetchImpl,
+    now: clock.now,
+  });
+
+  await assert.rejects(
+    async () => {
+      await policy.authorize({ jobId: "job-err", amount: 750 });
+    },
+    (err: unknown) => {
+      assert.ok(err instanceof BudgetExceededError);
+      assert.equal(err.reason, "approval-error");
+      return true;
+    },
+  );
+
+  assert.equal(policy.getSpentToday(), 0);
+});
+
 // LLM output parsing helpers (pure functions, no network)
 // ---------------------------------------------------------------------------
 

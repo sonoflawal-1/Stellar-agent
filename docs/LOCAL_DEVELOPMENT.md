@@ -9,9 +9,21 @@ lets you develop offline, avoid testnet rate limits, and reset state instantly.
 | Tool | Version | Install |
 |------|---------|---------|
 | Docker | 20+ | [docs.docker.com](https://docs.docker.com/get-docker/) |
-| Node.js | 20+ | [nodejs.org](https://nodejs.org) |
+| Node.js | see `.nvmrc` (also declared in each package's `engines`) | [nodejs.org](https://nodejs.org) or [nvm](https://github.com/nvm-sh/nvm) |
 | Rust | 1.81+ | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
 | stellar-cli | latest | `cargo install stellar-cli --locked` |
+
+> **Node version policy:** the repository pins a single supported Node.js version in `.nvmrc`,
+> and every package declares the same range in its `engines` field. Before installing
+> dependencies, switch to the pinned version:
+>
+> ```bash
+> nvm use        # or: fnm use / asdf install nodejs
+> node --version # should match .nvmrc
+> ```
+>
+> CI runs the test matrix against the supported Node versions, so using the pinned version
+> locally keeps your environment consistent with CI.
 
 ## 1. Start the Standalone Network
 

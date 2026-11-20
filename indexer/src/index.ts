@@ -32,6 +32,22 @@ import {
 
 export type { QueryOptions, ParsedEventRow, MigrationOptions, MigrationResult };
 
+/** Health/readiness snapshot for the indexer. */
+export type HealthStatus = {
+  /** "ok" when ready, "not_ready" otherwise. */
+  status: "ok" | "not_ready";
+  /** Last ledger processed by the poller, or null if none yet. */
+  lastProcessedLedger: number | null;
+  /** Latest ledger reported by the Soroban RPC, or null if unavailable. */
+  tipLedger: number | null;
+  /** Difference between tip and last processed ledger, or null if unknown. */
+  lag: number | null;
+  /** Whether the database is reachable. */
+  db: boolean;
+  /** Human-readable reason when not ready. */
+  reason?: string;
+};
+
 export type BearEventIndexerConfig = {
   /** Soroban RPC URL */
   rpcUrl: string;
@@ -51,6 +67,11 @@ export type BearEventIndexerConfig = {
   startLedger?: number;
   /** Polling options */
   polling?: PollerOptions;
+  /**
+   * Maximum allowed gap between the last processed ledger and the chain tip
+   * before `/readyz` reports the indexer as not ready. Default: 50.
+   */
+  healthLagThreshold?: number;
   /**
    * Migration options applied at startup. `openDatabase` runs pending
    * migrations by default; set `dryRun` to preview without applying, or
@@ -87,6 +108,8 @@ export class BearEventIndexer {
   private readonly hub: EventHub;
   private readonly apiPort: number;
   private readonly apiHost: string;
+  private readonly healthLagThreshold: number;
+  private readonly rpcServer: StellarRpc.Server;
   private server: Server | null = null;
 
   constructor(config: BearEventIndexerConfig) {
@@ -108,11 +131,13 @@ export class BearEventIndexer {
     this.reputation = new ReputationEngine(readDb);
     this.apiPort = config.apiPort ?? 0;
     this.apiHost = config.apiHost ?? "127.0.0.1";
+    this.healthLagThreshold = config.healthLagThreshold ?? 50;
     this.hub = new EventHub();
 
     const rpcServer = new StellarRpc.Server(config.rpcUrl, {
       allowHttp: config.rpcUrl.startsWith("http://"),
     });
+    this.rpcServer = rpcServer;
 
     const contracts = [config.identityContract, config.commerceContract].filter(
       (c) => c && c.trim() !== "",
@@ -162,6 +187,14 @@ export class BearEventIndexer {
     const reputationHandler = createReputationHandler(this.reputation);
     const server = createServer((req, res) => {
       const path = (req.url ?? "/").split("?")[0];
+      if (path === "/healthz") {
+        handleHealthz(req, res);
+        return;
+      }
+      if (path === "/readyz") {
+        void handleReadyz(req, res, () => this.getHealth());
+        return;
+      }
       if (path === "/api/events/stream") {
         handleEventsStream(req, res, this.hub, this.readStore);
         return;
@@ -239,6 +272,86 @@ export class BearEventIndexer {
   /** Returns the total number of indexed events. */
   totalEvents(): number {
     return this.readStore.count();
+  }
+
+  // ── Health / readiness ─────────────────────────────────────────────────────
+
+  /**
+   * Returns a health snapshot: last processed ledger, chain tip, lag and DB
+   * status. The indexer is ready when the DB is reachable and the lag does not
+   * exceed the configured `healthLagThreshold`.
+   */
+  async getHealth(): Promise<HealthStatus> {
+    let lastProcessedLedger: number | null = null;
+    let db = true;
+    try {
+      lastProcessedLedger = this.store.getLastIndexedLedger();
+      // Trivial read to confirm the read-only handle is usable.
+      this.readStore.count();
+    } catch {
+      db = false;
+    }
+
+    let tipLedger: number | null = null;
+    try {
+      const latest = await this.rpcServer.getLatestLedger();
+      tipLedger = latest.sequence;
+    } catch {
+      tipLedger = null;
+    }
+
+    const lag =
+      tipLedger !== null && lastProcessedLedger !== null
+        ? Math.max(0, tipLedger - lastProcessedLedger)
+        : null;
+
+    let reason: string | undefined;
+    if (!db) {
+      reason = "database_unavailable";
+    } else if (lag === null) {
+      reason = "lag_unknown";
+    } else if (lag > this.healthLagThreshold) {
+      reason = "lag_exceeds_threshold";
+    }
+
+    return {
+      status: reason === undefined ? "ok" : "not_ready",
+      lastProcessedLedger,
+      tipLedger,
+      lag,
+      db,
+      ...(reason !== undefined ? { reason } : {}),
+    };
+  }
+}
+
+// ── Health / readiness handlers ──────────────────────────────────────────────
+
+/** Liveness probe: always 200 while the process is up. */
+export function handleHealthz(req: IncomingMessage, res: ServerResponse): void {
+  res.statusCode = 200;
+  res.setHeader("content-type", "application/json");
+  res.end(JSON.stringify({ status: "ok" }));
+}
+
+/**
+ * Readiness probe: 200 with the health snapshot when the DB is reachable and
+ * the lag is within threshold, otherwise 503 with `status: "not_ready"`.
+ */
+export async function handleReadyz(
+  req: IncomingMessage,
+  res: ServerResponse,
+  getHealth: () => Promise<HealthStatus>,
+): Promise<void> {
+  try {
+    const health = await getHealth();
+    res.statusCode = health.status === "ok" ? 200 : 503;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify(health));
+  } catch {
+    res.statusCode = 503;
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ status: "not_ready", reason: "health_check_failed" }));
   }
 }
 

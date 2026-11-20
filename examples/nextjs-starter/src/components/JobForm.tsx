@@ -14,6 +14,7 @@ export default function JobForm() {
   const [jobId, setJobId] = useState<bigint | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
+  const formEmpty = !provider && !evaluator && !desc;
 
   async function create() {
     setPending(true); setError('');
@@ -31,6 +32,8 @@ export default function JobForm() {
   return (
     <div className="card" style={{ marginTop: '2rem' }}>
       <h2>Create Job</h2>
+      {formEmpty && !pending && <p className="muted">Fill in provider, evaluator, and description to create a job.</p>}
+      {pending && <p className="muted">Submitting transaction…</p>}
       <input placeholder="Provider G..." value={provider} onChange={(e) => setProvider(e.target.value)} />
       <input placeholder="Evaluator G..." value={evaluator} onChange={(e) => setEvaluator(e.target.value)} />
       <input type="number" placeholder="Budget (micro-USDC)" value={budget} onChange={(e) => setBudget(e.target.value)} />

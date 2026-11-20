@@ -266,9 +266,15 @@ export class SorobanEventPoller {
     return this.reorgCount;
   }
 
-  /** Number of ledgers that must be finalized before processing. */
-  getConfirmationDepth(): number {
-    return this.confirmationDepth;
+  /** Last ledger persisted by the poller, or null if nothing indexed yet. */
+  getLastIndexedLedger(): number | null {
+    return this.store.getLastIndexedLedger();
+  }
+
+  /** Current chain tip as reported by Soroban RPC. */
+  async getLatestLedger(): Promise<number> {
+    const res = await this.rpc.getLatestLedger();
+    return res.sequence;
   }
 
   /**

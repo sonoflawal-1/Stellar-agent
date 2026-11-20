@@ -6,7 +6,6 @@ import rateLimit from "express-rate-limit";
 import Groq from "groq-sdk";
 import { CommerceClient } from "marc-stellar-sdk";
 import {
-  retryWithBackoff,
   createSellerAgent,
   makeSellerResponse,
   validatePrompt,
@@ -16,7 +15,13 @@ import {
   MOCK_DELIVERABLES,
   initTracing,
   withSpan,
+  validateEnv,
+  sellerResearcherEnvSchema,
+  createTaskQueue,
+  submitDeliverable,
 } from "../shared.js";
+
+validateEnv(sellerResearcherEnvSchema, "seller-researcher");
 
 const config = loadAgentConfig({
   required: ["SECRET_KEY", "REGISTRY_URL", "GROQ_API_KEY"],
@@ -43,6 +48,46 @@ const activeTaskTracker = createActiveTaskTracker();
 let jobsActive = 0;
 let jobsCompleted = 0;
 let jobsFailed = 0;
+
+const taskQueue = createTaskQueue({
+  agentId: AGENT_ID,
+  agentDir: AGENT_DIR,
+  concurrency: config.queueConcurrency,
+  maxAttempts: config.queueMaxAttempts,
+  handler: async (payload) => {
+    const { jobId, task, depth } = payload as {
+      jobId: string;
+      task: string;
+      depth: ResearchDepth;
+    };
+    jobsActive++;
+    const releaseTask = activeTaskTracker.track(`job:${jobId}`);
+    try {
+      console.log(`[${AGENT_ID}] Calling Groq...`);
+      const research = await generate(task, depth);
+      const sourceCount = research.sources.length;
+      console.log(
+        `[${AGENT_ID}] Research done: ${research.summary.length} chars, ${sourceCount} sources`,
+      );
+
+      const bytes = Buffer.from(JSON.stringify(research, null, 2), "utf8");
+      await withSpan(
+        "stellar.commerce.submit",
+        { "job.id": String(jobId), "stellar.operation": "submit" },
+        () => submitDeliverable(seller, cfg, BigInt(jobId), bytes, { label: AGENT_ID }),
+      );
+      console.log(`[${AGENT_ID}] ✓ Job #${jobId} submitted`);
+      jobsCompleted++;
+    } catch (err) {
+      jobsFailed++;
+      console.error(`[${AGENT_ID}] Error:`, (err as Error).message);
+      throw err;
+    } finally {
+      jobsActive--;
+      releaseTask();
+    }
+  },
+});
 
 app.get("/health", (_req, res) => {
   res.json({
@@ -288,45 +333,18 @@ async function handleJob(
         : `task length ${typeof task === "string" ? task.length : 0}`
     }`,
   );
+  await taskQueue.enqueue(String(jobId), {
+    jobId: String(jobId),
+    task,
+    depth: resolvedDepth,
+  });
   const response = makeSellerResponse(
     { status: "accepted", jobId, depth: resolvedDepth },
     startedAt,
   );
   console.log(`[${AGENT_ID}] [req:${requestId}] Response: ${JSON.stringify(response)}`);
   res.json(response);
-
-  jobsActive++;
-  const releaseTask = activeTaskTracker.track(`job:${jobId}`);
-  try {
-    console.log(`[${AGENT_ID}] Calling Groq...`);
-    const research = await generate(task, resolvedDepth);
-    const sourceCount = research.sources.length;
-    fs.mkdirSync(OUTPUT_DIR, { recursive: true });
-    fs.writeFileSync(OUTPUT_FILE, JSON.stringify(research, null, 2));
-    console.log(
-      `[${AGENT_ID}] Research done: ${research.summary.length} chars, ${sourceCount} sources`,
-    );
-
-    const commerce = new CommerceClient(cfg);
-    await withSpan(
-      "stellar.commerce.submit",
-      { "job.id": String(jobId), "stellar.operation": "submit" },
-      () =>
-        retryWithBackoff(
-          () => commerce.submit(seller, BigInt(jobId), `file://${path.resolve(OUTPUT_FILE)}`),
-          { maxAttempts: 5, baseDelayMs: 1000, label: AGENT_ID },
-        ),
-    );
-    console.log(`[${AGENT_ID}] ✓ Job #${jobId} submitted`);
-    jobsCompleted++;
-  } catch (err) {
-    jobsFailed++;
-    console.error(`[${AGENT_ID}] Error:`, (err as Error).message);
-  } finally {
-    jobsActive--;
-    releaseTask();
-  }
 }
 
 const server = app.listen(PORT, () => console.log(`[${AGENT_ID}] Listening on :${PORT}`));
-registerGracefulShutdown(server, activeTaskTracker, null, AGENT_ID);
+registerGracefulShutdown(server, activeTaskTracker, () => taskQueue.close(), AGENT_ID);

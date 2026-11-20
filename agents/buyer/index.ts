@@ -17,12 +17,17 @@ import {
   type MarcConfig,
   type Job,
 } from "marc-stellar-sdk";
-import { retryWithBackoff, loadAgentConfig } from "../shared.js";
+import { retryWithBackoff, loadAgentConfig, validateEnv } from "../shared.js";
 import { watchFile, unwatchFile, readFileSync, existsSync } from "node:fs";
 import { createServer } from "node:http";
 import { context, propagation, SpanKind, SpanStatusCode, trace } from "@opentelemetry/api";
 
 const DEFAULT_JOB_BUDGET = 10_000_000n;
+
+// ── Environment validation (issue #998) ───────────────────────────────────────
+// Validate required variables at startup so missing keys fail fast with a
+// clear table instead of a late, cryptic error.
+validateEnv("buyer");
 
 // ── OpenTelemetry tracing (issue #726) ────────────────────────────────────────
 // The tracer is a no-op until a provider is registered (see tracing.ts). All
@@ -552,6 +557,13 @@ async function runSmartJob(description: string): Promise<BuyerResult | null> {
           `{green-fg}Selected provider:{/green-fg} ${provider.name} (score ${selection.score.toFixed(2)})`,
         );
 
+        const auth = await authorizeJobSpend(cliArgs.budget, provider.name, summary);
+        if (!auth.allowed) {
+          log(`{red-fg}Job refused: ${auth.reason}{/red-fg}`);
+          span.setStatus({ code: SpanStatusCode.ERROR, message: auth.reason });
+          return null;
+        }
+
         const jobId = await createEscrowJob(provider, summary, cliArgs.budget);
         if (!jobId) return null;
         span.setAttribute("job.id", jobId);
@@ -564,6 +576,15 @@ async function runSmartJob(description: string): Promise<BuyerResult | null> {
             capabilities,
           );
           if (!fallback) return null;
+          const retryAuth = await authorizeJobSpend(
+            cliArgs.budget,
+            fallback.agent.name,
+            summary,
+          );
+          if (!retryAuth.allowed) {
+            log(`{red-fg}Retry job refused: ${retryAuth.reason}{/red-fg}`);
+            return null;
+          }
           const retryJobId = await createEscrowJob(fallback.agent, summary, cliArgs.budget);
           if (!retryJobId) return null;
           const retryResult = await pollJobCompletion(retryJobId);
