@@ -16,6 +16,9 @@ import {
   validateAgentConfig,
   autoRegister,
   registerGracefulShutdown,
+  TaskQueue,
+  submitDeliverable,
+  computeDeliverableHash,
   extractJsonObject,
   parseLlmJson,
   parseNamerResponse,
@@ -848,6 +851,184 @@ test("registerGracefulShutdown - unregister removes signal listeners", async () 
     console.error = originalError;
     console.log = originalLog;
   }
+});
+
+function makeMemoryQueueStore() {
+  const rows = new Map<string, Record<string, unknown>>();
+  return {
+    rows,
+    async insert(row: Record<string, unknown>) {
+      rows.set(row.id as string, { ...row });
+      return { id: row.id };
+    },
+    async update(id: string, patch: Record<string, unknown>) {
+      const existing = rows.get(id);
+      if (existing) rows.set(id, { ...existing, ...patch });
+    },
+    async remove(id: string) {
+      rows.delete(id);
+    },
+    async list() {
+      return Array.from(rows.values());
+    },
+  };
+}
+
+test("TaskQueue - persists pending tasks and resumes them after a simulated restart", async () => {
+  const store = makeMemoryQueueStore();
+  const processed: string[] = [];
+
+  const queue = new TaskQueue<{ jobId: string }>({
+    store,
+    concurrency: 1,
+    maxRetries: 3,
+    handler: async (task) => {
+      processed.push(task.jobId);
+    },
+  });
+
+  await queue.enqueue({ jobId: "job-a" });
+  await queue.enqueue({ jobId: "job-b" });
+  await queue.enqueue({ jobId: "job-c" });
+
+  // Simulate a crash before any task is processed: a new queue instance
+  // backed by the same store must pick up the pending tasks.
+  const resumed: string[] = [];
+  const queueAfterRestart = new TaskQueue<{ jobId: string }>({
+    store,
+    concurrency: 1,
+    maxRetries: 3,
+    handler: async (task) => {
+      resumed.push(task.jobId);
+    },
+  });
+
+  await queueAfterRestart.resume();
+  await queueAfterRestart.drain();
+
+  assert.deepEqual(resumed.sort(), ["job-a", "job-b", "job-c"]);
+  assert.equal(store.rows.size, 0);
+});
+
+test("TaskQueue - enforces the configured concurrency limit", async () => {
+  const store = makeMemoryQueueStore();
+  let active = 0;
+  let maxActive = 0;
+
+  const queue = new TaskQueue<{ jobId: string }>({
+    store,
+    concurrency: 2,
+    maxRetries: 1,
+    handler: async () => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((r) => setTimeout(r, 10));
+      active--;
+    },
+  });
+
+  for (let i = 0; i < 6; i++) {
+    await queue.enqueue({ jobId: `job-${i}` });
+  }
+
+  await queue.drain();
+
+  assert.equal(maxActive, 2);
+  assert.equal(active, 0);
+});
+
+test("TaskQueue - retries failed tasks up to maxRetries then marks them failed", async () => {
+  const store = makeMemoryQueueStore();
+  let attempts = 0;
+
+  const queue = new TaskQueue<{ jobId: string }>({
+    store,
+    concurrency: 1,
+    maxRetries: 2,
+    handler: async () => {
+      attempts++;
+      throw new Error("boom");
+    },
+  });
+
+  await queue.enqueue({ jobId: "job-fail" });
+  await queue.drain();
+
+  // 1 initial attempt + 2 retries
+  assert.equal(attempts, 3);
+  const failed = await queue.listFailed();
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0].attempts, 3);
+});
+
+test("TaskQueue - successful tasks are removed from the store", async () => {
+  const store = makeMemoryQueueStore();
+  const queue = new TaskQueue<{ jobId: string }>({
+    store,
+    concurrency: 1,
+    maxRetries: 1,
+    handler: async () => {},
+  });
+
+  await queue.enqueue({ jobId: "job-ok" });
+  await queue.drain();
+
+  assert.equal(store.rows.size, 0);
+});
+
+test("computeDeliverableHash - same bytes produce the same hash", () => {
+  const bytes = new TextEncoder().encode("hello deliverable");
+  const h1 = computeDeliverableHash(bytes);
+  const h2 = computeDeliverableHash(bytes);
+  assert.equal(h1, h2);
+  assert.equal(typeof h1, "string");
+  assert.ok(h1.length > 0);
+});
+
+test("computeDeliverableHash - different bytes produce different hashes", () => {
+  const a = computeDeliverableHash(new TextEncoder().encode("alpha"));
+  const b = computeDeliverableHash(new TextEncoder().encode("beta"));
+  assert.notEqual(a, b);
+});
+
+test("computeDeliverableHash - matches the SDK client-side helper", async () => {
+  const { computeDeliverableHash: sdkHash } = await import(
+    "../sdk/src/deliverable.js"
+  );
+  const bytes = new TextEncoder().encode("reproducible deliverable content");
+  assert.equal(computeDeliverableHash(bytes), sdkHash(bytes));
+});
+
+test("submitDeliverable - computes hash, stores content and calls the contract", async () => {
+  const stored: Array<{ key: string; bytes: Uint8Array }> = [];
+  const storage = {
+    async put(key: string, bytes: Uint8Array) {
+      stored.push({ key, bytes });
+      return { key };
+    },
+  };
+
+  let submitted: { jobId: string; hash: string } | undefined;
+  const contract = {
+    async submit(jobId: string, hash: string) {
+      submitted = { jobId, hash };
+      return { txHash: "tx-1" };
+    },
+  };
+
+  const bytes = new TextEncoder().encode("final deliverable");
+  const result = await submitDeliverable(
+    { jobId: "job-42" },
+    bytes,
+    { storage, contract },
+  );
+
+  assert.equal(stored.length, 1);
+  assert.deepEqual(stored[0].bytes, bytes);
+  assert.equal(submitted?.jobId, "job-42");
+  assert.equal(submitted?.hash, computeDeliverableHash(bytes));
+  assert.equal(result.hash, computeDeliverableHash(bytes));
+  assert.equal(result.txHash, "tx-1");
 });
 
 // ---------------------------------------------------------------------------

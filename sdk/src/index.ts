@@ -47,6 +47,8 @@ export {
   verifyDeliverableHash,
   type DeliverableHashInput,
 } from "./deliverableHash.js";
+// #994 — deliverable hashing and submission helper shared by all sellers
+export { submitDeliverable, type SubmitDeliverableResult } from "./commerce.js";
 export { IdentityClient } from "./identity.js";
 export { CommerceClient } from "./commerce.js";
 export type {

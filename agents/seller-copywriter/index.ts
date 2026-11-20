@@ -13,6 +13,8 @@ import {
   MOCK_DELIVERABLES,
   callLlmWithRetry,
   registerGracefulShutdown,
+  createTaskQueue,
+  submitDeliverable,
 } from "../shared.js";
 import {
   initTracing,
@@ -42,6 +44,70 @@ const { app, seller, cfg } = await createSellerAgent({
 
 const groq = isMockLlm() ? null : new Groq({ apiKey: config.GROQ_API_KEY });
 const GROQ_MODEL = config.GROQ_MODEL ?? "llama-3.3-70b-versatile";
+
+const taskQueue = createTaskQueue({
+  agentId: AGENT_ID,
+  agentDir: AGENT_DIR,
+  concurrency: Number(config.SELLER_QUEUE_CONCURRENCY ?? 2),
+  maxAttempts: Number(config.SELLER_QUEUE_MAX_ATTEMPTS ?? 3),
+  handler: async (payload: Record<string, unknown>) => {
+    const jobId = String(payload.jobId);
+    const task = String(payload.task);
+    const tone = payload.tone as string | undefined;
+    const audience = payload.audience as string | undefined;
+    const keywords = payload.keywords as string | string[] | undefined;
+    const brandVoice = payload.brandVoice as Record<string, unknown> | undefined;
+
+    jobsActive++;
+    try {
+      console.log(`[${AGENT_ID}] Calling Groq...`);
+      const brandContext = [
+        tone ? `Tone: ${tone}` : "",
+        audience ? `Target audience: ${audience}` : "",
+        keywords?.length
+          ? `Keywords to include: ${Array.isArray(keywords) ? keywords.join(", ") : keywords}`
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+      const copy = await generate(
+        `You are a professional copywriter. Write compelling website copy for:\n\n${task}${brandContext ? `\n\nBrand guidelines:\n${brandContext}` : ""}\n\nStructure in markdown: # Headline, ## Subheadline, ## Body, ## CTA.`,
+      );
+      if (copy.length < 20) {
+        throw new Error(`Generated copy too short (${copy.length} chars)`);
+      }
+
+      const deliverable = await withSpan(
+        "stellar.commerce.submit",
+        { "stellar.job_id": jobId },
+        async () => {
+          const url = await submitDeliverable({
+            agentId: AGENT_ID,
+            agentDir: AGENT_DIR,
+            outputDir: OUTPUT_DIR,
+            outputUrl: OUTPUT_URL,
+            publicUrl,
+            jobId,
+            bytes: Buffer.from(copy, "utf8"),
+            filename: `job-${jobId}.md`,
+            commerce: new CommerceClient(cfg),
+            seller,
+          });
+          console.log(`[${AGENT_ID}] ✓ Job #${jobId} submitted → ${url}`);
+          return url;
+        },
+      );
+      console.log(`[${AGENT_ID}] Copy written (${copy.length} chars) → ${deliverable}`);
+      jobsCompleted++;
+    } catch (err) {
+      jobsFailed++;
+      console.error(`[${AGENT_ID}] Error:`, (err as Error).message);
+      throw err;
+    } finally {
+      jobsActive--;
+    }
+  },
+});
 
 const startTime = Date.now();
 let jobsActive = 0;
@@ -197,64 +263,33 @@ app.post("/job", limiter, async (req, res) => {
   console.log(
     `[${AGENT_ID}] Job #${jobId}: ${task}${brandVoice ? ` | brandVoice: ${JSON.stringify(brandVoice)}` : ""}`,
   );
-  res.json(makeSellerResponse({ status: "accepted", jobId }, startedAt));
 
   const taskKey = `job-${jobId}-${requestId}`;
   activeTaskTracker.track(taskKey);
-  jobsActive++;
   try {
-    console.log(`[${AGENT_ID}] Calling Groq...`);
-    const brandContext = [
-      tone ? `Tone: ${tone}` : "",
-      audience ? `Target audience: ${audience}` : "",
-      keywords?.length
-        ? `Keywords to include: ${Array.isArray(keywords) ? keywords.join(", ") : keywords}`
-        : "",
-    ]
-      .filter(Boolean)
-      .join("\n");
-    const copy = await generate(
-      `You are a professional copywriter. Write compelling website copy for:\n\n${task}${brandContext ? `\n\nBrand guidelines:\n${brandContext}` : ""}\n\nStructure in markdown: # Headline, ## Subheadline, ## Body, ## CTA.`,
+    await taskQueue.enqueue(
+      taskKey,
+      { jobId: String(jobId), task, tone, audience, keywords, brandVoice },
+      { requestId },
     );
-    if (copy.length < 20) {
-      throw new Error(`Generated copy too short (${copy.length} chars)`);
-    }
-
-    fs.mkdirSync(OUTPUT_DIR, { recursive: true });
-    const filename = `job-${jobId}.md`;
-    fs.writeFileSync(path.join(OUTPUT_DIR, filename), copy);
-    const deliverable = `${publicUrl}/${OUTPUT_URL}/${filename}`;
-    console.log(`[${AGENT_ID}] Copy written (${copy.length} chars) → ${deliverable}`);
-
-    const commerce = new CommerceClient(cfg);
-    await withSpan(
-      "stellar.commerce.submit",
-      { "stellar.job_id": String(jobId), "stellar.deliverable": deliverable },
-      async () => {
-        for (let attempt = 1; attempt <= 5; attempt++) {
-          try {
-            await commerce.submit(seller, BigInt(jobId), deliverable);
-            console.log(`[${AGENT_ID}] ✓ Job #${jobId} submitted → ${deliverable}`);
-            break;
-          } catch (e: any) {
-            if (attempt === 5) throw e;
-            console.log(`[${AGENT_ID}] submit attempt ${attempt} failed, retrying...`);
-            await new Promise((r) => setTimeout(r, 4000));
-          }
-        }
-      },
-    );
-    jobsCompleted++;
+    res.json(makeSellerResponse({ status: "accepted", jobId }, startedAt));
   } catch (err) {
-    jobsFailed++;
     recordSpanError(span, err as Error);
-    console.error(`[${AGENT_ID}] Error:`, (err as Error).message);
+    console.error(`[${AGENT_ID}] Failed to enqueue job #${jobId}:`, (err as Error).message);
+    res.status(500).json({
+      success: false,
+      error: "failed to enqueue job",
+      execution_time_ms: Date.now() - startedAt,
+    });
   } finally {
-    jobsActive--;
     activeTaskTracker.untrack(taskKey);
   }
 });
 
+await taskQueue.start();
+
 const server = app.listen(PORT, () => console.log(`[${AGENT_ID}] Listening on :${PORT}`));
 
-registerGracefulShutdown(server, activeTaskTracker, undefined);
+registerGracefulShutdown(server, activeTaskTracker, async () => {
+  await taskQueue.stop();
+});
