@@ -25,6 +25,7 @@ export interface WalletConnectButtonProps {
   balance?: string | null;
   providers?: WalletProvider[];
   explorerUrl?: (address: string) => string;
+  isConnecting?: boolean;
   labels?: {
     connect?: string;
     copyAddress?: string;
@@ -34,6 +35,10 @@ export interface WalletConnectButtonProps {
     selectWallet?: string;
     copied?: string;
     close?: string;
+    connecting?: string;
+    connectedAs?: string;
+    disconnected?: string;
+    connected?: string;
   };
 }
 
@@ -67,6 +72,22 @@ const DEFAULT_LABELS = {
   selectWallet: 'Select a Wallet',
   copied: 'Copied!',
   close: 'Close',
+  connecting: 'Connecting…',
+  connectedAs: 'Connected as',
+  disconnected: 'Disconnected',
+  connected: 'Wallet connected',
+};
+
+const visuallyHiddenStyle: React.CSSProperties = {
+  position: 'absolute',
+  width: '1px',
+  height: '1px',
+  padding: 0,
+  margin: '-1px',
+  overflow: 'hidden',
+  clip: 'rect(0, 0, 0, 0)',
+  whiteSpace: 'nowrap',
+  border: 0,
 };
 
 function truncateAddress(address: string): string {
@@ -96,6 +117,7 @@ export function WalletConnectButton({
   balance = null,
   providers = DEFAULT_PROVIDERS,
   explorerUrl = defaultExplorerUrl,
+  isConnecting = false,
   labels: labelsProp,
 }: WalletConnectButtonProps): React.ReactElement {
   const labels = useMemo(() => ({ ...DEFAULT_LABELS, ...labelsProp }), [labelsProp]);
@@ -105,6 +127,7 @@ export function WalletConnectButton({
   const [modalOpen, setModalOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [activeProviderIndex, setActiveProviderIndex] = useState(0);
+  const [announcement, setAnnouncement] = useState('');
 
   const rootRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -127,6 +150,26 @@ export function WalletConnectButton({
       }
     };
   }, []);
+
+  // Announce connection status changes via the polite live region.
+  const prevConnectedRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (!mounted) return;
+    const prev = prevConnectedRef.current;
+    prevConnectedRef.current = isConnected;
+    if (prev === null) return;
+    if (isConnected && address) {
+      setAnnouncement(`${labels.connectedAs} ${address}`);
+    } else if (!isConnected && prev) {
+      setAnnouncement(labels.disconnected);
+    }
+  }, [mounted, isConnected, address, labels.connectedAs, labels.disconnected]);
+
+  useEffect(() => {
+    if (isConnecting) {
+      setAnnouncement(labels.connecting);
+    }
+  }, [isConnecting, labels.connecting]);
 
   const closeMenu = useCallback((restoreFocus = true) => {
     setMenuOpen(false);
@@ -282,6 +325,7 @@ export function WalletConnectButton({
   const handleSelectProvider = useCallback(
     (providerId: string) => {
       setModalOpen(false);
+      setAnnouncement(labels.connecting);
       if (onConnect) {
         onConnect(providerId);
       }
@@ -289,7 +333,7 @@ export function WalletConnectButton({
         triggerRef.current.focus();
       }
     },
-    [onConnect],
+    [onConnect, labels.connecting],
   );
 
   const handleCopyAddress = useCallback(async () => {
@@ -328,13 +372,14 @@ export function WalletConnectButton({
 
   const handleDisconnect = useCallback(() => {
     setMenuOpen(false);
+    setAnnouncement(labels.disconnected);
     if (onDisconnect) {
       onDisconnect();
     }
     if (triggerRef.current) {
       triggerRef.current.focus();
     }
-  }, [onDisconnect]);
+  }, [onDisconnect, labels.disconnected]);
 
   const baseButtonStyle: React.CSSProperties = {
     display: 'inline-flex',
@@ -422,15 +467,26 @@ export function WalletConnectButton({
   // SSR-safe: render a stable initial state until mounted to avoid hydration mismatch.
   const showConnected = mounted && isConnected;
 
+  const triggerAriaLabel = showConnected
+    ? `${labels.connected}, ${truncateAddress(address as string)}`
+    : isConnecting
+      ? labels.connecting
+      : labels.connect;
+
   return (
     <div
       ref={rootRef}
       className={className}
       style={{ position: 'relative', display: 'inline-block', ...style }}
     >
+      <span role="status" aria-live="polite" style={visuallyHiddenStyle}>
+        {announcement}
+      </span>
       <button
         ref={triggerRef}
         type="button"
+        aria-label={triggerAriaLabel}
+        aria-busy={isConnecting || undefined}
         aria-haspopup={showConnected ? 'menu' : 'dialog'}
         aria-expanded={showConnected ? menuOpen : modalOpen}
         aria-controls={showConnected ? menuId : modalOpen ? modalId : undefined}
@@ -464,7 +520,7 @@ export function WalletConnectButton({
         ) : (
           <>
             <span aria-hidden="true">✦</span>
-            <span>{labels.connect}</span>
+            <span>{isConnecting ? labels.connecting : labels.connect}</span>
           </>
         )}
       </button>
@@ -481,15 +537,17 @@ export function WalletConnectButton({
           <button
             type="button"
             role="menuitem"
+            aria-label={labels.copyAddress}
             onClick={handleCopyAddress}
             style={menuItemStyle}
           >
             <span aria-hidden="true">📋</span>
-            <span>{copied ? labels.copied : labels.copyAddress}</span>
+            <span aria-live="polite">{copied ? labels.copied : labels.copyAddress}</span>
           </button>
           <button
             type="button"
             role="menuitem"
+            aria-label={labels.viewOnExplorer}
             onClick={handleViewOnExplorer}
             style={menuItemStyle}
           >
@@ -499,6 +557,7 @@ export function WalletConnectButton({
           <button
             type="button"
             role="menuitem"
+            aria-label={labels.switchWallet}
             onClick={handleSwitchWallet}
             style={menuItemStyle}
           >
@@ -508,6 +567,7 @@ export function WalletConnectButton({
           <button
             type="button"
             role="menuitem"
+            aria-label={labels.disconnect}
             onClick={handleDisconnect}
             style={menuItemStyle}
           >
@@ -576,6 +636,7 @@ export function WalletConnectButton({
                   type="button"
                   role="option"
                   aria-selected={index === activeProviderIndex}
+                  aria-label={provider.name}
                   tabIndex={index === activeProviderIndex ? 0 : -1}
                   onClick={() => handleSelectProvider(provider.id)}
                   onFocus={() => setActiveProviderIndex(index)}

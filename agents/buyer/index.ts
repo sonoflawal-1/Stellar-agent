@@ -17,170 +17,17 @@ import {
   type MarcConfig,
   type Job,
 } from "marc-stellar-sdk";
-import { retryWithBackoff, loadAgentConfig } from "../shared.js";
+import { retryWithBackoff, loadAgentConfig, validateEnv } from "../shared.js";
 import { watchFile, unwatchFile, readFileSync, existsSync } from "node:fs";
 import { createServer } from "node:http";
 import { context, propagation, SpanKind, SpanStatusCode, trace } from "@opentelemetry/api";
 
 const DEFAULT_JOB_BUDGET = 10_000_000n;
 
-// ── Budget policy (issue #995) ────────────────────────────────────────────────
-// The buyer agent must never spend beyond the configured budget and can require
-// human approval for large jobs. All limits are configurable via env:
-//   BUDGET_MAX_PER_JOB        maximum budget for a single job (stroops)
-//   BUDGET_DAILY_CAP          maximum cumulative spend per UTC day (stroops)
-//   BUDGET_APPROVAL_THRESHOLD jobs at/above this budget require approval
-//   BUDGET_APPROVAL_WEBHOOK   URL to POST approval requests to
-export interface BudgetPolicy {
-  maxPerJob: bigint;
-  dailyCap: bigint;
-  approvalThreshold: bigint;
-  approvalWebhook?: string;
-}
-
-export interface BudgetCheckResult {
-  allowed: boolean;
-  reason?: string;
-  requiresApproval: boolean;
-}
-
-function parseBigIntEnv(name: string, fallback: bigint): bigint {
-  const raw = process.env[name];
-  if (raw === undefined || raw.trim() === "") return fallback;
-  try {
-    return BigInt(raw.trim());
-  } catch {
-    return fallback;
-  }
-}
-
-export function loadBudgetPolicy(env: NodeJS.ProcessEnv = process.env): BudgetPolicy {
-  return {
-    maxPerJob: parseBigIntEnv("BUDGET_MAX_PER_JOB", DEFAULT_JOB_BUDGET),
-    dailyCap: parseBigIntEnv("BUDGET_DAILY_CAP", BigInt(Number.MAX_SAFE_INTEGER)),
-    approvalThreshold: parseBigIntEnv("BUDGET_APPROVAL_THRESHOLD", BigInt(Number.MAX_SAFE_INTEGER)),
-    approvalWebhook: env.BUDGET_APPROVAL_WEBHOOK?.trim() || undefined,
-  };
-}
-
-// Cumulative spend keyed by UTC date (YYYY-MM-DD).
-const dailySpend = new Map<string, bigint>();
-
-export function utcDateKey(date: Date = new Date()): string {
-  return date.toISOString().slice(0, 10);
-}
-
-export function getDailySpend(date: Date = new Date()): bigint {
-  return dailySpend.get(utcDateKey(date)) ?? 0n;
-}
-
-export function recordSpend(amount: bigint, date: Date = new Date()): void {
-  const key = utcDateKey(date);
-  dailySpend.set(key, (dailySpend.get(key) ?? 0n) + amount);
-}
-
-export function resetDailySpend(): void {
-  dailySpend.clear();
-}
-
-/**
- * Check a prospective job budget against the policy. Returns whether the job
- * is allowed, whether it needs human approval, and a human-readable reason
- * when it is refused.
- */
-export function checkBudget(
-  jobBudget: bigint,
-  policy: BudgetPolicy = loadBudgetPolicy(),
-  date: Date = new Date(),
-): BudgetCheckResult {
-  if (jobBudget > policy.maxPerJob) {
-    return {
-      allowed: false,
-      requiresApproval: false,
-      reason: `job budget ${jobBudget} exceeds BUDGET_MAX_PER_JOB ${policy.maxPerJob}`,
-    };
-  }
-  const spent = getDailySpend(date);
-  if (spent + jobBudget > policy.dailyCap) {
-    return {
-      allowed: false,
-      requiresApproval: false,
-      reason: `job budget ${jobBudget} would exceed BUDGET_DAILY_CAP ${policy.dailyCap} (already spent ${spent} today)`,
-    };
-  }
-  const requiresApproval = jobBudget >= policy.approvalThreshold;
-  return { allowed: true, requiresApproval };
-}
-
-export interface ApprovalRequest {
-  jobBudget: string;
-  provider: string;
-  description: string;
-}
-
-/**
- * Ask a human approver (via webhook) whether a job may proceed. Only an
- * explicit `{ approved: true }` response allows the job.
- */
-export async function requestApproval(
-  request: ApprovalRequest,
-  webhook: string,
-): Promise<boolean> {
-  try {
-    const res = await tracedFetch(
-      webhook,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(request),
-      },
-      "budget.approval",
-    );
-    if (!res.ok) return false;
-    const data = (await res.json()) as { approved?: boolean };
-    return data.approved === true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Full pre-submit gate: enforce per-job and daily caps, then request approval
- * when required. Records approved spend against the daily counter.
- */
-export async function authorizeJobSpend(
-  jobBudget: bigint,
-  provider: string,
-  description: string,
-  policy: BudgetPolicy = loadBudgetPolicy(),
-): Promise<BudgetCheckResult> {
-  const check = checkBudget(jobBudget, policy);
-  if (!check.allowed) return check;
-
-  if (check.requiresApproval) {
-    if (!policy.approvalWebhook) {
-      return {
-        allowed: false,
-        requiresApproval: true,
-        reason: `job budget ${jobBudget} requires approval but BUDGET_APPROVAL_WEBHOOK is not set`,
-      };
-    }
-    const approved = await requestApproval(
-      { jobBudget: jobBudget.toString(), provider, description },
-      policy.approvalWebhook,
-    );
-    if (!approved) {
-      return {
-        allowed: false,
-        requiresApproval: true,
-        reason: `job budget ${jobBudget} was not approved`,
-      };
-    }
-  }
-
-  recordSpend(jobBudget);
-  return check;
-}
+// ── Environment validation (issue #998) ───────────────────────────────────────
+// Validate required variables at startup so missing keys fail fast with a
+// clear table instead of a late, cryptic error.
+validateEnv("buyer");
 
 // ── OpenTelemetry tracing (issue #726) ────────────────────────────────────────
 // The tracer is a no-op until a provider is registered (see tracing.ts). All

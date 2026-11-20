@@ -7,13 +7,13 @@ Thank you for contributing to Bear — the commerce layer for AI agent payments 
 1. [Commit Message Format](#commit-message-format)
 2. [Test-Driven Development (TDD)](#test-driven-development-tdd)
 3. [Running Tests](#running-tests)
-4. [CLAUDE.md Update Protocol](#claudemd-update-protocol)
-5. [Self-Audit Checklist](#self-audit-checklist)
-6. [Workflow](#workflow)
-7. [Pre-Commit Hooks](#pre-commit-hooks)
-8. [WASM Size Budgets](#wasm-size-budgets)
-9. [Protected Paths & CODEOWNERS](#protected-paths--codeowners)
-10. [Release Process (Changesets)](#release-process-changesets)
+4. [Node Version Policy](#node-version-policy)
+5. [CLAUDE.md Update Protocol](#claudemd-update-protocol)
+6. [Self-Audit Checklist](#self-audit-checklist)
+7. [Workflow](#workflow)
+8. [Pre-Commit Hooks](#pre-commit-hooks)
+9. [WASM Size Budgets](#wasm-size-budgets)
+10. [Protected Paths & CODEOWNERS](#protected-paths--codeowners)
 
 ---
 
@@ -282,6 +282,53 @@ cargo fmt --check
 
 ---
 
+## Node Version Policy
+
+All JavaScript/TypeScript packages (`sdk`, `dashboard`, `indexer`, `agents`,
+`landing`, `react`) share a single Node version policy so local development and
+CI behave identically.
+
+### Supported Versions
+
+- **Pinned version:** the repository-root `.nvmrc` holds the exact version used
+  for local development and for the primary CI job.
+- **Supported range:** every package's `package.json` declares an `engines.node`
+  range. The minimum of that range is the oldest version we support; the pinned
+  `.nvmrc` version must always fall inside it.
+- **CI matrix:** CI runs the JavaScript/TypeScript checks across the supported
+  versions (the minimum supported version and the pinned `.nvmrc` version), so a
+  change that breaks either end of the range fails before merge.
+
+When bumping Node, update `.nvmrc` and the `engines.node` field in **every**
+package in the same pull request. A mismatch between `.nvmrc` and `engines`
+will fail CI.
+
+### Switching Versions Locally
+
+Use a version manager so your shell picks up `.nvmrc` automatically:
+
+```bash
+# nvm
+nvm install   # installs the version from .nvmrc
+nvm use       # switches to the version from .nvmrc
+
+# fnm
+fnm install
+fnm use
+```
+
+Verify you're on the expected version before running installs or tests:
+
+```bash
+node --version
+npm --version
+```
+
+If `npm install` warns about `EBADENGINE`, your Node version is outside the
+supported range — switch to the pinned version with the commands above.
+
+---
+
 ## CLAUDE.md Update Protocol
 
 **CLAUDE.md is the project memory for AI-assisted work.** After every task, update it so future sessions don't re-learn the same lessons. This is mandatory.
@@ -525,6 +572,9 @@ machine.
 Before pushing any branch, run:
 
 ```bash
+# Node (must match .nvmrc)
+node --version
+
 # Rust
 cargo test
 cargo clippy -- -D warnings

@@ -15,9 +15,13 @@ import {
   MOCK_DELIVERABLES,
   initTracing,
   withSpan,
+  validateEnv,
+  sellerResearcherEnvSchema,
   createTaskQueue,
   submitDeliverable,
 } from "../shared.js";
+
+validateEnv(sellerResearcherEnvSchema, "seller-researcher");
 
 const config = loadAgentConfig({
   required: ["SECRET_KEY", "REGISTRY_URL", "GROQ_API_KEY"],

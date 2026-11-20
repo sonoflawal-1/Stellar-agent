@@ -16,6 +16,7 @@ import {
   createTaskQueue,
   submitDeliverable,
 } from "../shared.js";
+import { sanitizeGeneratedHtml } from "./sanitize.js";
 
 const config = loadAgentConfig({
   agentId: "seller-webbuilder",
@@ -202,14 +203,32 @@ async function processJob(payload: JobPayload): Promise<void> {
       );
     }
 
+    // Sandbox/validate generated artifacts before delivery: strip inline
+    // scripts, event handlers and external requests, and record a report.
+    const { html: sanitized, report } = sanitizeGeneratedHtml(stripped, { jobId });
+    if (report.stripped.length > 0 || report.flagged.length > 0) {
+      console.warn(
+        `[${AGENT_ID}] Job #${jobId} sanitised: ${report.stripped.length} stripped, ${report.flagged.length} flagged`,
+      );
+    }
+
     fs.mkdirSync(OUTPUT_DIR, { recursive: true });
     const filename = `job-${jobId}.html`;
-    const filePath = path.join(OUTPUT_DIR, filename);
-    const bytes = Buffer.from(stripped, "utf8");
-    fs.writeFileSync(filePath, bytes);
+    fs.writeFileSync(path.join(OUTPUT_DIR, filename), sanitized);
+    fs.writeFileSync(
+      path.join(OUTPUT_DIR, `job-${jobId}.content-report.json`),
+      JSON.stringify(report, null, 2),
+    );
+    // Canonical deliverable paths.
+    fs.writeFileSync(path.join(OUTPUT_DIR, "website.html"), sanitized);
+    fs.writeFileSync(
+      path.join(OUTPUT_DIR, "content-report.json"),
+      JSON.stringify(report, null, 2),
+    );
     const deliverable = `${publicUrl}/${OUTPUT_URL}/${filename}`;
-    console.log(`[${AGENT_ID}] Website built (${stripped.length} chars) → ${deliverable}`);
+    console.log(`[${AGENT_ID}] Website built (${sanitized.length} chars) → ${deliverable}`);
 
+    const bytes = Buffer.from(sanitized, "utf8");
     await submitDeliverable(
       { jobId, cfg, seller, agentId: AGENT_ID },
       bytes,

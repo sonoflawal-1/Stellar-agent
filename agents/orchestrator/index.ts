@@ -11,6 +11,7 @@ import "dotenv/config";
 import { Keypair } from "@stellar/stellar-sdk";
 import { CommerceClient, TESTNET, type MarcConfig } from "marc-stellar-sdk";
 import { JobStatus } from "marc-stellar-sdk";
+import { validateEnv } from "../shared/env.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -666,13 +667,12 @@ export class OrchestratorAgent {
 // ── Entrypoint ────────────────────────────────────────────────────────────────
 
 if (process.argv[1]?.endsWith("index.ts") || process.argv[1]?.endsWith("index.js")) {
-  const secretKey = process.env.SECRET_KEY;
-  if (!secretKey) {
-    console.error("[orchestrator] ERROR: SECRET_KEY environment variable is required");
-    process.exit(1);
-  }
+  // Validate required env vars at startup — exits with code 1 and a clear
+  // table of missing variables if anything is absent.
+  const env = validateEnv("orchestrator");
 
-  const registryUrl = process.env.REGISTRY_URL ?? "http://localhost:3001";
+  const secretKey = env.SECRET_KEY;
+  const registryUrl = env.REGISTRY_URL ?? "http://localhost:3001";
 
   const cfg: MarcConfig = {
     rpcUrl: process.env.STELLAR_RPC_URL ?? TESTNET.rpcUrl,

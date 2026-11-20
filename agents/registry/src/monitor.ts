@@ -35,6 +35,17 @@ export interface AgentHealthMonitorOptions {
    */
   failureThreshold?: number;
   /**
+   * Time-to-live in milliseconds since the last heartbeat. Agents whose last
+   * heartbeat is older than this are marked Offline and hidden from discovery.
+   * Defaults to 120_000.
+   */
+  heartbeatTtlMs?: number;
+  /**
+   * Returns the last heartbeat timestamp (epoch ms) for an agent, if known.
+   * Used by the TTL sweep to detect stale agents.
+   */
+  getLastHeartbeat?: (agentId: string) => number | undefined;
+  /**
    * Optional fetch implementation (defaults to global fetch). Useful for tests.
    */
   fetchImpl?: typeof fetch;
@@ -67,6 +78,7 @@ interface AgentState {
 const DEFAULT_INTERVAL_MS = 60_000;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_FAILURE_THRESHOLD = 3;
+const DEFAULT_HEARTBEAT_TTL_MS = 120_000;
 
 function normalizeAgents(
   agents: Map<string, AgentRecord> | Record<string, AgentRecord>,
@@ -92,6 +104,8 @@ export class AgentHealthMonitor extends EventEmitter {
   private readonly intervalMs: number;
   private readonly timeoutMs: number;
   private readonly failureThreshold: number;
+  private readonly heartbeatTtlMs: number;
+  private readonly getLastHeartbeat?: AgentHealthMonitorOptions['getLastHeartbeat'];
   private readonly fetchImpl: typeof fetch;
   private readonly alertWebhookUrl?: string;
   private readonly logger: Pick<Console, 'warn' | 'error' | 'info' | 'log'>;
@@ -114,6 +128,8 @@ export class AgentHealthMonitor extends EventEmitter {
     this.intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.failureThreshold = options.failureThreshold ?? DEFAULT_FAILURE_THRESHOLD;
+    this.heartbeatTtlMs = options.heartbeatTtlMs ?? DEFAULT_HEARTBEAT_TTL_MS;
+    this.getLastHeartbeat = options.getLastHeartbeat;
     this.fetchImpl = options.fetchImpl ?? (globalThis.fetch as typeof fetch);
     this.alertWebhookUrl = options.alertWebhookUrl;
     this.logger = options.logger ?? console;
@@ -131,6 +147,9 @@ export class AgentHealthMonitor extends EventEmitter {
     this.timer = setInterval(() => {
       void this.probeOnce().catch((err) => {
         this.logger.error('[AgentHealthMonitor] probe cycle failed', err);
+      });
+      void this.sweepStaleAgents().catch((err) => {
+        this.logger.error('[AgentHealthMonitor] TTL sweep failed', err);
       });
     }, this.intervalMs);
     // Do not keep the event loop alive just for the monitor.
@@ -181,6 +200,49 @@ export class AgentHealthMonitor extends EventEmitter {
     } finally {
       this.probing = false;
     }
+  }
+
+  /**
+   * Marks agents Offline when their last heartbeat is older than the TTL.
+   * Offline agents are excluded from discovery by the registry server.
+   */
+  async sweepStaleAgents(now: number = Date.now()): Promise<string[]> {
+    if (!this.getLastHeartbeat) {
+      return [];
+    }
+    const agents = normalizeAgents(this.getAgents());
+    const stale: string[] = [];
+    const tasks: Array<Promise<void>> = [];
+    for (const [agentId, agent] of agents.entries()) {
+      const lastHeartbeat = this.getLastHeartbeat(agentId);
+      if (lastHeartbeat === undefined) {
+        continue;
+      }
+      if (now - lastHeartbeat <= this.heartbeatTtlMs) {
+        continue;
+      }
+      const state = this.getState(agentId, agent);
+      if (state.status === 'Offline') {
+        continue;
+      }
+      state.status = 'Offline';
+      stale.push(agentId);
+      tasks.push(
+        Promise.resolve(this.setStatus(agentId, 'Offline')).catch((err) => {
+          this.logger.error(
+            `[AgentHealthMonitor] failed to set status Offline for ${agentId}`,
+            err,
+          );
+        }),
+      );
+      this.emit('offline', {
+        agentId,
+        agent,
+        error: `heartbeat TTL exceeded (${now - lastHeartbeat}ms > ${this.heartbeatTtlMs}ms)`,
+      });
+    }
+    await Promise.all(tasks);
+    return stale;
   }
 
   private getState(agentId: string, agent: AgentRecord): AgentState {
