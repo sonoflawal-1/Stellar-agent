@@ -43,6 +43,7 @@ export default function JobTracker({ jobId }: { jobId: bigint | null }) {
       </div>
       {loading && <p style={{ color: '#888' }}>Loading…</p>}
       {error && <p className="error">{error}</p>}
+      {!loading && !error && id && !job && <p style={{ color: '#888' }}>No job found for this id.</p>}
       {job && (
         <>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>

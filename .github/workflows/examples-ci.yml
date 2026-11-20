@@ -1,0 +1,28 @@
+name: Examples CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  examples-build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        example: [nextjs-starter, vite-starter]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build --workspace @bear-protocol/react
+      - run: npm run build --workspace marc-stellar-sdk
+      - name: Typecheck and build ${{ matrix.example }}
+        working-directory: examples/${{ matrix.example }}
+        run: |
+          npm ci
+          npx tsc --noEmit
+          npm run build

@@ -250,6 +250,8 @@ enum DataKey {
     RewardPerShare(Address),
     RewardRemainder(Address),
     RewardAccount(Address, Address),
+    /// Ordered job ids per status for paginated list getters (#1032).
+    StatusIndex(JobStatus),
 }
 
 const DEFAULT_FEE_BPS: u32 = 100; // 1%
@@ -628,6 +630,41 @@ impl AgenticCommerceContract {
         }
     }
 
+    fn push_job_status_index(env: &Env, status: JobStatus, job_id: u64) {
+        let key = DataKey::StatusIndex(status);
+        let mut ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(env));
+        ids.push_back(job_id);
+        env.storage().persistent().set(&key, &ids);
+    }
+
+    fn remove_job_status_index(env: &Env, status: JobStatus, job_id: u64) {
+        let key = DataKey::StatusIndex(status);
+        let Some(mut ids): Option<Vec<u64>> = env.storage().persistent().get(&key) else {
+            return;
+        };
+        let mut next = Vec::new(env);
+        let len = ids.len();
+        for i in 0..len {
+            let id = ids.get(i).unwrap();
+            if id != job_id {
+                next.push_back(id);
+            }
+        }
+        env.storage().persistent().set(&key, &next);
+    }
+
+    fn transition_job_status_index(env: &Env, job_id: u64, from: JobStatus, to: JobStatus) {
+        if from == to {
+            return;
+        }
+        Self::remove_job_status_index(env, from, job_id);
+        Self::push_job_status_index(env, to, job_id);
+    }
+
     /// Compute the platform fee for a given budget using safe arithmetic (#28, #539).
     ///
     /// We multiply first (`budget * fee_bps`) before dividing by `BPS_DENOM`
@@ -994,6 +1031,7 @@ impl AgenticCommerceContract {
             submitted_at: 0,              // #716
         };
         env.storage().persistent().set(&DataKey::Job(next), &job);
+        Self::push_job_status_index(&env, JobStatus::Funded, next);
         env.storage().instance().set(&DataKey::NextId, &(next + 1));
 
         JobCreated {
@@ -1526,10 +1564,12 @@ impl AgenticCommerceContract {
         if deliverable_hash == zero_hash {
             panic!("deliverable hash cannot be zero");
         }
+        let from_status = job.status;
         job.status = JobStatus::Submitted;
         job.deliverable = deliverable;
         job.deliverable_hash = deliverable_hash.clone();
         job.updated_at = env.ledger().timestamp();
+        Self::transition_job_status_index(&env, id, from_status, job.status);
         env.storage().persistent().set(&DataKey::Job(id), &job);
 
         JobSubmitted {
@@ -1597,9 +1637,11 @@ impl AgenticCommerceContract {
         let fee: i128 = Self::compute_fee(penalized_budget, job.fee_bps);
         let payout: i128 = penalized_budget - fee;
 
+        let from_status = job.status;
         job.status = JobStatus::Completed;
         job.released = job.budget; // full budget has been paid out
         job.updated_at = env.ledger().timestamp();
+        Self::transition_job_status_index(&env, id, from_status, job.status);
         env.storage().persistent().set(&DataKey::Job(id), &job);
 
         let token_client = token::TokenClient::new(&env, &job.token);
@@ -1766,8 +1808,10 @@ impl AgenticCommerceContract {
         let net_budget = job.budget - job.released;
         // Persist settlement before the external token call; failures roll back atomically.
         job.released = job.budget; // mark everything as settled
+        let from_status = job.status;
         job.status = JobStatus::Cancelled;
         job.updated_at = env.ledger().timestamp();
+        Self::transition_job_status_index(&env, id, from_status, job.status);
         env.storage().persistent().set(&DataKey::Job(id), &job);
         env.storage().persistent().remove(&DataKey::Evaluators(id));
 
@@ -1810,8 +1854,10 @@ impl AgenticCommerceContract {
         if job.status != JobStatus::Submitted {
             panic_with_error!(&env, Error::InvalidStatus);
         }
+        let from_status = job.status;
         job.status = JobStatus::Disputed;
         job.updated_at = env.ledger().timestamp();
+        Self::transition_job_status_index(&env, id, from_status, job.status);
         env.storage().persistent().set(&DataKey::Job(id), &job);
 
         JobDisputed {
@@ -2421,18 +2467,34 @@ impl AgenticCommerceContract {
     /// lightweight per-status statistics without fetching and deserializing
     /// every full Job struct. (#471)
     pub fn get_jobs_count_by_status(env: Env, status: JobStatus) -> u32 {
-        let next_id: u64 = env.storage().instance().get(&DataKey::NextId).unwrap_or(1u64);
-        let mut count: u32 = 0;
-        let mut id: u64 = 1;
-        while id < next_id {
-            if let Some(job) = env.storage().persistent().get::<DataKey, Job>(&DataKey::Job(id)) {
-                if job.status == status {
-                    count += 1;
-                }
-            }
-            id += 1;
+        let key = DataKey::StatusIndex(status);
+        let ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(&env));
+        ids.len()
+    }
+
+    /// Paginated list of job ids in the given status (maintained on every transition).
+    pub fn get_jobs_by_status(env: Env, status: JobStatus, start: u32, limit: u32) -> Vec<u64> {
+        if limit == 0 || limit > 50 {
+            panic_with_error!(&env, Error::InvalidStatus);
         }
-        count
+        let key = DataKey::StatusIndex(status);
+        let ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| Vec::new(&env));
+        let mut out = Vec::new(&env);
+        let end = start.saturating_add(limit).min(ids.len());
+        let mut i = start;
+        while i < end {
+            out.push_back(ids.get(i).unwrap());
+            i += 1;
+        }
+        out
     }
 
     /// Buyer claims a full refund if provider never submitted and the timeout has passed.
