@@ -173,6 +173,176 @@ describe("EventStore idempotent event ingestion", () => {
   });
 });
 
+describe("EventStore batched event ingestion", () => {
+  let directory: string | undefined;
+
+  afterEach(() => {
+    if (directory) rmSync(directory, { recursive: true, force: true });
+    directory = undefined;
+  });
+
+  function makeStore(): { store: EventStore; close: () => void } {
+    directory = mkdtempSync(path.join(tmpdir(), "marc-batched-"));
+    const dbPath = path.join(directory, "events.db");
+    const db = openDatabase(dbPath);
+    const store = new EventStore(db);
+    return { store, close: () => db.close() };
+  }
+
+  function sampleEvents(ledger: number) {
+    return [
+      {
+        ledger,
+        txHash: "0xabc",
+        opIndex: 0,
+        eventIndex: 0,
+        contractId: "C1",
+        topic: "transfer",
+        value: '{"amount":"1"}',
+        timestamp: 1000,
+      },
+      {
+        ledger,
+        txHash: "0xabc",
+        opIndex: 0,
+        eventIndex: 1,
+        contractId: "C1",
+        topic: "mint",
+        value: '{"amount":"2"}',
+        timestamp: 1000,
+      },
+      {
+        ledger,
+        txHash: "0xdef",
+        opIndex: 1,
+        eventIndex: 0,
+        contractId: "C2",
+        topic: "transfer",
+        value: '{"amount":"3"}',
+        timestamp: 1001,
+      },
+    ];
+  }
+
+  it("inserts a batch atomically and reports the inserted count", () => {
+    const { store, close } = makeStore();
+    try {
+      const inserted = store.insertEventsBatch(sampleEvents(42));
+      expect(inserted).toBe(3);
+      expect(store.countEvents()).toBe(3);
+    } finally {
+      close();
+    }
+  });
+
+  it("preserves idempotency across batched inserts", () => {
+    const { store, close } = makeStore();
+    try {
+      const events = sampleEvents(42);
+      expect(store.insertEventsBatch(events)).toBe(3);
+      expect(store.insertEventsBatch(events)).toBe(0);
+      expect(store.countEvents()).toBe(3);
+
+      const overlapping = [
+        ...events,
+        {
+          ledger: 43,
+          txHash: "0x123",
+          opIndex: 0,
+          eventIndex: 0,
+          contractId: "C3",
+          topic: "transfer",
+          value: '{"amount":"4"}',
+          timestamp: 1002,
+        },
+      ];
+      expect(store.insertEventsBatch(overlapping)).toBe(1);
+      expect(store.countEvents()).toBe(4);
+    } finally {
+      close();
+    }
+  });
+
+  it("rolls back the whole batch when an insert fails", () => {
+    const { store, close } = makeStore();
+    try {
+      const events = sampleEvents(42);
+      const invalid = [
+        ...events,
+        {
+          ledger: 42,
+          txHash: "0xbad",
+          opIndex: 0,
+          eventIndex: 0,
+          contractId: "C1",
+          topic: "transfer",
+          value: null as unknown as string,
+          timestamp: 1000,
+        },
+      ];
+      expect(() => store.insertEventsBatch(invalid)).toThrow();
+      expect(store.countEvents()).toBe(0);
+    } finally {
+      close();
+    }
+  });
+
+  it("produces the same result as per-event inserts", () => {
+    const { store, close } = makeStore();
+    try {
+      const events = sampleEvents(42);
+      for (const event of events) {
+        store.insertEvents([event]);
+      }
+      expect(store.countEvents()).toBe(3);
+      expect(store.insertEventsBatch(events)).toBe(0);
+      expect(store.countEvents()).toBe(3);
+    } finally {
+      close();
+    }
+  });
+});
+
+describe("EventStore scoring version", () => {
+  let directory: string | undefined;
+
+  afterEach(() => {
+    if (directory) rmSync(directory, { recursive: true, force: true });
+    directory = undefined;
+  });
+
+  function makeStore(): { store: EventStore; close: () => void } {
+    directory = mkdtempSync(path.join(tmpdir(), "marc-scoring-version-"));
+    const dbPath = path.join(directory, "events.db");
+    const db = openDatabase(dbPath);
+    const store = new EventStore(db);
+    return { store, close: () => db.close() };
+  }
+
+  it("round-trips the scoring version across connections", () => {
+    directory = mkdtempSync(path.join(tmpdir(), "marc-scoring-version-persist-"));
+    const dbPath = path.join(directory, "events.db");
+    const firstDb = openDatabase(dbPath);
+    const firstStore = new EventStore(firstDb);
+    firstStore.setScoringVersion(2);
+    firstDb.close();
+
+    const secondDb = openDatabase(dbPath);
+    const secondStore = new EventStore(secondDb);
+    expect(secondStore.getScoringVersion()).toBe(2);
+    secondDb.close();
+  });
+
+  it("defaults to the current scoring version when unset", () => {
+    const { store, close } = makeStore();
+    try {
+      expect(store.getScoringVersion()).toBe(store.currentScoringVersion);
+    } finally {
+      close();
+    }
+  });
+});
+
 describe("EventStore cursor-paginated queries", () => {
   let directory: string | undefined;
 

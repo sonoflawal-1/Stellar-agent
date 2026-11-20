@@ -36,6 +36,8 @@ export interface AgentMetrics {
 /** Full reputation result with breakdown. */
 export interface ReputationResult {
   agentId: string;
+  /** Version of the scoring algorithm that produced this result. */
+  scoringVersion: number;
   /** Final normalized score in [0, 100]. */
   score: number;
   /** Percentile rank in [0, 100] relative to all known agents. */
@@ -73,6 +75,12 @@ export interface ReputationStore {
   /** Persist a computed reputation result. */
   saveReputation?(result: ReputationResult): Promise<void> | void;
 }
+
+/**
+ * Version stamp for the scoring algorithm. Bump this whenever the scoring
+ * rules change so persisted reputations can be identified and recomputed.
+ */
+export const SCORING_VERSION = 1;
 
 /** Bayesian prior strength (C): number of pseudo-observations. */
 export const PRIOR_WEIGHT = 10;
@@ -205,6 +213,7 @@ export function scoreFromMetrics(
 
   return {
     agentId: metrics.agentId,
+    scoringVersion: SCORING_VERSION,
     score,
     percentileRank: 0,
     breakdown: {
@@ -267,7 +276,7 @@ export async function computeReputation(
   agentIds.add(agentId);
 
   const allScores: number[] = [];
-  for (const id of agentIds) {
+  for (const id of [...agentIds].sort()) {
     if (id === agentId) {
       allScores.push(result.score);
       continue;
@@ -303,7 +312,8 @@ export async function recalculateAllReputations(
   const results = new Map<string, ReputationResult>();
   const scores: number[] = [];
 
-  for (const id of agentIds) {
+  // Sort agent ids so recomputation is deterministic across runs.
+  for (const id of [...agentIds].sort()) {
     const events = allEvents.filter((e) => e.agentId === id);
     const metrics = aggregateMetrics(id, events);
     const ratings = ratingsForAgent(id, events);
@@ -312,7 +322,8 @@ export async function recalculateAllReputations(
     scores.push(result.score);
   }
 
-  for (const result of results.values()) {
+  for (const id of [...results.keys()].sort()) {
+    const result = results.get(id)!;
     result.percentileRank = percentileRank(result.score, scores);
     if (store.saveReputation) {
       await store.saveReputation(result);

@@ -292,3 +292,53 @@ topic header above. Every event data object rejects undeclared fields.
   solely because its schema version is newer than the indexer.
 - When changing the data shape, define a new versioned event schema rather
   than silently changing the meaning of an existing version.
+
+## Reorg-safe processing
+
+Stellar finality is fast, but RPC nodes can lag or serve different views of
+the ledger chain. The indexer therefore never processes an event from the
+latest ledger; it only processes events once they are buried under a
+confirmation depth.
+
+### Confirmation depth
+
+The indexer processes events only after `CONFIRMATION_DEPTH` ledgers have
+been closed on top of the ledger that emitted them. An event in ledger `L`
+becomes eligible for processing once the latest observed ledger is at least
+`L + CONFIRMATION_DEPTH`. Events in more recent ledgers are held back until
+they reach that depth.
+
+`CONFIRMATION_DEPTH` is a non-negative integer configuration value:
+
+- `0` processes events from the latest ledger immediately. This is only
+  appropriate for local development and offers no rollback protection.
+- Larger values increase safety at the cost of latency. The default is
+  chosen to comfortably exceed the depth of a typical RPC node lag.
+- The value is read from the indexer configuration (for example the
+  `CONFIRMATION_DEPTH` environment variable) and must be documented wherever
+  the indexer is deployed.
+
+### Ledger hash continuity
+
+Before processing events from a ledger, the indexer verifies that the ledger
+chain is continuous. Each ledger record carries its own hash and the hash of
+its parent ledger. The indexer stores the hash of the last processed ledger
+and checks that the parent hash of the next ledger matches it. A mismatch
+means the node is serving a different view of the chain than the one the
+indexer previously observed.
+
+### Detected rollback
+
+When a hash-continuity check fails, the indexer treats it as a rollback:
+
+1. It rewinds its cursor to the last ledger whose hash is still part of the
+   canonical chain, discarding any progress made on the abandoned branch.
+2. It purges events that were emitted on the orphaned ledgers so they are
+   not left in the index.
+3. It resumes processing from the rewound cursor, re-applying events from the
+   canonical chain once they again reach `CONFIRMATION_DEPTH`.
+
+Because events are only processed after `CONFIRMATION_DEPTH` ledgers, a
+rollback shallower than that depth is detected before any of its events are
+processed, and a deeper rollback is corrected by the rewind and purge above.
+=======

@@ -57,6 +57,14 @@ export interface IndexerState {
   updatedAt?: string;
 }
 
+/** A persisted reputation score row, stamped with the scoring version used. */
+export interface ReputationRecord {
+  provider: string;
+  score: number;
+  scoringVersion: number;
+  updatedAt?: string;
+}
+
 export interface DatabaseAdapter {
   insertEvent(event: IndexerEvent): Promise<IndexerEvent>;
   insertMany(events: IndexerEvent[]): Promise<number>;
@@ -73,6 +81,12 @@ export interface DatabaseAdapter {
   getEventsByJob(jobId: string, limit?: number): Promise<IndexerEvent[]>;
   getIndexerState(key: string): Promise<IndexerState | null>;
   setIndexerState(key: string, value: string): Promise<void>;
+  /** Batched insert using a prepared statement inside a transaction. */
+  insertEventsBatch(events: IndexerEvent[], batchSize?: number): Promise<number>;
+  /** Read a persisted reputation score (with its scoring version). */
+  getReputation(provider: string): Promise<ReputationRecord | null>;
+  /** Persist a reputation score stamped with the given scoring version. */
+  setReputation(provider: string, score: number, scoringVersion: number): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -111,6 +125,13 @@ const DEFAULT_MAX = 20;
 const DEFAULT_MIN = 2;
 const DEFAULT_IDLE_TIMEOUT = 30_000;
 const DEFAULT_CONNECTION_TIMEOUT = 10_000;
+
+/** Default number of events inserted per prepared-statement execution. */
+export const DEFAULT_BATCH_SIZE = 500;
+/** PostgreSQL hard limit on bind parameters per statement. */
+const MAX_BIND_PARAMS = 65_535;
+/** Number of columns bound per event row in the insert statement. */
+const EVENT_COLUMNS = 9;
 
 /**
  * Idempotent migration scripts. Each statement is safe to run multiple times.
@@ -160,6 +181,15 @@ export const POSTGRES_MIGRATIONS: string[] = [
     value TEXT NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );`,
+  `CREATE TABLE IF NOT EXISTS reputation (
+    provider TEXT PRIMARY KEY,
+    score DOUBLE PRECISION NOT NULL,
+    scoring_version INTEGER NOT NULL DEFAULT 1,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );`,
+  // Migration for existing data: add the scoring version stamp if missing.
+  `ALTER TABLE reputation
+     ADD COLUMN IF NOT EXISTS scoring_version INTEGER NOT NULL DEFAULT 1;`,
 ];
 
 function toNumber(value: unknown): number {
@@ -341,6 +371,75 @@ export class PostgresAdapter implements DatabaseAdapter {
         const placeholders: string[] = [];
         chunk.forEach((event, idx) => {
           const base = idx * 9;
+          placeholders.push(
+            `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, ` +
+              `$${base + 6}, $${base + 7}, $${base + 8}, $${base + 9})`,
+          );
+          values.push(
+            event.provider,
+            event.client,
+            event.eventType,
+            event.contract,
+            event.jobId,
+            event.blockNumber,
+            event.transactionHash,
+            event.logIndex,
+            event.data,
+          );
+        });
+
+        const sql = `
+          INSERT INTO events
+            (provider, client, event_type, contract, job_id, block_number, transaction_hash, log_index, data)
+          VALUES ${placeholders.join(', ')}
+          ON CONFLICT (block_number, transaction_hash, log_index) DO NOTHING
+        `;
+        const result = await client.query(sql, values);
+        inserted += result.rowCount ?? 0;
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // ignore rollback errors
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
+    return inserted;
+  }
+
+  /**
+   * Batched insert using a single prepared statement executed once per chunk
+   * inside a transaction. Chunk size is bounded by both `batchSize` and the
+   * PostgreSQL bind-parameter limit (65535 params / 9 columns per row).
+   */
+  async insertEventsBatch(
+    events: IndexerEvent[],
+    batchSize: number = DEFAULT_BATCH_SIZE,
+  ): Promise<number> {
+    if (events.length === 0) return 0;
+    await this.init();
+
+    const maxByParams = Math.floor(MAX_BIND_PARAMS / EVENT_COLUMNS);
+    const requested =
+      Number.isFinite(batchSize) && batchSize > 0
+        ? Math.floor(batchSize)
+        : DEFAULT_BATCH_SIZE;
+    const chunkSize = Math.max(1, Math.min(requested, maxByParams));
+
+    const client: PoolClient = await this.pool.connect();
+    let inserted = 0;
+    try {
+      await client.query('BEGIN');
+      for (let i = 0; i < events.length; i += chunkSize) {
+        const chunk = events.slice(i, i + chunkSize);
+        const values: unknown[] = [];
+        const placeholders: string[] = [];
+        chunk.forEach((event, idx) => {
+          const base = idx * EVENT_COLUMNS;
           placeholders.push(
             `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, ` +
               `$${base + 6}, $${base + 7}, $${base + 8}, $${base + 9})`,
@@ -573,6 +672,46 @@ export class PostgresAdapter implements DatabaseAdapter {
     );
   }
 
+  async getReputation(provider: string): Promise<ReputationRecord | null> {
+    await this.init();
+    const result = await this.pool.query(
+      `SELECT provider, score, scoring_version, updated_at
+       FROM reputation
+       WHERE provider = $1`,
+      [provider],
+    );
+    if (result.rows.length === 0) return null;
+    const row = result.rows[0];
+    return {
+      provider: String(row.provider),
+      score: toNumber(row.score),
+      scoringVersion: toNumber(row.scoring_version),
+      updatedAt:
+        row.updated_at instanceof Date
+          ? row.updated_at.toISOString()
+          : row.updated_at !== undefined && row.updated_at !== null
+            ? String(row.updated_at)
+            : undefined,
+    };
+  }
+
+  async setReputation(
+    provider: string,
+    score: number,
+    scoringVersion: number,
+  ): Promise<void> {
+    await this.init();
+    await this.pool.query(
+      `INSERT INTO reputation (provider, score, scoring_version, updated_at)
+       VALUES ($1, $2, $3, NOW())
+       ON CONFLICT (provider) DO UPDATE
+         SET score = EXCLUDED.score,
+             scoring_version = EXCLUDED.scoring_version,
+             updated_at = NOW()`,
+      [provider, score, scoringVersion],
+    );
+  }
+
   /** Exposes the underlying pool for advanced use cases / health checks. */
   getPool(): Pool {
     return this.pool;
@@ -652,3 +791,14 @@ CREATE TABLE IF NOT EXISTS indexer_state (
   value TEXT NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS reputation (
+  provider TEXT PRIMARY KEY,
+  score DOUBLE PRECISION NOT NULL,
+  scoring_version INTEGER NOT NULL DEFAULT 1,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Migration for existing data: add the scoring version stamp if missing.
+ALTER TABLE reputation
+  ADD COLUMN IF NOT EXISTS scoring_version INTEGER NOT NULL DEFAULT 1;

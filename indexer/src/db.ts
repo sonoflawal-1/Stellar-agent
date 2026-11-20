@@ -396,7 +396,20 @@ export type ReputationRow = {
   score: number;
   breakdown: Record<string, unknown>;
   updated_at: number;
+  /** Version of the scoring algorithm that produced `score` (issue #983). */
+  scoring_version: number;
 };
+
+/** Default scoring version stamped on reputation rows (issue #983). */
+export const DEFAULT_SCORING_VERSION = 1;
+
+/**
+ * Maximum number of events inserted per IMMEDIATE transaction by
+ * {@link EventStore.insertEventsBatch} (issue #982).  Larger batches are
+ * split into chunks of this size so the write lock is never held for an
+ * unbounded amount of time.
+ */
+export const INSERT_BATCH_SIZE = 500;
 
 /** Callback invoked with each freshly inserted event (see issue #719). */
 export type EventEmitHook = (event: InsertEventParams) => void;
@@ -410,6 +423,7 @@ export class EventStore {
   private stmtUpsertReputation: Database.Statement;
   private stmtGetReputation: Database.Statement;
   private stmtGetAllReputations: Database.Statement;
+  private stmtGetReputationVersion: Database.Statement;
   private stmtDeleteFromLedger: Database.Statement;
   private stmtGetCache: Database.Statement;
   private stmtSetCache: Database.Statement;
@@ -435,12 +449,13 @@ export class EventStore {
     `);
 
     this.stmtUpsertReputation = db.prepare(`
-      INSERT INTO agent_reputation (agent_id, score, breakdown, updated_at)
-      VALUES (@agent_id, @score, @breakdown, @updated_at)
+      INSERT INTO agent_reputation (agent_id, score, breakdown, updated_at, scoring_version)
+      VALUES (@agent_id, @score, @breakdown, @updated_at, @scoring_version)
       ON CONFLICT(agent_id) DO UPDATE SET
-        score      = excluded.score,
-        breakdown  = excluded.breakdown,
-        updated_at = excluded.updated_at
+        score           = excluded.score,
+        breakdown       = excluded.breakdown,
+        updated_at      = excluded.updated_at,
+        scoring_version = excluded.scoring_version
     `);
 
     this.stmtGetReputation = db.prepare(
@@ -449,6 +464,10 @@ export class EventStore {
 
     this.stmtGetAllReputations = db.prepare(
       `SELECT * FROM agent_reputation ORDER BY score DESC`,
+    );
+
+    this.stmtGetReputationVersion = db.prepare(
+      `SELECT scoring_version FROM agent_reputation WHERE agent_id = ?`,
     );
 
     this.stmtDeleteFromLedger = db.prepare(
@@ -500,10 +519,14 @@ export class EventStore {
   }
 
   /**
-   * Bulk-insert events inside a single IMMEDIATE transaction.  All rows in the
-   * batch commit atomically — if any insert fails the whole batch is rolled
-   * back.  Using BEGIN IMMEDIATE acquires the write lock up-front, avoiding
-   * deadlocks between concurrent writer processes.
+   * Bulk-insert events inside IMMEDIATE transactions (issue #982).
+   *
+   * Rows are inserted with the prepared `stmtInsert` statement in chunks of at
+   * most {@link INSERT_BATCH_SIZE} events.  Each chunk commits atomically — if
+   * any insert in a chunk fails the whole chunk is rolled back and the error is
+   * re-thrown, so callers observe the same all-or-nothing behaviour per chunk
+   * as before.  Using BEGIN IMMEDIATE acquires the write lock up-front,
+   * avoiding deadlocks between concurrent writer processes.
    */
   insertEventsBatch(events: InsertEventParams[]): void {
     if (events.length === 0) return;
@@ -524,7 +547,11 @@ export class EventStore {
     // better-sqlite3's transaction() uses BEGIN; force IMMEDIATE semantics by
     // taking the write lock before the transaction body runs.
     this.db.pragma("busy_timeout = 5000");
-    run.immediate(events);
+
+    for (let i = 0; i < events.length; i += INSERT_BATCH_SIZE) {
+      const chunk = events.slice(i, i + INSERT_BATCH_SIZE);
+      run.immediate(chunk);
+    }
 
     if (this.emitHook) {
       for (const row of events) {
@@ -594,26 +621,54 @@ export class EventStore {
     });
   }
 
+  /** Alias of {@link getLedgerHash} used by the reorg logic. */
+  getIndexedLedgerHash(): string | null {
+    return this.getLedgerHash();
+  }
+
+  /** Alias of {@link setLedgerHash} used by the reorg logic. */
+  setIndexedLedgerHash(hash: string): void {
+    this.setLedgerHash(hash);
+  }
+
   // ── Reputation API (issue #729) ────────────────────────────────────────────
 
-  /** Insert or update the cached reputation record for an agent. */
+  /**
+   * Insert or update the cached reputation record for an agent.  The
+   * `scoringVersion` is persisted alongside the score so consumers can tell
+   * which algorithm produced it (issue #983).
+   */
   upsertReputation(
     agentId: string,
     score: number,
     breakdown: Record<string, unknown>,
     updatedAt: number = Date.now(),
+    scoringVersion: number = DEFAULT_SCORING_VERSION,
   ): void {
     withSpan("db.agent_reputation.upsert", (span) => {
       span.setAttribute("db.system", "sqlite");
       span.setAttribute("agent.id", agentId);
       span.setAttribute("agent.score", score);
+      span.setAttribute("agent.scoring_version", scoringVersion);
       this.stmtUpsertReputation.run({
         agent_id: agentId,
         score,
         breakdown: JSON.stringify(breakdown),
         updated_at: updatedAt,
+        scoring_version: scoringVersion,
       });
     });
+  }
+
+  /** Returns the stored scoring version for an agent, or null if unknown. */
+  getReputationScoringVersion(agentId: string): number | null {
+    const row = this.stmtGetReputationVersion.get(agentId) as
+      | { scoring_version: number | null }
+      | undefined;
+    if (!row || row.scoring_version === null || row.scoring_version === undefined) {
+      return null;
+    }
+    return row.scoring_version;
   }
 
   /** Fetch a single agent's cached reputation, or null if unknown. */
@@ -635,6 +690,9 @@ export class EventStore {
         score: row.score,
         breakdown: JSON.parse(row.breakdown) as Record<string, unknown>,
         updated_at: row.updated_at,
+        scoring_version:
+          (row as { scoring_version?: number | null }).scoring_version ??
+          DEFAULT_SCORING_VERSION,
       };
     });
   }
@@ -655,6 +713,9 @@ export class EventStore {
         score: row.score,
         breakdown: JSON.parse(row.breakdown) as Record<string, unknown>,
         updated_at: row.updated_at,
+        scoring_version:
+          (row as { scoring_version?: number | null }).scoring_version ??
+          DEFAULT_SCORING_VERSION,
       }));
     });
   }
