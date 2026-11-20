@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import type { CommerceClient, Signer } from 'marc-stellar-sdk';
 import { useCommerce } from './useCommerce';
+import { useTransaction } from './useTransaction';
 
 const mockSigner: Signer = {
   publicKey: 'GBUQWP3BOUZX34ULNQG23RQ6F4YUSXHTBVDJ42LPBK4EK4YLYL2QQ5K',
@@ -38,6 +39,7 @@ describe('useCommerce', () => {
     );
 
     expect(result.current.isPending).toBe(false);
+    expect(result.current.status).toBe('idle');
     expect(result.current.txHash).toBeNull();
     expect(result.current.error).toBeNull();
   });
@@ -61,6 +63,7 @@ describe('useCommerce', () => {
     });
 
     expect(result.current.isPending).toBe(true);
+    expect(result.current.status).toBe('signing');
 
     let res: { jobId: bigint; txHash: string | null } | undefined;
     await act(async () => {
@@ -68,6 +71,7 @@ describe('useCommerce', () => {
     });
 
     expect(result.current.isPending).toBe(false);
+    expect(result.current.status).toBe('confirmed');
     expect(res?.jobId).toBe(101n);
     expect(result.current.txHash).toBeTruthy();
     expect(result.current.error).toBeNull();
@@ -174,6 +178,8 @@ describe('useCommerce', () => {
     });
 
     expect(result.current.isPending).toBe(false);
+    expect(result.current.status).toBe('failed');
+    expect(result.current.txHash).toBeNull();
     expect(result.current.error?.message).toBe('Insufficient escrow balance');
   });
 
@@ -201,5 +207,102 @@ describe('useCommerce', () => {
 
     expect(fee).toBe(150000n);
     expect(xdr).toBe('unsignedSimulationXdr');
+  });
+});
+
+describe('useTransaction', () => {
+  it('starts in idle with null txHash and error', () => {
+    const { result } = renderHook(() => useTransaction());
+
+    expect(result.current.status).toBe('idle');
+    expect(result.current.txHash).toBeNull();
+    expect(result.current.error).toBeNull();
+  });
+
+  it('transitions idle -> signing -> submitted -> confirmed and exposes tx hash', async () => {
+    const { result } = renderHook(() => useTransaction());
+
+    const seen: string[] = [];
+    let resolveSign: (value: string) => void = () => {};
+    let resolveSubmit: (value: string) => void = () => {};
+
+    let runPromise: Promise<string | null>;
+    act(() => {
+      runPromise = result.current.run({
+        sign: () =>
+          new Promise<string>((resolve) => {
+            resolveSign = resolve;
+          }),
+        submit: () =>
+          new Promise<string>((resolve) => {
+            resolveSubmit = resolve;
+          }),
+      });
+    });
+
+    seen.push(result.current.status);
+    expect(result.current.status).toBe('signing');
+
+    await act(async () => {
+      resolveSign('signedXdr');
+      await Promise.resolve();
+    });
+
+    seen.push(result.current.status);
+    expect(result.current.status).toBe('submitted');
+
+    let hash: string | null = null;
+    await act(async () => {
+      resolveSubmit('tx-hash-abc');
+      hash = await runPromise;
+    });
+
+    seen.push(result.current.status);
+    expect(seen).toEqual(['signing', 'submitted', 'confirmed']);
+    expect(hash).toBe('tx-hash-abc');
+    expect(result.current.status).toBe('confirmed');
+    expect(result.current.txHash).toBe('tx-hash-abc');
+    expect(result.current.error).toBeNull();
+  });
+
+  it('transitions idle -> signing -> failed and clears tx hash', async () => {
+    const { result } = renderHook(() => useTransaction());
+
+    await act(async () => {
+      try {
+        await result.current.run({
+          sign: () => Promise.resolve('signedXdr'),
+          submit: () => Promise.reject(new Error('submit failed')),
+        });
+      } catch {
+        // Expected
+      }
+    });
+
+    expect(result.current.status).toBe('failed');
+    expect(result.current.txHash).toBeNull();
+    expect(result.current.error?.message).toBe('submit failed');
+  });
+
+  it('resets back to idle', async () => {
+    const { result } = renderHook(() => useTransaction());
+
+    await act(async () => {
+      await result.current.run({
+        sign: () => Promise.resolve('signedXdr'),
+        submit: () => Promise.resolve('tx-hash-xyz'),
+      });
+    });
+
+    expect(result.current.status).toBe('confirmed');
+    expect(result.current.txHash).toBe('tx-hash-xyz');
+
+    act(() => {
+      result.current.reset();
+    });
+
+    expect(result.current.status).toBe('idle');
+    expect(result.current.txHash).toBeNull();
+    expect(result.current.error).toBeNull();
   });
 });

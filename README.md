@@ -73,7 +73,7 @@ Bear implements three layers of agent commerce:
 ## Prerequisites
 
 - **Rust** 1.81+ (for building Soroban contracts)
-- **Node.js** 20+ (for SDK, dashboard, agents)
+- **Node.js** 20 (LTS) — the single supported version, pinned in `.nvmrc` and enforced via `engines` in every package. Use `nvm use` to select it.
 - **stellar-cli** (`cargo install stellar-cli --locked`)
 - **Freighter** browser extension (optional, for wallet features)
 - **GitHub CLI** (`gh auth login`) for certain deployment workflows
@@ -276,9 +276,14 @@ const result = await marcFetch("https://agent.example/api/summarize", {
 ## Documentation
 
 - **[API Reference (GitHub Pages)](https://sonoflawal-1.github.io/Stellar-agent/)** - Published TypeDoc/rustdoc site: [TypeScript SDK docs](https://sonoflawal-1.github.io/Stellar-agent/typescript/) and [Rust contract docs](https://sonoflawal-1.github.io/Stellar-agent/rust/)
+- **[docs/glossary.md](./docs/glossary.md)** — user-facing Bear terminology
+- **[docs/MAINNET_READINESS_CHECKLIST.md](./docs/MAINNET_READINESS_CHECKLIST.md)** — mainnet launch gates
+- **[docs/runbooks/](./docs/runbooks/)** — operational runbooks (indexer lag, RPC outage, stuck escrow, key rotation)
 - **[docs/TUTORIAL.md](./docs/TUTORIAL.md)** - Beginner quickstart: register an agent, escrow a job, and test an x402 payment in under 10 minutes
 - **[BEAR-PROTOCOL-GUIDE.md](./BEAR-PROTOCOL-GUIDE.md)** - Complete protocol guide, demo walkthrough, and FAQ
 - **[SDK README](./sdk/README.md)** - SDK API reference (scaffold)
+- **[docs/AGENTS_REGISTRY_API.md](./docs/AGENTS_REGISTRY_API.md)** - Agent registry API reference: endpoints, auth, `agent.json` manifest fields, and validation tooling
+- **[docs/agent-metadata-schema-v1.json](./docs/agent-metadata-schema-v1.json)** - JSON Schema for the `agent.json` metadata manifest
 - **[MAINNET_MIGRATION.md](./docs/MAINNET_MIGRATION.md)** - Security audit checklist, infrastructure hardening, tokenomics, and legal considerations for mainnet
 
 ## License
@@ -292,3 +297,9 @@ MIT
 
 <!-- handsoff-issue-656 -->
 - #656: feat(sdk): implement Server-Sent Events streaming for long-running job results
+
+<!-- handsoff-issue-1037 -->
+- #1037: fix(dashboard): /api/build/submit must verify the transaction network passphrase and source
+
+<!-- handsoff-issue-1039 -->
+- #1039: feat(indexer): agent leaderboard endpoint (reputation, volume, completion rate)

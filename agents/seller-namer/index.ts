@@ -6,18 +6,24 @@ import rateLimit from "express-rate-limit";
 import Groq from "groq-sdk";
 import { CommerceClient } from "marc-stellar-sdk";
 import {
-  retryWithBackoff,
   createSellerAgent,
   makeSellerResponse,
   validatePrompt,
   isMockLlm,
   MOCK_DELIVERABLES,
   registerGracefulShutdown,
+  createTaskQueue,
+  submitDeliverable,
 } from "../shared.js";
 
 initTracing("seller-namer");
 
-validateEnv(["PORT", "SECRET_KEY", "REGISTRY_URL", "GROQ_API_KEY"]);
+validateEnv({
+  PORT: { required: true },
+  SECRET_KEY: { required: true },
+  REGISTRY_URL: { required: true },
+  GROQ_API_KEY: { required: true },
+});
 
 const AGENT_DIR = path.dirname(fileURLToPath(import.meta.url));
 
@@ -36,6 +42,14 @@ const startTime = Date.now();
 let jobsActive = 0;
 let jobsCompleted = 0;
 let jobsFailed = 0;
+
+// Persistent task queue: survives restarts, bounds concurrency and retries.
+const queue = createTaskQueue({
+  agentId: AGENT_ID,
+  agentDir: AGENT_DIR,
+  concurrency: config.queueConcurrency,
+  maxAttempts: config.queueMaxAttempts,
+});
 
 // Tracks in-flight /job processing so graceful shutdown can wait for them.
 const activeTaskTracker = {
@@ -118,7 +132,6 @@ export function parseNamerResponse(raw: unknown): NamerParseResult {
   }
   return { ok: true, names, markdown: trimmed };
 }
-=======
 
 async function generate(prompt: string): Promise<string> {
   if (isMockLlm()) {
@@ -202,15 +215,23 @@ app.post("/job", limiter, async (req, res) => {
         : `task length ${typeof task === "string" ? task.length : 0}`
     }`,
   );
+  await queue.enqueue({ jobId: String(jobId), task: rawPrompt });
+
   const response = makeSellerResponse({ status: "accepted", jobId }, startedAt);
   console.log(`[${AGENT_ID}] [req:${requestId}] Response: ${JSON.stringify(response)}`);
   res.json(response);
+    },
+  );
+});
 
+// Process queued tasks with bounded concurrency; pending tasks resume on restart.
+queue.process(async (task) => {
+  const { jobId, task: prompt } = task;
   jobsActive++;
   try {
-    console.log(`[${AGENT_ID}] Calling Groq...`);
+    console.log(`[${AGENT_ID}] Calling Groq for job #${jobId}...`);
     const rawNames = await generate(
-      `You are a creative naming expert. Generate 10 unique name suggestions for:\n\n${task}\n\nFormat as a numbered markdown list. Each entry: bold name + 1-2 sentences rationale.`,
+      `You are a creative naming expert. Generate 10 unique name suggestions for:\n\n${prompt}\n\nFormat as a numbered markdown list. Each entry: bold name + 1-2 sentences rationale.`,
     );
     const parsed = parseNamerResponse(rawNames);
     if (!parsed.ok) {
@@ -223,26 +244,23 @@ app.post("/job", limiter, async (req, res) => {
     );
 
     const commerce = new CommerceClient(cfg);
-    await withSpan(
-      "x402.commerce.submit",
-      { "x402.job_id": String(jobId), "agent.id": AGENT_ID },
-      () =>
-        retryWithBackoff(
-          () => commerce.submit(seller, BigInt(jobId), `file://${path.resolve(OUTPUT_FILE)}`),
-          { maxAttempts: 5, baseDelayMs: 1000, label: AGENT_ID },
-        ),
+    await submitDeliverable(
+      { commerce, seller, jobId: BigInt(jobId), agentId: AGENT_ID },
+      Buffer.from(parsed.markdown, "utf8"),
     );
     console.log(`[${AGENT_ID}] ✓ Job #${jobId} submitted`);
     jobsCompleted++;
   } catch (err) {
     jobsFailed++;
     console.error(`[${AGENT_ID}] Error:`, (err as Error).message);
+    throw err;
   } finally {
     jobsActive--;
   }
-    },
-  );
 });
 
 const server = app.listen(PORT, () => console.log(`[${AGENT_ID}] Listening on :${PORT}`));
-registerGracefulShutdown(server, activeTaskTracker, null, { agentId: AGENT_ID });
+registerGracefulShutdown(server, activeTaskTracker, null, {
+  agentId: AGENT_ID,
+  onShutdown: () => queue.close(),
+});
