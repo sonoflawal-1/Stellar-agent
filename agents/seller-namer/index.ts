@@ -79,6 +79,47 @@ app.get("/metrics", (_req, res) => {
 const groq = isMockLlm() ? null : new Groq({ apiKey: config.groqApiKey });
 const GROQ_MODEL = config.groqModel;
 
+export class NamerParseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NamerParseError";
+  }
+}
+
+export type NamerParseResult =
+  | { ok: true; names: string[]; markdown: string }
+  | { ok: false; error: string };
+
+/**
+ * Parse and validate the LLM output for the seller-namer agent.
+ * Expects a numbered markdown list (e.g. "1. **Name** — rationale").
+ * Returns a discriminated result; never throws on malformed input.
+ */
+export function parseNamerResponse(raw: unknown): NamerParseResult {
+  if (typeof raw !== "string") {
+    return { ok: false, error: "response is not a string" };
+  }
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) {
+    return { ok: false, error: "empty response" };
+  }
+  const lines = trimmed.split(/\r?\n/);
+  const names: string[] = [];
+  for (const line of lines) {
+    const match = line.match(/^\s*\d+[.)]\s+(.+)$/);
+    if (!match) continue;
+    const entry = match[1].trim();
+    if (entry.length === 0) continue;
+    const bold = entry.match(/^\*\*(.+?)\*\*/);
+    names.push(bold ? bold[1].trim() : entry);
+  }
+  if (names.length === 0) {
+    return { ok: false, error: "no numbered list entries found" };
+  }
+  return { ok: true, names, markdown: trimmed };
+}
+=======
+
 async function generate(prompt: string): Promise<string> {
   if (isMockLlm()) {
     return MOCK_DELIVERABLES.namer;
@@ -168,12 +209,18 @@ app.post("/job", limiter, async (req, res) => {
   jobsActive++;
   try {
     console.log(`[${AGENT_ID}] Calling Groq...`);
-    const names = await generate(
+    const rawNames = await generate(
       `You are a creative naming expert. Generate 10 unique name suggestions for:\n\n${task}\n\nFormat as a numbered markdown list. Each entry: bold name + 1-2 sentences rationale.`,
     );
+    const parsed = parseNamerResponse(rawNames);
+    if (!parsed.ok) {
+      throw new NamerParseError(`invalid LLM output: ${parsed.error}`);
+    }
     fs.mkdirSync(OUTPUT_DIR, { recursive: true });
-    fs.writeFileSync(OUTPUT_FILE, names);
-    console.log(`[${AGENT_ID}] Names generated (${names.length} chars)`);
+    fs.writeFileSync(OUTPUT_FILE, parsed.markdown);
+    console.log(
+      `[${AGENT_ID}] Names generated (${parsed.names.length} names, ${parsed.markdown.length} chars)`,
+    );
 
     const commerce = new CommerceClient(cfg);
     await withSpan(

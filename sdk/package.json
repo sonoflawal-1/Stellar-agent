@@ -8,13 +8,53 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.js"
+      "node": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js",
+        "require": "./dist/index.js"
+      },
+      "workerd": {
+        "types": "./dist/browser.d.ts",
+        "import": "./dist/browser.js"
+      },
+      "deno": {
+        "types": "./dist/browser.d.ts",
+        "import": "./dist/browser.js"
+      },
+      "browser": {
+        "types": "./dist/browser.d.ts",
+        "import": "./dist/browser.js"
+      },
+      "default": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js",
+        "require": "./dist/index.js"
+      }
     },
     "./browser": {
       "types": "./dist/browser.d.ts",
-      "import": "./dist/browser.js",
-      "require": "./dist/browser.js"
+      "node": {
+        "types": "./dist/browser.d.ts",
+        "import": "./dist/browser.js",
+        "require": "./dist/browser.js"
+      },
+      "workerd": {
+        "types": "./dist/browser.d.ts",
+        "import": "./dist/browser.js"
+      },
+      "deno": {
+        "types": "./dist/browser.d.ts",
+        "import": "./dist/browser.js"
+      },
+      "browser": {
+        "types": "./dist/browser.d.ts",
+        "import": "./dist/browser.js"
+      },
+      "default": {
+        "types": "./dist/browser.d.ts",
+        "import": "./dist/browser.js",
+        "require": "./dist/browser.js"
+      }
     }
   },
   "files": [
@@ -22,6 +62,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "build:browser": "tsc -p tsconfig.browser.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",

@@ -86,6 +86,71 @@ interface ResearchOutput {
 
 type ResearchDepth = "brief" | "standard" | "deep";
 
+export class ResearcherParseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ResearcherParseError";
+  }
+}
+
+function stripCodeFences(raw: string): string {
+  return raw.replace(/```(?:json)?\s*/gi, "").replace(/```/g, "").trim();
+}
+
+/**
+ * Parse and validate the raw LLM response for the seller-researcher agent.
+ * Throws a controlled {@link ResearcherParseError} on malformed or invalid output.
+ */
+export function parseResearcherResponse(raw: unknown): ResearchOutput {
+  if (typeof raw !== "string") {
+    throw new ResearcherParseError("LLM response is not a string");
+  }
+  const cleaned = stripCodeFences(raw);
+  if (cleaned.length === 0) {
+    throw new ResearcherParseError("LLM response is empty");
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch (err) {
+    throw new ResearcherParseError(
+      `LLM response is not valid JSON: ${(err as Error).message}`,
+    );
+  }
+
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new ResearcherParseError("LLM response must be a JSON object");
+  }
+  const obj = parsed as Record<string, unknown>;
+
+  if (typeof obj.summary !== "string" || obj.summary.trim().length === 0) {
+    throw new ResearcherParseError("LLM response missing valid 'summary' string");
+  }
+
+  if (!Array.isArray(obj.sources)) {
+    throw new ResearcherParseError("LLM response missing 'sources' array");
+  }
+
+  const sources: { title: string; url: string }[] = [];
+  for (let i = 0; i < obj.sources.length; i++) {
+    const src = obj.sources[i];
+    if (src === null || typeof src !== "object" || Array.isArray(src)) {
+      throw new ResearcherParseError(`sources[${i}] is not an object`);
+    }
+    const s = src as Record<string, unknown>;
+    if (typeof s.title !== "string" || s.title.trim().length === 0) {
+      throw new ResearcherParseError(`sources[${i}] missing valid 'title' string`);
+    }
+    if (typeof s.url !== "string" || s.url.trim().length === 0) {
+      throw new ResearcherParseError(`sources[${i}] missing valid 'url' string`);
+    }
+    sources.push({ title: s.title, url: s.url });
+  }
+
+  return { summary: obj.summary, sources };
+}
+
 const DEPTH_CONFIG: Record<ResearchDepth, { sourceRange: string; detail: string }> = {
   brief: { sourceRange: "2-3", detail: "Write a concise 1-2 paragraph summary." },
   standard: {
@@ -137,8 +202,8 @@ ${detail}`,
         AGENT_ID,
       ),
   );
-  const text = res.choices[0].message.content ?? "";
-  return JSON.parse(text.replace(/```(?:json)?\s*/gi, "").trim()) as ResearchOutput;
+  const text = res.choices[0]?.message?.content ?? "";
+  return parseResearcherResponse(text);
 }
 
 const limiter = rateLimit({
