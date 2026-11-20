@@ -10,6 +10,11 @@ version: "3.9"
 #   docker compose up                  # starts soroban-rpc + all agents
 #   docker compose up buyer            # interactive TUI only
 #
+# Full demo (contracts + agents + dashboard + seed):
+#   docker compose --profile demo up
+# Teardown:
+#   docker compose --profile demo down -v
+#
 # Services:
 #   stellar       local standalone Stellar network + Soroban RPC (port 8000)
 #   init          one-shot: waits for RPC, compiles + deploys contracts, funds keys
@@ -244,6 +249,18 @@ services:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
+
+  # ── Demo seed (one-shot; run with --profile demo) ─────────────────────────
+  demo-seed:
+    <<: *node
+    profiles: ["demo"]
+    command: sh scripts/demo-seed.sh
+    restart: "no"
+    depends_on:
+      registry:
+        condition: service_healthy
+      dashboard:
+        condition: service_started
 
   # ── Buyer TUI (interactive) ───────────────────────────────────────────────
   buyer:

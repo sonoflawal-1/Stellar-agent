@@ -8,6 +8,18 @@ on:
     - cron: '0 3 * * *'
 
 jobs:
+  validate-testnet-deployments:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: README vs deployments/testnet.json
+        run: node scripts/validate-readme-deployments.mjs
+      - name: Script helper unit tests
+        run: npx tsx --test scripts/script-helpers.test.ts
+
   build:
     runs-on: ubuntu-latest
     steps:
@@ -94,6 +106,10 @@ jobs:
       - run: npm ci
       - name: Build React package
         run: npm run build --workspace @marc-stellar/react
+      - name: Validate package with publint
+        run: npm run lint:pkg --workspace @marc-stellar/react
+      - name: Check ESM/CJS export map with attw
+        run: npm run check:exports --workspace @marc-stellar/react
       - name: Run React hook tests with coverage
         run: npm test --workspace @marc-stellar/react -- --coverage
       - name: Check bundle size (<15 KB gzipped)
@@ -368,6 +384,17 @@ jobs:
             echo "docs/gas.md is out of date; regenerate it from .gas-baseline.json and commit the result." >&2
             exit 1
           fi
+
+  contract-state-machine-proptest:
+    runs-on: ubuntu-latest
+    env:
+      PROPTEST_SEED: "1008"
+      PROPTEST_CASES: "256"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run agentic-commerce model-based proptest
+        run: cargo test -p agentic-commerce job_lifecycle_model random_operation -- --nocapture
 
   fuzz-smoke:
     if: github.event_name == 'schedule'

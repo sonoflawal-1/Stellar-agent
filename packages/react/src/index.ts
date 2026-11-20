@@ -64,3 +64,19 @@ export type { EscrowStepperProps } from './components/EscrowStepper';
 // Wallet connect button component and its props.
 export { WalletConnectButton } from './components/WalletConnectButton';
 export type { WalletConnectButtonProps } from './components/WalletConnectButton';
+
+// Optional TanStack Query adapter (also available via '@bear-protocol/react/query').
+export {
+  jobKeys,
+  agentKeys,
+  invalidateJob,
+  invalidateAgent,
+  useJobQuery,
+  useAgentQuery,
+} from './query';
+export type {
+  UseJobQueryOptions,
+  UseJobQueryResult,
+  UseAgentQueryOptions,
+  UseAgentQueryResult,
+} from './query';
