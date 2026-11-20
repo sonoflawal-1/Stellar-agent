@@ -354,6 +354,17 @@ jobs:
             exit 1
           fi
 
+  contract-state-machine-proptest:
+    runs-on: ubuntu-latest
+    env:
+      PROPTEST_SEED: "1008"
+      PROPTEST_CASES: "256"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run agentic-commerce model-based proptest
+        run: cargo test -p agentic-commerce job_lifecycle_model random_operation -- --nocapture
+
   fuzz-smoke:
     if: github.event_name == 'schedule'
     runs-on: ubuntu-latest

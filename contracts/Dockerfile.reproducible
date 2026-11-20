@@ -1,0 +1,12 @@
+# Pinned toolchain image for reproducible Soroban WASM builds.
+FROM rust:1.81.0-bookworm
+RUN rustup target add wasm32v1-none
+WORKDIR /src
+COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
+COPY contracts ./contracts
+COPY benches ./benches
+RUN cargo install --locked stellar-cli --version 25.0.0
+ENV SOURCE_DATE_EPOCH=0
+RUN stellar contract build --optimize \
+  && sha256sum target/wasm32v1-none/release/agent_identity.wasm \
+  && sha256sum target/wasm32v1-none/release/agentic_commerce.wasm
