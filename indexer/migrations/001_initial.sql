@@ -51,3 +51,29 @@ CREATE INDEX IF NOT EXISTS idx_events_ledger_hash ON events (ledger);
 -- Down (rollback) section:
 --   DROP INDEX IF EXISTS idx_events_ledger_hash;
 --   ALTER TABLE events DROP COLUMN ledger_hash;
+
+-- ---------------------------------------------------------------------------
+-- Versioned reputation scoring (issue #983)
+--
+-- Reputation scores are derived from raw events. Each stored score is stamped
+-- with the scoring_version that produced it so that a change to the scoring
+-- algorithm can be detected and the affected scores recomputed from raw
+-- events (`indexer reputation --recompute`).
+--
+-- The default below is the current scoring version at the time this migration
+-- was written; existing rows are treated as having been produced by it.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS reputation_scores (
+  address TEXT PRIMARY KEY,
+  score INTEGER NOT NULL,
+  scoring_version INTEGER NOT NULL DEFAULT 1,
+  updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_reputation_scores_version
+  ON reputation_scores (scoring_version);
+
+-- Down (rollback) section:
+--   DROP INDEX IF EXISTS idx_reputation_scores_version;
+--   DROP TABLE IF EXISTS reputation_scores;

@@ -193,6 +193,12 @@ export type PollerOptions = {
   eventHub?: EventHub;
   /** Max number of ledgers to walk back when resolving a reorg. Default: 64 */
   maxReorgDepth?: number;
+  /**
+   * Number of ledgers that must be finalized before events are processed.
+   * Events are only ingested once `ledger <= latestLedger - confirmationDepth`.
+   * Default: 5
+   */
+  confirmationDepth?: number;
 };
 
 /** Event types that affect an agent's reputation score. */
@@ -225,6 +231,7 @@ export class SorobanEventPoller {
   private readonly reputation: ReputationEngine | null;
   private readonly eventHub: EventHub | null;
   private readonly maxReorgDepth: number;
+  private readonly confirmationDepth: number;
 
   private timer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
@@ -247,6 +254,7 @@ export class SorobanEventPoller {
     this.reputation = opts.reputation ?? null;
     this.eventHub = opts.eventHub ?? null;
     this.maxReorgDepth = opts.maxReorgDepth ?? 64;
+    this.confirmationDepth = Math.max(0, opts.confirmationDepth ?? 5);
   }
 
   private log(msg: string): void {
@@ -297,6 +305,9 @@ export class SorobanEventPoller {
    * Returns the ledger to resume from. On mismatch, purges orphaned events,
    * rewinds the watermark to the last verified ancestor and returns that
    * ancestor so the next poll re-ingests from the common fork point.
+   *
+   * Verification checks both the stored hash of the last indexed ledger and
+   * the `previous_ledger_hash` continuity of the ledger that follows it.
    */
   private async detectAndRecoverReorg(): Promise<number> {
     const last = this.store.getLastIndexedLedger();
@@ -315,7 +326,15 @@ export class SorobanEventPoller {
       return last + 1;
     }
 
-    if (header.hash === storedHash) {
+    // Verify prev-hash continuity: the ledger after `last` must point back
+    // to the stored hash of `last`. Only possible when a header is available.
+    let continuityBroken = false;
+    const nextHeader = await this.fetchLedgerHash(last + 1);
+    if (nextHeader.hash && nextHeader.previousLedgerHash) {
+      continuityBroken = nextHeader.previousLedgerHash !== storedHash;
+    }
+
+    if (header.hash === storedHash && !continuityBroken) {
       return last + 1;
     }
 
@@ -420,12 +439,18 @@ export class SorobanEventPoller {
           }
         },
       );
-      if (fromLedger > latest.sequence) {
-        this.log(`Up to date at ledger ${latest.sequence}`);
+      // Only process ledgers that have reached the confirmation depth.
+      const confirmedLedger = latest.sequence - this.confirmationDepth;
+      if (fromLedger > confirmedLedger) {
+        this.log(
+          `Waiting for confirmations: from=${fromLedger} confirmed=${confirmedLedger} latest=${latest.sequence}`,
+        );
         return;
       }
 
       // Collect all events for this ledger across contracts before writing.
+      // Events are flushed in a single batched insert (insertEventsBatch) so
+      // the whole confirmed range is persisted atomically.
       const allInserts: InsertEventParams[] = [];
 
       // Query each contract separately to stay within RPC limits
@@ -498,14 +523,16 @@ export class SorobanEventPoller {
 
       // Persist the entire ledger batch (events + watermark) atomically.
       // If anything fails, neither the events nor the watermark advance.
-      const latestHash = await this.fetchLedgerHash(latest.sequence);
+      // The watermark is the last *confirmed* ledger so reorg detection
+      // always verifies a finalized hash.
+      const confirmedHash = await this.fetchLedgerHash(confirmedLedger);
       this.store.insertEventsBatch(
         allInserts,
-        latest.sequence,
-        latestHash.hash ?? undefined,
+        confirmedLedger,
+        confirmedHash.hash ?? undefined,
       );
       this.log(
-        `Indexed ${allInserts.length} events across ${this.contracts.length} contract(s) up to ledger ${latest.sequence}`,
+        `Indexed ${allInserts.length} events across ${this.contracts.length} contract(s) up to confirmed ledger ${confirmedLedger}`,
       );
 
       // Broadcast newly indexed events to SSE/WebSocket subscribers.
@@ -522,7 +549,9 @@ export class SorobanEventPoller {
   async start(): Promise<void> {
     if (this.running) return;
     this.running = true;
-    this.log("Starting event poller…");
+    this.log(
+      `Starting event poller (confirmationDepth=${this.confirmationDepth})…`,
+    );
 
     const tick = async () => {
       if (!this.running) return;

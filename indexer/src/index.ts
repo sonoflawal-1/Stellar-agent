@@ -21,6 +21,7 @@ import {
 } from "./tracing.js";
 import {
   ReputationEngine,
+  SCORING_VERSION,
   type AgentReputation,
   type ReputationBreakdown,
 } from "./reputation.js";
@@ -216,6 +217,16 @@ export class BearEventIndexer {
     return this.reputation.getReputation(agentId);
   }
 
+  /**
+   * Recompute reputation for every agent from raw events using the current
+   * scoring version. Deterministic: replaying the same events yields the same
+   * scores. Persists the results stamped with `SCORING_VERSION`.
+   */
+  recomputeReputation(): { scoringVersion: number; agents: number } {
+    const agents = this.reputation.recomputeAll();
+    return { scoringVersion: SCORING_VERSION, agents };
+  }
+
   /** Release any resources held by the storage adapter (e.g. DB pool). */
   async close(): Promise<void> {
     await this.store.close?.();
@@ -344,6 +355,43 @@ export async function handleReadyz(
   }
 }
 
+// ── CLI ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Minimal CLI entrypoint. Supports:
+ *   indexer reputation --recompute
+ *
+ * The `--recompute` flag replays raw events through the reputation engine and
+ * rewrites scores with the current scoring version.
+ */
+export async function runCli(
+  argv: string[],
+  config: BearEventIndexerConfig,
+): Promise<number> {
+  const [command, ...rest] = argv;
+  if (command !== "reputation") {
+    process.stderr.write(`unknown command: ${command ?? ""}\n`);
+    return 1;
+  }
+  if (!rest.includes("--recompute")) {
+    process.stderr.write("usage: indexer reputation --recompute\n");
+    return 1;
+  }
+  const indexer = new BearEventIndexer(config);
+  try {
+    const result = indexer.recomputeReputation();
+    process.stdout.write(
+      JSON.stringify({
+        scoring_version: result.scoringVersion,
+        agents: result.agents,
+      }) + "\n",
+    );
+    return 0;
+  } finally {
+    await indexer.close();
+  }
+}
+
 // ── SSE events stream ────────────────────────────────────────────────────────
 
 const SSE_HEARTBEAT_MS = 30_000;
@@ -465,7 +513,7 @@ export function createReputationHandler(
         const result = reputation.getReputation(agentId);
         res.statusCode = 200;
         res.setHeader("content-type", "application/json");
-        res.end(JSON.stringify(result));
+        res.end(JSON.stringify({ ...result, scoring_version: SCORING_VERSION }));
       } catch (err) {
         span.recordException(err as Error);
         res.statusCode = 500;
@@ -476,11 +524,25 @@ export function createReputationHandler(
   };
 }
 
+// ── Reputation recompute CLI ─────────────────────────────────────────────────
+
+/**
+ * Replays all raw events deterministically through the reputation engine and
+ * rewrites stored scores stamped with the current `SCORING_VERSION`.
+ *
+ * Returns the number of agents whose scores were recomputed.
+ */
+export function recomputeReputation(
+  indexer: BearEventIndexer,
+): { scoringVersion: number; agents: number } {
+  return indexer.recomputeReputation();
+}
+
 // Re-export lower-level primitives for advanced use-cases
 export { openDatabase, openReadOnlyDatabase, EventStore, runMigrations } from "./db.js";
 export { SorobanEventPoller } from "./poller.js";
 export { EventHub } from "./events.js";
-export { ReputationEngine } from "./reputation.js";
+export { ReputationEngine, SCORING_VERSION } from "./reputation.js";
 export { initTracing, shutdownTracing, withSpan } from "./tracing.js";
 export {
   createRestHandler,

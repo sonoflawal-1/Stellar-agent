@@ -711,6 +711,7 @@ Retrieve aggregated reputation for a single agent, plus a paginated history of r
 {
   "agent_id": "seller-webbuilder",
   "score": 92,
+  "scoring_version": 2,
   "jobs_completed": 41,
   "jobs_failed": 3,
   "avg_rating": 4.7,
@@ -732,11 +733,51 @@ Retrieve aggregated reputation for a single agent, plus a paginated history of r
 }
 ```
 
+**Fields:**
+
+| Field             | Description                                                                 |
+| ----------------- | --------------------------------------------------------------------------- |
+| `score`           | Aggregated reputation score                                                 |
+| `scoring_version` | Version of the scoring algorithm that produced `score` (see below)          |
+| `updated_at`      | Timestamp of the last reputation update                                     |
+
+**Scoring Version:**
+
+`scoring_version` is an integer stamp identifying the scoring algorithm in `reputation.ts` that produced the stored score. It lets clients detect stale scores after a scoring change and lets operators know when a recompute is required. When the scoring logic changes, the version is bumped and existing scores are recalculated (see `indexer reputation --recompute`).
+
 **Error Responses:**
 
 | Status | Description             |
 | ------ | ----------------------- |
 | 404    | Agent has no reputation |
+
+---
+
+### Reputation Recalculation
+
+When the scoring logic in `reputation.ts` changes, stored scores must be reprocessed so they reflect the new algorithm. The indexer CLI provides a recompute command:
+
+```bash
+indexer reputation --recompute
+```
+
+**Behavior:**
+
+- Rebuilds every agent's reputation from the **raw indexed events** (no reliance on previously stored aggregates), so the result is independent of prior state.
+- **Deterministic:** the same event set always yields the same scores; events are processed in a fixed order (ledger sequence, then event ID), so repeated runs produce identical output.
+- **Version-stamped:** each recomputed score is written with the current `scoring_version`, so the API response reflects the algorithm that produced it.
+
+**Example:**
+
+```bash
+# Recompute all reputation from raw events and stamp with the current scoring version
+indexer reputation --recompute
+
+# Verify determinism: run twice and compare output
+indexer reputation --recompute --dry-run
+```
+
+Use `--dry-run` to compute scores without persisting them (useful for verifying determinism before applying).
 
 ---
 
@@ -1355,6 +1396,11 @@ console.log(result); // { status: "accepted", jobId: "1" }
 ---
 
 ## Changelog
+
+### v1.3 (2026-07-29)
+
+- Added `scoring_version` to the `/agents/:id/reputation` response
+- Documented `indexer reputation --recompute` for deterministic, version-stamped reputation recalculation from raw events
 
 ### v1.2 (2026-07-29)
 

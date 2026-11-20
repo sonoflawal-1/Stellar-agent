@@ -16,7 +16,8 @@
     "migrate:prod": "node dist/migrate.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:postgres": "vitest run --config vitest.postgres.config.ts"
+    "test:postgres": "vitest run --config vitest.postgres.config.ts",
+    "bench:inserts": "tsx bench/inserts.ts"
   },
   "dependencies": {
     "@opentelemetry/api": "^1.9.0",
