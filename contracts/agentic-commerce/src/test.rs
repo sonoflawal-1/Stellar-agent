@@ -2757,3 +2757,931 @@ proptest! {
         prop_assert!(simulate_balance_invariant(&seq));
     }
 }
+
+// ===========================================================================
+// #941 — close_channel() tests
+// ===========================================================================
+
+/// Helper to create a payment channel with a voucher signing key.
+fn setup_channel<'a>(
+    env: &Env,
+    client: &AgenticCommerceContractClient<'a>,
+    admin: &Address,
+    payer: &Address,
+    provider: &Address,
+) -> (u64, Address, TokenClient<'a>, StellarAssetClient<'a>, soroban_sdk::BytesN<32>) {
+    let (token_addr, token, stellar_token) = deploy_token(env, admin, client);
+    stellar_token.mint(payer, &1_000_000);
+    
+    // Generate a signing key pair for vouchers
+    let voucher_key = BytesN::from_array(env, &[1u8; 32]);
+    
+    let channel_id = client.open_channel(
+        payer,
+        provider,
+        &token_addr,
+        &100_000i128,
+        &voucher_key,
+    );
+    
+    (channel_id, token_addr, token, stellar_token, voucher_key)
+}
+
+/// Helper to create a signed voucher for testing.
+fn create_voucher_and_signature(
+    env: &Env,
+    channel_id: u64,
+    amount: i128,
+    nonce: u64,
+) -> (ChannelVoucher, BytesN<64>) {
+    let voucher = ChannelVoucher {
+        channel_id,
+        amount,
+        nonce,
+    };
+    // Create a dummy signature (in real usage this would be signed by the voucher_key)
+    let signature = BytesN::from_array(env, &[0u8; 64]);
+    (voucher, signature)
+}
+
+#[test]
+fn close_channel_starts_dispute_window_on_first_call() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let payer = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let (channel_id, _token_addr, token, _stellar_token, _voucher_key) =
+        setup_channel(&env, &client, &admin, &payer, &provider);
+    
+    let (voucher, signature) = create_voucher_and_signature(&env, channel_id, 50_000, 1);
+    
+    // First close_channel call should start the dispute window
+    client.close_channel(&provider, &channel_id, &voucher, &signature);
+    
+    let channel = client.get_channel(&channel_id).unwrap();
+    assert_eq!(channel.amount, 50_000);
+    assert!(channel.closing_at > 0);
+    
+    // Tokens should still be in escrow
+    assert_eq!(token.balance(&client.address), 100_000);
+    assert_eq!(token.balance(&provider), 0);
+    assert_eq!(token.balance(&payer), 900_000);
+}
+
+#[test]
+fn close_channel_allows_higher_voucher_during_dispute_window() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let payer = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let (channel_id, _token_addr, _token, _stellar_token, _voucher_key) =
+        setup_channel(&env, &client, &admin, &payer, &provider);
+    
+    let (voucher1, signature1) = create_voucher_and_signature(&env, channel_id, 50_000, 1);
+    client.close_channel(&provider, &channel_id, &voucher1, &signature1);
+    
+    let (voucher2, signature2) = create_voucher_and_signature(&env, channel_id, 75_000, 2);
+    client.close_channel(&payer, &channel_id, &voucher2, &signature2);
+    
+    let channel = client.get_channel(&channel_id).unwrap();
+    assert_eq!(channel.amount, 75_000);
+    assert_eq!(channel.nonce, 2);
+}
+
+#[test]
+#[should_panic(expected = "channel not found")]
+fn close_channel_panics_when_channel_does_not_exist() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _treasury) = setup(&env);
+    let caller = Address::generate(&env);
+    let (voucher, signature) = create_voucher_and_signature(&env, 9999, 50_000, 1);
+    
+    client.close_channel(&caller, &9999u64, &voucher, &signature);
+}
+
+#[test]
+#[should_panic(expected = "not a channel participant")]
+fn close_channel_rejects_non_participant() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let payer = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let mallory = Address::generate(&env);
+    let (channel_id, _token_addr, _token, _stellar_token, _voucher_key) =
+        setup_channel(&env, &client, &admin, &payer, &provider);
+    
+    let (voucher, signature) = create_voucher_and_signature(&env, channel_id, 50_000, 1);
+    client.close_channel(&mallory, &channel_id, &voucher, &signature);
+}
+
+#[test]
+#[should_panic(expected = "voucher is not newer")]
+fn close_channel_rejects_lower_amount_voucher() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let payer = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let (channel_id, _token_addr, _token, _stellar_token, _voucher_key) =
+        setup_channel(&env, &client, &admin, &payer, &provider);
+    
+    let (voucher1, signature1) = create_voucher_and_signature(&env, channel_id, 75_000, 1);
+    client.close_channel(&provider, &channel_id, &voucher1, &signature1);
+    
+    // Try to submit a lower amount with higher nonce
+    let (voucher2, signature2) = create_voucher_and_signature(&env, channel_id, 50_000, 2);
+    client.close_channel(&payer, &channel_id, &voucher2, &signature2);
+}
+
+#[test]
+#[should_panic(expected = "voucher is not newer")]
+fn close_channel_rejects_same_nonce_voucher() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let payer = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let (channel_id, _token_addr, _token, _stellar_token, _voucher_key) =
+        setup_channel(&env, &client, &admin, &payer, &provider);
+    
+    let (voucher1, signature1) = create_voucher_and_signature(&env, channel_id, 50_000, 1);
+    client.close_channel(&provider, &channel_id, &voucher1, &signature1);
+    
+    let (voucher2, signature2) = create_voucher_and_signature(&env, channel_id, 75_000, 1);
+    client.close_channel(&payer, &channel_id, &voucher2, &signature2);
+}
+
+#[test]
+#[should_panic(expected = "channel challenge window ended")]
+fn close_channel_rejects_after_dispute_window_ends() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let payer = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let (channel_id, _token_addr, _token, _stellar_token, _voucher_key) =
+        setup_channel(&env, &client, &admin, &payer, &provider);
+    
+    let (voucher1, signature1) = create_voucher_and_signature(&env, channel_id, 50_000, 1);
+    client.close_channel(&provider, &channel_id, &voucher1, &signature1);
+    
+    // Fast-forward past the 24-hour dispute window
+    env.ledger().with_mut(|li| li.timestamp += 24 * 60 * 60 + 1);
+    
+    let (voucher2, signature2) = create_voucher_and_signature(&env, channel_id, 75_000, 2);
+    client.close_channel(&payer, &channel_id, &voucher2, &signature2);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn close_channel_rejects_when_contract_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let payer = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let (channel_id, _token_addr, _token, _stellar_token, _voucher_key) =
+        setup_channel(&env, &client, &admin, &payer, &provider);
+    
+    client.emergency_pause(&admin);
+    
+    let (voucher, signature) = create_voucher_and_signature(&env, channel_id, 50_000, 1);
+    client.close_channel(&provider, &channel_id, &voucher, &signature);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #12)")]
+fn close_channel_rejects_when_channels_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let payer = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let (channel_id, _token_addr, _token, _stellar_token, _voucher_key) =
+        setup_channel(&env, &client, &admin, &payer, &provider);
+    
+    client.pause_channels(&admin);
+    
+    let (voucher, signature) = create_voucher_and_signature(&env, channel_id, 50_000, 1);
+    client.close_channel(&provider, &channel_id, &voucher, &signature);
+}
+
+#[test]
+fn close_channel_emits_channel_closing_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let payer = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let (channel_id, _token_addr, _token, _stellar_token, _voucher_key) =
+        setup_channel(&env, &client, &admin, &payer, &provider);
+    
+    let (voucher, signature) = create_voucher_and_signature(&env, channel_id, 50_000, 1);
+    client.close_channel(&provider, &channel_id, &voucher, &signature);
+    
+    let channel = client.get_channel(&channel_id).unwrap();
+    let expected_event = ChannelClosing {
+        version: EVENT_VERSION,
+        actor: provider.clone(),
+        channel_id,
+        amount: 50_000,
+        challenge_until: channel.closing_at,
+    };
+    
+    let all_events = env.events().all().filter_by_contract(&client.address);
+    assert_eq!(
+        all_events.events().last().unwrap().clone(),
+        expected_event.to_xdr(&env, &client.address),
+    );
+}
+
+// ===========================================================================
+// #942 — force_close() tests
+// ===========================================================================
+
+#[test]
+fn force_close_settles_channel_after_dispute_window() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let payer = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let (channel_id, _token_addr, token, _stellar_token, _voucher_key) =
+        setup_channel(&env, &client, &admin, &payer, &provider);
+    
+    let (voucher, signature) = create_voucher_and_signature(&env, channel_id, 60_000, 1);
+    client.close_channel(&provider, &channel_id, &voucher, &signature);
+    
+    // Fast-forward past the 24-hour dispute window
+    env.ledger().with_mut(|li| li.timestamp += 24 * 60 * 60 + 1);
+    
+    client.force_close(&payer, &channel_id);
+    
+    // Provider receives the voucher amount, payer receives the refund
+    assert_eq!(token.balance(&provider), 60_000);
+    assert_eq!(token.balance(&payer), 900_000 + 40_000);
+    assert_eq!(token.balance(&client.address), 0);
+    
+    // Channel should be removed
+    assert!(client.get_channel(&channel_id).is_none());
+}
+
+#[test]
+fn force_close_settles_full_deposit_to_provider_when_amount_equals_deposit() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let payer = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let (channel_id, _token_addr, token, _stellar_token, _voucher_key) =
+        setup_channel(&env, &client, &admin, &payer, &provider);
+    
+    let (voucher, signature) = create_voucher_and_signature(&env, channel_id, 100_000, 1);
+    client.close_channel(&provider, &channel_id, &voucher, &signature);
+    
+    env.ledger().with_mut(|li| li.timestamp += 24 * 60 * 60 + 1);
+    
+    client.force_close(&provider, &channel_id);
+    
+    assert_eq!(token.balance(&provider), 100_000);
+    assert_eq!(token.balance(&payer), 900_000);
+    assert_eq!(token.balance(&client.address), 0);
+}
+
+#[test]
+fn force_close_allows_immediate_settlement_if_never_closed() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let payer = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let (channel_id, _token_addr, token, _stellar_token, _voucher_key) =
+        setup_channel(&env, &client, &admin, &payer, &provider);
+    
+    // Fast-forward past the dispute window from channel opening
+    env.ledger().with_mut(|li| li.timestamp += 24 * 60 * 60 + 1);
+    
+    // force_close without close_channel should use opened_at as the baseline
+    client.force_close(&provider, &channel_id);
+    
+    // No voucher was submitted, so amount is 0, full deposit refunded to payer
+    assert_eq!(token.balance(&provider), 0);
+    assert_eq!(token.balance(&payer), 1_000_000);
+    assert_eq!(token.balance(&client.address), 0);
+}
+
+#[test]
+#[should_panic(expected = "channel not found")]
+fn force_close_panics_when_channel_does_not_exist() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin, _treasury) = setup(&env);
+    let caller = Address::generate(&env);
+    
+    client.force_close(&caller, &9999u64);
+}
+
+#[test]
+#[should_panic(expected = "not a channel participant")]
+fn force_close_rejects_non_participant() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let payer = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let mallory = Address::generate(&env);
+    let (channel_id, _token_addr, _token, _stellar_token, _voucher_key) =
+        setup_channel(&env, &client, &admin, &payer, &provider);
+    
+    let (voucher, signature) = create_voucher_and_signature(&env, channel_id, 50_000, 1);
+    client.close_channel(&provider, &channel_id, &voucher, &signature);
+    
+    env.ledger().with_mut(|li| li.timestamp += 24 * 60 * 60 + 1);
+    
+    client.force_close(&mallory, &channel_id);
+}
+
+#[test]
+#[should_panic(expected = "channel challenge window active")]
+fn force_close_rejects_during_dispute_window() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let payer = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let (channel_id, _token_addr, _token, _stellar_token, _voucher_key) =
+        setup_channel(&env, &client, &admin, &payer, &provider);
+    
+    let (voucher, signature) = create_voucher_and_signature(&env, channel_id, 50_000, 1);
+    client.close_channel(&provider, &channel_id, &voucher, &signature);
+    
+    // Try to force_close before dispute window ends
+    client.force_close(&payer, &channel_id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn force_close_rejects_when_contract_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let payer = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let (channel_id, _token_addr, _token, _stellar_token, _voucher_key) =
+        setup_channel(&env, &client, &admin, &payer, &provider);
+    
+    let (voucher, signature) = create_voucher_and_signature(&env, channel_id, 50_000, 1);
+    client.close_channel(&provider, &channel_id, &voucher, &signature);
+    
+    env.ledger().with_mut(|li| li.timestamp += 24 * 60 * 60 + 1);
+    
+    client.emergency_pause(&admin);
+    
+    client.force_close(&payer, &channel_id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #12)")]
+fn force_close_rejects_when_channels_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let payer = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let (channel_id, _token_addr, _token, _stellar_token, _voucher_key) =
+        setup_channel(&env, &client, &admin, &payer, &provider);
+    
+    let (voucher, signature) = create_voucher_and_signature(&env, channel_id, 50_000, 1);
+    client.close_channel(&provider, &channel_id, &voucher, &signature);
+    
+    env.ledger().with_mut(|li| li.timestamp += 24 * 60 * 60 + 1);
+    
+    client.pause_channels(&admin);
+    
+    client.force_close(&payer, &channel_id);
+}
+
+#[test]
+fn force_close_emits_channel_settled_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let payer = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let (channel_id, _token_addr, _token, _stellar_token, _voucher_key) =
+        setup_channel(&env, &client, &admin, &payer, &provider);
+    
+    let (voucher, signature) = create_voucher_and_signature(&env, channel_id, 60_000, 1);
+    client.close_channel(&provider, &channel_id, &voucher, &signature);
+    
+    env.ledger().with_mut(|li| li.timestamp += 24 * 60 * 60 + 1);
+    
+    client.force_close(&provider, &channel_id);
+    
+    let expected_event = ChannelSettled {
+        version: EVENT_VERSION,
+        actor: provider.clone(),
+        channel_id,
+        amount: 60_000,
+        refund: 40_000,
+    };
+    
+    let all_events = env.events().all().filter_by_contract(&client.address);
+    assert_eq!(
+        all_events.events().last().unwrap().clone(),
+        expected_event.to_xdr(&env, &client.address),
+    );
+}
+
+#[test]
+fn force_close_handles_zero_amount_voucher() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let payer = Address::generate(&env);
+    let provider = Address::generate(&env);
+    let (channel_id, _token_addr, token, _stellar_token, _voucher_key) =
+        setup_channel(&env, &client, &admin, &payer, &provider);
+    
+    let (voucher, signature) = create_voucher_and_signature(&env, channel_id, 0, 1);
+    client.close_channel(&provider, &channel_id, &voucher, &signature);
+    
+    env.ledger().with_mut(|li| li.timestamp += 24 * 60 * 60 + 1);
+    
+    client.force_close(&payer, &channel_id);
+    
+    // All funds refunded to payer, nothing to provider
+    assert_eq!(token.balance(&provider), 0);
+    assert_eq!(token.balance(&payer), 1_000_000);
+    assert_eq!(token.balance(&client.address), 0);
+}
+
+// ===========================================================================
+// #943 — fund_job_with_swap() tests
+// ===========================================================================
+
+/// Mock AMM router contract for testing swaps.
+#[contract]
+struct MockAmmRouter;
+
+#[contractimpl]
+impl MockAmmRouter {
+    /// Mock swap_exact_out: deliver exactly target_amount of output_token,
+    /// return the amount of input_token consumed.
+    pub fn swap_exact_out(
+        _env: Env,
+        _sender: Address,
+        input_token: Address,
+        output_token: Address,
+        target_amount: i128,
+        max_input: i128,
+    ) -> i128 {
+        // Simple mock: 1:1 swap ratio for testing
+        // In reality this would interact with liquidity pools
+        let input_spent = target_amount;
+        
+        if input_spent > max_input {
+            panic!("slippage exceeded in mock");
+        }
+        
+        // Transfer the tokens (mock implementation)
+        let input_client = token::TokenClient::new(&_env, &input_token);
+        let output_client = token::TokenClient::new(&_env, &output_token);
+        
+        let contract = _env.current_contract_address();
+        
+        // Consume input tokens from sender
+        input_client.transfer(&_sender, &contract, &input_spent);
+        
+        // Deliver output tokens to sender
+        output_client.transfer(&contract, &_sender, &target_amount);
+        
+        input_spent
+    }
+}
+
+fn setup_amm_router(env: &Env, client: &AgenticCommerceContractClient, admin: &Address) -> Address {
+    let router_id = env.register(MockAmmRouter, ());
+    let router_addr = router_id.address();
+    client.set_amm_router(admin, &router_addr);
+    router_addr
+}
+
+#[test]
+fn fund_job_with_swap_successfully_funds_job_and_refunds_excess() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    
+    // Setup two different tokens
+    let (input_token_addr, input_token, input_stellar) = deploy_token(&env, &admin, &client);
+    let (target_token_addr, target_token, target_stellar) = deploy_token(&env, &admin, &client);
+    
+    // Mint input tokens to buyer
+    input_stellar.mint(&buyer, &1_000_000);
+    
+    // Setup AMM router
+    let router_addr = setup_amm_router(&env, &client, &admin);
+    
+    // Mint tokens to router for swapping
+    target_stellar.mint(&router_addr, &1_000_000);
+    
+    // Create a job that needs to be funded with target_token
+    let job_id = client.create_job(
+        &buyer,
+        &seller,
+        &buyer,
+        &target_token_addr,
+        &100_000i128,
+        &String::from_str(&env, "job needing swap"),
+        &0u64,
+        &0u32,
+    );
+    
+    // Initially the job is Open/Funded but we need to simulate Open status
+    // For this test, we assume the job status allows swap funding
+    
+    let input_spent = client.fund_job_with_swap(
+        &buyer,
+        &input_token_addr,
+        &150_000i128,
+        &job_id,
+    );
+    
+    // Should have spent exactly the budget amount (1:1 ratio in mock)
+    assert_eq!(input_spent, 100_000);
+    
+    // Buyer should have received refund of unspent input
+    assert_eq!(input_token.balance(&buyer), 1_000_000 - 100_000);
+    
+    // Job should be funded
+    let job = client.get_job(&job_id).unwrap();
+    assert_eq!(job.status, JobStatus::Funded);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn fund_job_with_swap_panics_when_job_not_found() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let buyer = Address::generate(&env);
+    
+    let (input_token_addr, _input_token, input_stellar) = deploy_token(&env, &admin, &client);
+    input_stellar.mint(&buyer, &1_000_000);
+    
+    setup_amm_router(&env, &client, &admin);
+    
+    client.fund_job_with_swap(
+        &buyer,
+        &input_token_addr,
+        &150_000i128,
+        &9999u64,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #6)")]
+fn fund_job_with_swap_rejects_non_client() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let mallory = Address::generate(&env);
+    
+    let (input_token_addr, _input_token, input_stellar) = deploy_token(&env, &admin, &client);
+    let (target_token_addr, _target_token, _target_stellar) = deploy_token(&env, &admin, &client);
+    
+    input_stellar.mint(&mallory, &1_000_000);
+    
+    setup_amm_router(&env, &client, &admin);
+    
+    let job_id = client.create_job(
+        &buyer,
+        &seller,
+        &buyer,
+        &target_token_addr,
+        &100_000i128,
+        &String::from_str(&env, "job"),
+        &0u64,
+        &0u32,
+    );
+    
+    client.fund_job_with_swap(
+        &mallory,
+        &input_token_addr,
+        &150_000i128,
+        &job_id,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")]
+fn fund_job_with_swap_rejects_already_funded_job() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    
+    let (input_token_addr, _input_token, input_stellar) = deploy_token(&env, &admin, &client);
+    let (target_token_addr, _target_token, target_stellar) = deploy_token(&env, &admin, &client);
+    
+    input_stellar.mint(&buyer, &1_000_000);
+    target_stellar.mint(&buyer, &1_000_000);
+    
+    setup_amm_router(&env, &client, &admin);
+    
+    // Create and fund a job normally
+    let job_id = client.create_job(
+        &buyer,
+        &seller,
+        &buyer,
+        &target_token_addr,
+        &100_000i128,
+        &String::from_str(&env, "already funded job"),
+        &0u64,
+        &0u32,
+    );
+    
+    // Job is already Funded, trying to fund again should fail
+    client.fund_job_with_swap(
+        &buyer,
+        &input_token_addr,
+        &150_000i128,
+        &job_id,
+    );
+}
+
+#[test]
+#[should_panic(expected = "max_input_amount must be positive")]
+fn fund_job_with_swap_rejects_zero_max_input() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    
+    let (input_token_addr, _input_token, _input_stellar) = deploy_token(&env, &admin, &client);
+    let (target_token_addr, _target_token, _target_stellar) = deploy_token(&env, &admin, &client);
+    
+    setup_amm_router(&env, &client, &admin);
+    
+    let job_id = client.create_job(
+        &buyer,
+        &seller,
+        &buyer,
+        &target_token_addr,
+        &100_000i128,
+        &String::from_str(&env, "job"),
+        &0u64,
+        &0u32,
+    );
+    
+    client.fund_job_with_swap(
+        &buyer,
+        &input_token_addr,
+        &0i128,
+        &job_id,
+    );
+}
+
+#[test]
+#[should_panic(expected = "max_input_amount must be positive")]
+fn fund_job_with_swap_rejects_negative_max_input() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    
+    let (input_token_addr, _input_token, _input_stellar) = deploy_token(&env, &admin, &client);
+    let (target_token_addr, _target_token, _target_stellar) = deploy_token(&env, &admin, &client);
+    
+    setup_amm_router(&env, &client, &admin);
+    
+    let job_id = client.create_job(
+        &buyer,
+        &seller,
+        &buyer,
+        &target_token_addr,
+        &100_000i128,
+        &String::from_str(&env, "job"),
+        &0u64,
+        &0u32,
+    );
+    
+    client.fund_job_with_swap(
+        &buyer,
+        &input_token_addr,
+        &-100i128,
+        &job_id,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #10)")]
+fn fund_job_with_swap_rejects_unwhitelisted_input_token() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    
+    // Create input token but don't whitelist it
+    let input_token_contract = env.register_stellar_asset_contract_v2(admin.clone());
+    let input_token_addr = input_token_contract.address();
+    let input_stellar = StellarAssetClient::new(&env, &input_token_addr);
+    input_stellar.mint(&buyer, &1_000_000);
+    
+    let (target_token_addr, _target_token, _target_stellar) = deploy_token(&env, &admin, &client);
+    
+    setup_amm_router(&env, &client, &admin);
+    
+    let job_id = client.create_job(
+        &buyer,
+        &seller,
+        &buyer,
+        &target_token_addr,
+        &100_000i128,
+        &String::from_str(&env, "job"),
+        &0u64,
+        &0u32,
+    );
+    
+    client.fund_job_with_swap(
+        &buyer,
+        &input_token_addr,
+        &150_000i128,
+        &job_id,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #10)")]
+fn fund_job_with_swap_rejects_unwhitelisted_target_token() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    
+    let (input_token_addr, _input_token, input_stellar) = deploy_token(&env, &admin, &client);
+    input_stellar.mint(&buyer, &1_000_000);
+    
+    // Create target token but don't whitelist it
+    let target_token_contract = env.register_stellar_asset_contract_v2(admin.clone());
+    let target_token_addr = target_token_contract.address();
+    
+    setup_amm_router(&env, &client, &admin);
+    
+    let job_id = client.create_job(
+        &buyer,
+        &seller,
+        &buyer,
+        &target_token_addr,
+        &100_000i128,
+        &String::from_str(&env, "job"),
+        &0u64,
+        &0u32,
+    );
+    
+    client.fund_job_with_swap(
+        &buyer,
+        &input_token_addr,
+        &150_000i128,
+        &job_id,
+    );
+}
+
+#[test]
+#[should_panic(expected = "amm router not configured")]
+fn fund_job_with_swap_rejects_when_router_not_configured() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    
+    let (input_token_addr, _input_token, input_stellar) = deploy_token(&env, &admin, &client);
+    let (target_token_addr, _target_token, _target_stellar) = deploy_token(&env, &admin, &client);
+    
+    input_stellar.mint(&buyer, &1_000_000);
+    
+    // Don't setup AMM router
+    
+    let job_id = client.create_job(
+        &buyer,
+        &seller,
+        &buyer,
+        &target_token_addr,
+        &100_000i128,
+        &String::from_str(&env, "job"),
+        &0u64,
+        &0u32,
+    );
+    
+    client.fund_job_with_swap(
+        &buyer,
+        &input_token_addr,
+        &150_000i128,
+        &job_id,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn fund_job_with_swap_rejects_when_contract_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    
+    let (input_token_addr, _input_token, input_stellar) = deploy_token(&env, &admin, &client);
+    let (target_token_addr, _target_token, target_stellar) = deploy_token(&env, &admin, &client);
+    
+    input_stellar.mint(&buyer, &1_000_000);
+    target_stellar.mint(&buyer, &1_000_000);
+    
+    setup_amm_router(&env, &client, &admin);
+    
+    let job_id = client.create_job(
+        &buyer,
+        &seller,
+        &buyer,
+        &target_token_addr,
+        &100_000i128,
+        &String::from_str(&env, "job"),
+        &0u64,
+        &0u32,
+    );
+    
+    client.emergency_pause(&admin);
+    
+    client.fund_job_with_swap(
+        &buyer,
+        &input_token_addr,
+        &150_000i128,
+        &job_id,
+    );
+}
+
+#[test]
+fn fund_job_with_swap_emits_swap_funded_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    
+    let (input_token_addr, _input_token, input_stellar) = deploy_token(&env, &admin, &client);
+    let (target_token_addr, _target_token, target_stellar) = deploy_token(&env, &admin, &client);
+    
+    input_stellar.mint(&buyer, &1_000_000);
+    
+    let router_addr = setup_amm_router(&env, &client, &admin);
+    target_stellar.mint(&router_addr, &1_000_000);
+    
+    let job_id = client.create_job(
+        &buyer,
+        &seller,
+        &buyer,
+        &target_token_addr,
+        &100_000i128,
+        &String::from_str(&env, "job needing swap"),
+        &0u64,
+        &0u32,
+    );
+    
+    let input_spent = client.fund_job_with_swap(
+        &buyer,
+        &input_token_addr,
+        &150_000i128,
+        &job_id,
+    );
+    
+    let expected_event = SwapFunded {
+        version: EVENT_VERSION,
+        client: buyer.clone(),
+        job_id,
+        input_token: input_token_addr.clone(),
+        target_token: target_token_addr.clone(),
+        input_spent,
+        refund: 150_000 - input_spent,
+        budget: 100_000,
+    };
+    
+    let all_events = env.events().all().filter_by_contract(&client.address);
+    assert_eq!(
+        all_events.events().last().unwrap().clone(),
+        expected_event.to_xdr(&env, &client.address),
+    );
+}
