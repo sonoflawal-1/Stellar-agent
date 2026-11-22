@@ -3685,3 +3685,210 @@ fn fund_job_with_swap_emits_swap_funded_event() {
         expected_event.to_xdr(&env, &client.address),
     );
 }
+
+// ---------- claim_refund tests (issues #940, #933) ----------
+
+#[test]
+fn claim_refund_success_emits_event_and_transfers_tokens() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, treasury) = setup(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+
+    let token_addr = deploy_token_with_decimals(&env, &admin, &client, 7);
+    let token = TokenClient::new(&env, &token_addr.0);
+
+    // Fund a job so it's in Funded status
+    let job_id = client.create_job(
+        &buyer,
+        &seller,
+        &buyer,
+        &token_addr.0,
+        &1000i128,
+        &"refund test",
+        &0u64,
+        &0u32,
+    );
+    client.fund_job(&buyer, &job_id, &10000i128);
+
+    let balance_before = token.balance(&buyer);
+
+    // Client claims refund after timeout
+    client.claim_refund(&job_id);
+
+    let balance_after = token.balance(&buyer);
+
+    // Balance increased by the refund amount (budget - released = 1000)
+    assert!(balance_after > balance_before, "buyer token balance should increase after claim_refund");
+
+    // Event payload asserted
+    let all_events = env.events().all().filter_by_contract(&client.address);
+    let refund_events: Vec<_> = all_events
+        .events()
+        .iter()
+        .filter(|e| {
+            let xdr = e.to_xdr(&env, &client.address);
+            // Check it's a JobRefunded event
+            xdr[0] == 1u32 // variant tag for JobRefunded
+        })
+        .collect();
+    assert!(
+        !refund_events.is_empty(),
+        "JobRefunded event should be emitted on claim_refund"
+    );
+}
+
+#[test]
+#[should_panic(expected = "not client")]
+fn claim_refund_called_by_non_client_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, treasury) = setup(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+
+    let token_addr = deploy_token_with_decimals(&env, &admin, &client, 7);
+    let _token = TokenClient::new(&env, &token_addr.0);
+
+    let job_id = client.create_job(
+        &buyer,
+        &seller,
+        &buyer,
+        &token_addr.0,
+        &1000i128,
+        &"refund test",
+        &0u64,
+        &0u32,
+    );
+    client.fund_job(&buyer, &job_id, &10000i128);
+
+    // Provider (seller) trying to claim refund — should panic
+    client.claim_refund(&job_id);
+}
+
+#[test]
+#[should_panic(expected = "invalid status")]
+fn claim_refund_when_not_funded_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, treasury) = setup(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+
+    let token_addr = deploy_token_with_decimals(&env, &admin, &client, 7);
+
+    let job_id = client.create_job(
+        &buyer,
+        &seller,
+        &buyer,
+        &token_addr.0,
+        &1000i128,
+        &"refund test",
+        &0u64,
+        &0u32,
+    );
+
+    // Job is in Created status, not Funded — should panic
+    client.claim_refund(&job_id);
+}
+
+// ---------- dispute tests (issues #939) ----------
+
+#[test]
+fn dispute_success_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, treasury) = setup(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+
+    let token_addr = deploy_token_with_decimals(&env, &admin, &client, 7);
+    let _token = TokenClient::new(&env, &token_addr.0);
+
+    let job_id = client.create_job(
+        &buyer,
+        &seller,
+        &buyer,
+        &token_addr.0,
+        &1000i128,
+        &"dispute test",
+        &0u64,
+        &0u32,
+    );
+
+    // Client starts a dispute while job is Submitted
+    client.dispute(&job_id);
+
+    // Event payload asserted
+    let all_events = env.events().all().filter_by_contract(&client.address);
+    let disputed_events: Vec<_> = all_events
+        .events()
+        .iter()
+        .filter(|e| {
+            let xdr = e.to_xdr(&env, &client.address);
+            // Check it's a JobDisputed event
+            xdr[0] == 2u32 // variant tag for JobDisputed
+        })
+        .collect();
+    assert!(
+        !disputed_events.is_empty(),
+        "JobDisputed event should be emitted on dispute"
+    );
+}
+
+#[test]
+#[should_panic(expected = "not client")]
+fn dispute_called_by_non_client_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, treasury) = setup(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+
+    let token_addr = deploy_token_with_decimals(&env, &admin, &client, 7);
+
+    let job_id = client.create_job(
+        &buyer,
+        &seller,
+        &buyer,
+        &token_addr.0,
+        &1000i128,
+        &"dispute test",
+        &0u64,
+        &0u32,
+    );
+
+    // Provider (seller) trying to dispute — should panic
+    client.dispute(&job_id);
+}
+
+#[test]
+#[should_panic(expected = "invalid status")]
+fn dispute_when_not_submitted_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, treasury) = setup(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+
+    let token_addr = deploy_token_with_decimals(&env, &admin, &client, 7);
+
+    let job_id = client.create_job(
+        &buyer,
+        &seller,
+        &buyer,
+        &token_addr.0,
+        &1000i128,
+        &"dispute test",
+        &0u64,
+        &0u32,
+    );
+
+    // Job is in Created status, not Submitted — should panic
+    // Need to fund it first to change status
+    client.fund_job(&buyer, &job_id, &10000i128);
+
+    // Now status is Funded, not Submitted — should panic
+    client.dispute(&job_id);
+}
