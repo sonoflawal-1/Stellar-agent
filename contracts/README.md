@@ -2,6 +2,13 @@
 
 Soroban crates: `agent-identity`, `agentic-commerce`.
 
+## Agentic commerce fees
+
+Each job records the platform fee rate in basis points at creation.
+Admin changes through `set_fee_bps` apply only to jobs created afterward.
+Existing jobs keep their original rate for payouts, including provider timeout
+payouts through `claim_expired`.
+
 ## Build & test
 
 ```bash
