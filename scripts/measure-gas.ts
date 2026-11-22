@@ -75,6 +75,7 @@ interface GasBaseline {
   description: string;
   threshold_percent: number;
   operations: Partial<Record<Operation, GasMeasurement>>;
+  local_wasm_operations?: Record<string, GasMeasurement>;
 }
 
 interface CliConfig {
@@ -289,7 +290,11 @@ function readBaseline(path: string): GasBaseline | null {
   return { ...parsed, operations: parsed.operations ?? {} };
 }
 
-function writeBaseline(path: string, operations: GasBaseline["operations"]): void {
+function writeBaseline(
+  path: string,
+  operations: GasBaseline["operations"],
+  localWasmOperations: GasBaseline["local_wasm_operations"],
+): void {
   const baseline: GasBaseline = {
     version: 2,
     generated_by: "scripts/measure-gas.ts",
@@ -297,6 +302,7 @@ function writeBaseline(path: string, operations: GasBaseline["operations"]): voi
       "Baseline Soroban CPU instruction and memory byte consumption per agentic_commerce entry point. `npm run gas:check` fails when an operation exceeds these values by more than threshold_percent.",
     threshold_percent: THRESHOLD_PERCENT,
     operations,
+    local_wasm_operations: localWasmOperations,
   };
   writeFileSync(path, `${JSON.stringify(baseline, null, 2)}\n`);
 }
@@ -334,7 +340,11 @@ async function main(): Promise<void> {
 
   const baseline = readBaseline(cfg.baselinePath);
   if (cfg.update || !baseline) {
-    writeBaseline(cfg.baselinePath, { ...(baseline?.operations ?? {}), ...current });
+    writeBaseline(
+      cfg.baselinePath,
+      { ...(baseline?.operations ?? {}), ...current },
+      baseline?.local_wasm_operations,
+    );
     console.log(
       `[gas] ${baseline ? "updated" : "created"} baseline at ${cfg.baselinePath}`,
     );
