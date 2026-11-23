@@ -1584,7 +1584,7 @@ impl AgenticCommerceContract {
     }
 
     /// Evaluator approves the deliverable. Splits budget between provider and
-    /// treasury according to the current `fee_bps` setting.
+    /// treasury according to the fee rate snapshotted at job creation.
     ///
     /// Fee is computed with a multiply-first approach (`budget * fee_bps /
     /// BPS_DENOM`) so that micro-budgets smaller than 10,000 atomic units
@@ -1942,7 +1942,8 @@ impl AgenticCommerceContract {
             .set(&DataKey::Treasury, &new_treasury);
     }
 
-    /// Admin updates the platform fee (in basis points). Capped at MAX_FEE_BPS.
+    /// Admin updates the platform fee (in basis points) for newly created jobs.
+    /// Existing jobs retain their creation-time rate. Capped at MAX_FEE_BPS.
     pub fn set_fee_bps(env: Env, caller: Address, new_bps: u32) {
         caller.require_auth();
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
@@ -2593,7 +2594,7 @@ impl AgenticCommerceContract {
     /// Provider claims payout if the evaluator never completed the job and the
     /// timeout has passed. Mirrors `claim_refund`'s timeout pattern for the
     /// `Submitted` state, preventing a non-responsive evaluator from locking
-    /// the provider's payment forever (#18).
+    /// the provider's payment forever (#18). Uses the fee rate set at job creation.
     pub fn claim_expired(env: Env, caller: Address, id: u64) {
         Self::require_not_paused(&env); // #29
         caller.require_auth();
@@ -2620,9 +2621,7 @@ impl AgenticCommerceContract {
         // #716 — apply SLA penalty (if any) before computing the fee.
         let (overdue_hours, penalty_bps, penalty) = Self::compute_sla_penalty(&job);
         let penalized_budget = job.budget - penalty;
-        // #28 — overflow-safe fee: divide first, then multiply.
-        let fee_bps: u32 = env.storage().instance().get(&DataKey::FeeBps).unwrap();
-        let fee: i128 = Self::compute_fee(penalized_budget, fee_bps);
+        let fee: i128 = Self::compute_fee(penalized_budget, job.fee_bps);
         let payout: i128 = penalized_budget - fee;
 
         job.status = JobStatus::Completed;
