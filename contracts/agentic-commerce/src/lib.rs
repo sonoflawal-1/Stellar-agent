@@ -34,6 +34,11 @@ pub enum Error {
     BatchTooLarge = 13,
     /// Router swap did not meet the client’s slippage guard.
     SlippageExceeded = 14,
+    InvalidEvaluatorQuorum = 15,
+    InvalidEvaluatorWeight = 16,
+    DuplicateEvaluator = 17,
+    EvaluatorWeightOverflow = 18,
+    NotMultiEvaluatorJob = 19,
 }
 
 /// Lifecycle states for a job escrow.
@@ -274,6 +279,7 @@ const MAX_DELIVERABLE_LEN: u32 = 1024;
 /// #706 — maximum metadata URI length accepted alongside a content hash.
 const MAX_METADATA_URI_LEN: u32 = 1024;
 const MAX_EVALUATORS: u32 = 5;
+const MAX_MILESTONES: u32 = 20;
 const DEFAULT_MULTI_EVAL_THRESHOLD: i128 = i128::MAX;
 const CHANNEL_DISPUTE_WINDOW_SECS: u64 = 24 * 60 * 60;
 /// #698 — maximum number of jobs that may be created in a single atomic batch.
@@ -1401,7 +1407,7 @@ impl AgenticCommerceContract {
             || weights.len() != evaluators.len()
             || weight_threshold == 0
         {
-            panic!("invalid evaluator quorum");
+            panic_with_error!(&env, Error::InvalidEvaluatorQuorum);
         }
         if provider == client_addr {
             panic_with_error!(&env, Error::SelfEscrow);
@@ -1418,24 +1424,20 @@ impl AgenticCommerceContract {
             }
             let weight = weights.get(index).unwrap();
             if weight == 0 {
-                panic!("evaluator weight must be positive");
+                panic_with_error!(&env, Error::InvalidEvaluatorWeight);
             }
-            let mut previous = 0;
-            while previous < index {
-                if evaluators.get(previous).unwrap() == evaluator {
-                    panic!("duplicate evaluator");
-                }
-                previous += 1;
+            if weight_map.contains_key(evaluator.clone()) {
+                panic_with_error!(&env, Error::DuplicateEvaluator);
             }
             weight_map.set(evaluator, weight);
             total_weight = total_weight
                 .checked_add(weight)
-                .expect("total weight overflow");
+                .unwrap_or_else(|| panic_with_error!(&env, Error::EvaluatorWeightOverflow));
             index += 1;
         }
         // Acceptance criteria: sum of weights must be >= weight_threshold.
         if total_weight < weight_threshold {
-            panic!("total weight below threshold");
+            panic_with_error!(&env, Error::InvalidEvaluatorQuorum);
         }
 
         // #694 — reject tokens not on the approved whitelist.
@@ -1674,6 +1676,55 @@ impl AgenticCommerceContract {
             timestamp: env.ledger().timestamp(),
         }
         .publish(&env);
+    }
+
+    /// Replace a multi-evaluator job's evaluator with joint client and provider
+    /// authorization. The replacement inherits the slot's weight and must
+    /// approve independently. Available while the job is funded or awaiting approval.
+    pub fn replace_evaluator(env: Env, id: u64, current: Address, replacement: Address) {
+        Self::require_not_paused(&env);
+        let storage = env.storage().persistent();
+        let job_key = DataKey::Job(id);
+        let mut job: Job = storage
+            .get(&job_key)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::JobNotFound));
+        job.client.require_auth();
+        job.provider.require_auth();
+
+        if !matches!(
+            job.status,
+            JobStatus::Funded | JobStatus::Submitted | JobStatus::Disputed
+        ) {
+            panic_with_error!(&env, Error::InvalidStatus);
+        }
+        let quorum_key = DataKey::Evaluators(id);
+        let mut quorum: JobEvaluators = storage
+            .get(&quorum_key)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NotMultiEvaluatorJob));
+        let index = quorum
+            .evaluators
+            .first_index_of(current.clone())
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NotEvaluator));
+        if replacement == job.provider {
+            panic_with_error!(&env, Error::InvalidParties);
+        }
+        if quorum.evaluator_weights.contains_key(replacement.clone()) {
+            panic_with_error!(&env, Error::DuplicateEvaluator);
+        }
+
+        let weight = quorum.evaluator_weights.get(current.clone()).unwrap();
+        if quorum.approvals.get(current.clone()).unwrap_or(false) {
+            quorum.accumulated_weight -= weight;
+        }
+        quorum.approvals.remove(current.clone());
+        quorum.evaluator_weights.remove(current.clone());
+        quorum.evaluator_weights.set(replacement.clone(), weight);
+        quorum.evaluators.set(index, replacement.clone());
+        storage.set(&quorum_key, &quorum);
+        if job.evaluator == current {
+            job.evaluator = replacement;
+            storage.set(&job_key, &job);
+        }
     }
 
     /// Record an evaluator approval and release escrow when the weighted
@@ -2648,7 +2699,7 @@ impl AgenticCommerceContract {
             panic!("not initialized");
         }
         Self::require_minimum_job_budget(&env, &token, budget);
-        if milestones.is_empty() || milestones.len() > 20 {
+        if milestones.is_empty() || milestones.len() > MAX_MILESTONES {
             panic!("milestones must contain between 1 and 20 entries");
         }
         if client_addr == provider {

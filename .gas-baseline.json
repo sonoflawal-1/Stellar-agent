@@ -3,5 +3,27 @@
   "generated_by": "scripts/measure-gas.ts",
   "description": "Baseline Soroban CPU instruction and memory byte consumption per agentic_commerce entry point. `npm run gas:check` fails when an operation exceeds these values by more than threshold_percent.",
   "threshold_percent": 10,
-  "operations": {}
+  "operations": {},
+  "local_wasm_operations": {
+    "create_job_multi_eval": {
+      "cpu_instructions": 1773362,
+      "memory_bytes": 1361057
+    },
+    "create_job_multi_eval_weighted": {
+      "cpu_instructions": 1716723,
+      "memory_bytes": 1362544
+    },
+    "approve_job": {
+      "cpu_instructions": 1689065,
+      "memory_bytes": 1396870
+    },
+    "create_milestone_job": {
+      "cpu_instructions": 2576620,
+      "memory_bytes": 1410605
+    },
+    "cancel_uncompleted_milestones": {
+      "cpu_instructions": 1303263,
+      "memory_bytes": 1353094
+    }
+  }
 }
