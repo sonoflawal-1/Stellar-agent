@@ -314,6 +314,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "deadline"
+                    },
+                    "val": {
+                      "u64": "604800"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "deliverable"
                     },
                     "val": {
@@ -338,6 +346,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "fee_bps"
+                    },
+                    "val": {
+                      "u32": 100
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "funded_at"
                     },
                     "val": {
@@ -358,6 +374,14 @@
                     },
                     "val": {
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "released"
+                    },
+                    "val": {
+                      "i128": "100000"
                     }
                   },
                   {

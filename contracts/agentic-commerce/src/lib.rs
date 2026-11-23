@@ -84,6 +84,24 @@ pub struct Job {
     /// #23 — fee_bps snapshotted at job creation so admin changes to the
     /// global fee rate do not retroactively affect already-funded jobs.
     pub fee_bps: u32,
+    /// #928 — The Unix timestamp at which the job deadline expires.
+    /// Defaults to `funded_at + REFUND_TIMEOUT_SECS` at creation.
+    /// Updated by `accept_extension` when both parties agree to extend.
+    /// `claim_refund` and `claim_expired` gate on this value.
+    pub deadline: u64,
+}
+
+/// #928 — Pending deadline extension proposed by one party.
+/// Both client and provider must signal acceptance before the deadline is updated.
+#[derive(Clone)]
+#[contracttype]
+pub struct ExtensionProposal {
+    /// The new deadline Unix timestamp being proposed.
+    pub new_deadline: u64,
+    /// True if the client has accepted this proposal.
+    pub client_accepted: bool,
+    /// True if the provider has accepted this proposal.
+    pub provider_accepted: bool,
 }
 
 #[contracttype]
@@ -96,12 +114,17 @@ enum DataKey {
     Version,
     /// #29 — emergency pause flag. Stored as bool; absent == not paused.
     Paused,
+    /// #928 — pending deadline extension proposal for a job.
+    ExtensionProposal(u64),
 }
 
 const DEFAULT_FEE_BPS: u32 = 100; // 1%
 const MAX_FEE_BPS: u32 = 500; // 5% hard cap
 const BPS_DENOM: i128 = 10_000;
 const REFUND_TIMEOUT_SECS: u64 = 7 * 24 * 3600; // 7 days
+/// #928 — Maximum single extension permitted per proposal: 30 days beyond
+/// the current deadline. Neither party can be forced into an indefinite lock.
+const EXTENSION_CAP_SECS: u64 = 30 * 24 * 3600; // 30 days
 /// #25 — minimum budget to prevent zero/dust jobs that waste storage and spam events.
 const MIN_BUDGET: i128 = 1;
 /// #619 — maximum deliverable URI length to prevent storage griefing.
@@ -199,6 +222,35 @@ pub struct ReInitialized {
     pub admin: Address,
     pub new_admin: Address,
     pub new_treasury: Address,
+}
+
+/// #928 — Emitted when a party proposes a deadline extension.
+#[contractevent]
+pub struct DeadlineExtensionProposed {
+    #[topic]
+    pub proposer: Address,
+    pub job_id: u64,
+    pub new_deadline: u64,
+}
+
+/// #928 — Emitted when both parties have accepted and the deadline is updated.
+#[contractevent]
+pub struct DeadlineExtended {
+    #[topic]
+    pub job_id: u64,
+    pub old_deadline: u64,
+    pub new_deadline: u64,
+}
+
+/// Emitted when a provider claims payout after evaluator timeout.
+#[contractevent]
+pub struct JobExpired {
+    #[topic]
+    pub provider: Address,
+    pub job_id: u64,
+    pub payout: i128,
+    pub fee: i128,
+    pub timestamp: u64,
 }
 
 #[contract]
@@ -445,6 +497,7 @@ impl AgenticCommerceContract {
             created_at: now,
             updated_at: now,
             fee_bps: snapshotted_fee_bps, // #23
+            deadline: now + REFUND_TIMEOUT_SECS, // #928
         };
         env.storage().persistent().set(&DataKey::Job(next), &job);
         env.storage().instance().set(&DataKey::NextId, &(next + 1));
@@ -757,6 +810,165 @@ impl AgenticCommerceContract {
         count
     }
 
+    // -----------------------------------------------------------------------
+    // #928 — Deadline extension by mutual consent
+    // -----------------------------------------------------------------------
+
+    /// Either the client or provider may propose a new deadline for a job
+    /// that is currently `Funded` or `Submitted`.
+    ///
+    /// A new proposal overwrites any previous pending proposal. Both parties
+    /// must call `accept_extension` with the same `new_deadline` for the
+    /// extension to take effect.  The proposer's acceptance is recorded
+    /// immediately so they do not need a second call.
+    ///
+    /// # Caps
+    /// - `new_deadline` must be strictly greater than the current deadline.
+    /// - `new_deadline` must not exceed `current_deadline + EXTENSION_CAP_SECS`.
+    ///
+    /// # Panics
+    /// - `"not a party"` — caller is neither client nor provider.
+    /// - `"new deadline must be after current deadline"` — proposed time is not an extension.
+    /// - `"extension exceeds cap"` — proposed time is too far in the future.
+    /// - `"invalid status"` — job is not in an extendable state.
+    pub fn propose_extension(env: Env, caller: Address, id: u64, new_deadline: u64) {
+        Self::require_not_paused(&env); // #29
+        caller.require_auth();
+        let job: Job = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Job(id))
+            .unwrap_or_else(|| panic!("job not found"));
+
+        // Only client or provider may propose.
+        let is_client = caller == job.client;
+        let is_provider = caller == job.provider;
+        if !is_client && !is_provider {
+            panic!("not a party");
+        }
+
+        // Only extendable in Funded or Submitted states.
+        if job.status != JobStatus::Funded && job.status != JobStatus::Submitted {
+            panic!("invalid status");
+        }
+
+        // New deadline must be strictly after the current one.
+        if new_deadline <= job.deadline {
+            panic!("new deadline must be after current deadline");
+        }
+
+        // Cap: cannot extend more than EXTENSION_CAP_SECS beyond the current deadline.
+        if new_deadline > job.deadline + EXTENSION_CAP_SECS {
+            panic!("extension exceeds cap");
+        }
+
+        // Record the proposal; proposer's side is pre-accepted.
+        let proposal = ExtensionProposal {
+            new_deadline,
+            client_accepted: is_client,
+            provider_accepted: is_provider,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::ExtensionProposal(id), &proposal);
+
+        DeadlineExtensionProposed {
+            proposer: caller,
+            job_id: id,
+            new_deadline,
+        }
+        .publish(&env);
+    }
+
+    /// Accept a pending deadline extension proposal for a job.
+    ///
+    /// The caller must be the other party (client or provider) that did not
+    /// originate the proposal.  Once both parties have accepted the same
+    /// `new_deadline`, the job's `deadline` field is updated and the pending
+    /// proposal is deleted.
+    ///
+    /// # Panics
+    /// - `"no pending proposal"` — no proposal exists for this job.
+    /// - `"deadline mismatch"` — `new_deadline` does not match the pending proposal.
+    /// - `"not a party"` — caller is neither client nor provider.
+    /// - `"already accepted"` — caller has already accepted the current proposal.
+    /// - `"invalid status"` — job is not in an extendable state.
+    pub fn accept_extension(env: Env, caller: Address, id: u64, new_deadline: u64) {
+        Self::require_not_paused(&env); // #29
+        caller.require_auth();
+        let mut job: Job = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Job(id))
+            .unwrap_or_else(|| panic!("job not found"));
+
+        // Only extendable in Funded or Submitted states.
+        if job.status != JobStatus::Funded && job.status != JobStatus::Submitted {
+            panic!("invalid status");
+        }
+
+        let mut proposal: ExtensionProposal = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ExtensionProposal(id))
+            .unwrap_or_else(|| panic!("no pending proposal"));
+
+        // The accepted deadline must match the pending proposal exactly.
+        if new_deadline != proposal.new_deadline {
+            panic!("deadline mismatch");
+        }
+
+        let is_client = caller == job.client;
+        let is_provider = caller == job.provider;
+        if !is_client && !is_provider {
+            panic!("not a party");
+        }
+
+        // Record acceptance; guard against double-acceptance.
+        if is_client {
+            if proposal.client_accepted {
+                panic!("already accepted");
+            }
+            proposal.client_accepted = true;
+        } else {
+            if proposal.provider_accepted {
+                panic!("already accepted");
+            }
+            proposal.provider_accepted = true;
+        }
+
+        if proposal.client_accepted && proposal.provider_accepted {
+            // Both parties agreed — apply the extension.
+            let old_deadline = job.deadline;
+            job.deadline = new_deadline;
+            job.updated_at = env.ledger().timestamp();
+            env.storage().persistent().set(&DataKey::Job(id), &job);
+            // Clean up the proposal.
+            env.storage()
+                .persistent()
+                .remove(&DataKey::ExtensionProposal(id));
+
+            DeadlineExtended {
+                job_id: id,
+                old_deadline,
+                new_deadline,
+            }
+            .publish(&env);
+        } else {
+            // Still waiting for the other party — persist updated proposal.
+            env.storage()
+                .persistent()
+                .set(&DataKey::ExtensionProposal(id), &proposal);
+        }
+    }
+
+    /// Read-only: return the pending extension proposal for a job, if any.
+    pub fn get_extension_proposal(env: Env, id: u64) -> Option<ExtensionProposal> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ExtensionProposal(id))
+    }
+
     /// Buyer claims a full refund if provider never submitted and the timeout has passed.
     pub fn claim_refund(env: Env, caller: Address, id: u64) {
         Self::require_not_paused(&env); // #29
@@ -773,7 +985,7 @@ impl AgenticCommerceContract {
             panic!("invalid status");
         }
         let now = env.ledger().timestamp();
-        if now < job.funded_at + REFUND_TIMEOUT_SECS {
+        if now < job.deadline {
             panic!("timeout not reached");
         }
         // Refund only the net (unreleased) portion to avoid over-transfer.
@@ -814,9 +1026,9 @@ impl AgenticCommerceContract {
             panic!("invalid status");
         }
         let now = env.ledger().timestamp();
-        // `updated_at` is set to the submission time by `submit()` and does
-        // not change again while status remains `Submitted`.
-        if now < job.updated_at + REFUND_TIMEOUT_SECS {
+        // `deadline` is set at job creation (and updated by accept_extension).
+        // For submitted jobs it serves as the evaluator response deadline.
+        if now < job.deadline {
             panic!("timeout not reached");
         }
         // #28 — overflow-safe fee: divide first, then multiply.

@@ -1,45 +1,62 @@
 {
-  "name": "marc-stellar-sdk",
-  "version": "0.1.0",
-  "description": "Stellar SDK for MARC identity and commerce contracts",
-  "main": "dist/index.js",
-  "module": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.js"
+    "name": "marc-stellar-sdk",
+    "version": "0.1.0",
+    "description": "Stellar SDK for MARC identity and commerce contracts",
+    "main": "dist/index.js",
+    "module": "dist/index.js",
+    "types": "dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.js",
+            "require": "./dist/index.js"
+        },
+        "./browser": {
+            "types": "./dist/browser.d.ts",
+            "import": "./dist/browser.js",
+            "require": "./dist/browser.js"
+        },
+        "./dist/identity.js": {
+            "types": "./dist/identity.d.ts",
+            "import": "./dist/identity.js",
+            "require": "./dist/identity.js"
+        },
+        "./dist/commerce.js": {
+            "types": "./dist/commerce.d.ts",
+            "import": "./dist/commerce.js",
+            "require": "./dist/commerce.js"
+        },
+        "./dist/types.js": {
+            "types": "./dist/types.d.ts",
+            "import": "./dist/types.js",
+            "require": "./dist/types.js"
+        }
     },
-    "./browser": {
-      "types": "./dist/browser.d.ts",
-      "import": "./dist/browser.js",
-      "require": "./dist/browser.js"
-    }
-  },
-  "files": [
-    "dist"
-  ],
-  "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "test": "vitest run",
-    "test:watch": "vitest"
-  },
-  "dependencies": {
-    "@stellar/freighter-api": "^2.0.0",
-    "@stellar/stellar-sdk": "^12.0.0"
-  },
-  "devDependencies": {
-    "jsdom": "^24.0.0",
-    "typescript": "^5.4.0",
-    "vitest": "^1.6.0"
-  },
-  "keywords": [
-    "stellar",
-    "soroban",
-    "identity",
-    "commerce",
-    "freighter"
-  ],
-  "license": "MIT"
+    "files": [
+        "dist"
+    ],
+    "scripts": {
+        "build": "tsc -p tsconfig.json",
+        "test": "vitest run",
+        "test:watch": "vitest"
+    },
+    "dependencies": {
+        "@stellar/freighter-api": "^2.0.0",
+        "@stellar/stellar-sdk": "^12.0.0",
+        "@x402/express": "^2.32.0",
+        "@x402/stellar": "^2.32.0"
+    },
+    "devDependencies": {
+        "jsdom": "^24.0.0",
+        "typescript": "^5.4.0",
+        "vitest": "^1.6.0"
+    },
+    "keywords": [
+        "stellar",
+        "soroban",
+        "identity",
+        "commerce",
+        "freighter"
+    ],
+    "license": "MIT"
 }

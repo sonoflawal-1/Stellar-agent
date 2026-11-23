@@ -1,5 +1,5 @@
-import { IdentityClient, CommerceClient } from "marc-stellar-sdk";
-import type { Agent, Job } from "marc-stellar-sdk";
+import { IdentityClient, CommerceClient } from "./sdk-shim.js";
+import type { Agent, Job } from "./sdk-shim.js";
 import { cfg } from "./config.js";
 import EventEmitter from "events";
 

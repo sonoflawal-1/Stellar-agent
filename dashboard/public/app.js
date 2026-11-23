@@ -1289,6 +1289,13 @@
       content = '<div class="job-list">';
       for (const j of filtered) {
         let actions = "";
+        // #928 — extend deadline button for Funded and Submitted jobs
+        var extendBtn =
+          (j.status === "Funded" || j.status === "Submitted")
+            ? '<button class="btn btn-secondary btn-sm" onclick="window.__showExtendDeadline(\'' +
+              j.id +
+              '\', \'' + (j.deadline || "") + '\')" title="Propose or accept a deadline extension by mutual consent">Extend Deadline</button>'
+            : "";
         if (j.status === "Funded") {
           actions =
             '<button class="btn btn-primary btn-sm" onclick="window.__submitJob(\'' +
@@ -1296,12 +1303,14 @@
             "')\">Submit Work</button>" +
             '<button class="btn btn-danger btn-sm" onclick="window.__cancelJob(\'' +
             j.id +
-            "')\">Cancel</button>";
+            "')\">Cancel</button>" +
+            extendBtn;
         } else if (j.status === "Submitted") {
           actions =
             '<button class="btn btn-primary btn-sm" onclick="window.__completeJob(\'' +
             j.id +
-            "')\">Complete (Release Funds)</button>";
+            "')\">Complete (Release Funds)</button>" +
+            extendBtn;
         } else {
           actions =
             '<span style="font-size:13px;color:var(--text-dim)">Job is ' +
@@ -1362,6 +1371,12 @@
             ? '<div class="detail-item"><div class="detail-label">Created</div>' +
               '<div class="detail-value" title="' + escapeHtml(new Date(Number(j.created_at) * 1000).toISOString()) + '">' +
               escapeHtml(formatRelativeTime(j.created_at)) +
+              "</div></div>"
+            : "") +
+          (j.deadline
+            ? '<div class="detail-item"><div class="detail-label">Deadline</div>' +
+              '<div class="detail-value" title="' + escapeHtml(new Date(Number(j.deadline) * 1000).toISOString()) + '">' +
+              escapeHtml(new Date(Number(j.deadline) * 1000).toLocaleString()) +
               "</div></div>"
             : "") +
           deliverableHtml +
@@ -1839,6 +1854,7 @@
     renderAgents();
   };
   window.__searchAgentsDebounced = debounce(_searchAgentsImmediate, 200);
+  window.__searchAgents = window.__searchAgentsDebounced;
 
   window.__showCreateJob = function () {
     var walletField = wallet.connected
@@ -2036,6 +2052,192 @@
         }
       }
       renderAgents();
+    } catch (e) {
+      hideTxOverlay();
+      notifyError(e);
+    } finally {
+      state.txPending = false;
+    }
+  };
+
+  // ── #928 — Deadline extension by mutual consent ──
+
+  /**
+   * Show the "Extend Deadline" modal for a given job.
+   * @param {string|number} id      Job ID
+   * @param {string|number} currentDeadline  Current deadline as a Unix timestamp (seconds)
+   */
+  window.__showExtendDeadline = function (id, currentDeadline) {
+    var current = Number(currentDeadline) || 0;
+    var currentDate = current
+      ? new Date(current * 1000).toLocaleString()
+      : "unknown";
+
+    // Default proposal: current deadline + 7 days
+    var defaultTs = current + 7 * 24 * 3600;
+    // Format as datetime-local value (YYYY-MM-DDTHH:mm)
+    var defaultDtLocal = "";
+    try {
+      var d = new Date(defaultTs * 1000);
+      // Pad to "YYYY-MM-DDTHH:mm"
+      var pad = function (n) { return String(n).padStart(2, "0"); };
+      defaultDtLocal =
+        d.getFullYear() + "-" +
+        pad(d.getMonth() + 1) + "-" +
+        pad(d.getDate()) + "T" +
+        pad(d.getHours()) + ":" +
+        pad(d.getMinutes());
+    } catch (e) {}
+
+    var walletField = wallet.connected
+      ? '<div class="form-group"><label class="form-label">Signing Wallet</label>' +
+        '<div class="form-input signing-wallet-display" style="color:var(--accent);cursor:default">' +
+        copyable(wallet.publicKey, "wallet public key") +
+        " (" + connectedWalletLabel() + ")</div></div>"
+      : '<div class="form-group"><label class="form-label">Your Role</label>' +
+        '<select class="form-select" id="ext-wallet">' +
+        '<option value="buyer">Buyer (Client)</option>' +
+        '<option value="seller">Seller (Provider)</option>' +
+        '</select></div>';
+
+    showModal(
+      '<h2 class="modal-title">Extend Deadline — Job #' + escapeHtml(String(id)) + '</h2>' +
+      '<p style="color:var(--text-muted);margin-bottom:16px;font-size:14px">' +
+        'Both the client <em>and</em> the provider must each call propose/accept for the ' +
+        'same new deadline before the job deadline is updated.' +
+      '</p>' +
+      '<div class="form-group">' +
+        '<label class="form-label">Current deadline</label>' +
+        '<div class="form-input" style="color:var(--text-muted);cursor:default;font-size:13px">' +
+          escapeHtml(currentDate) +
+        '</div>' +
+      '</div>' +
+      walletField +
+      '<div class="form-group">' +
+        '<label class="form-label">New deadline (local time)</label>' +
+        '<input class="form-input" id="ext-deadline" type="datetime-local" ' +
+          'value="' + escapeAttr(defaultDtLocal) + '">' +
+        '<p style="color:var(--text-muted);font-size:12px;margin-top:4px">' +
+          'Must be after the current deadline and within 30 days of it.' +
+        '</p>' +
+      '</div>' +
+      '<div class="modal-actions">' +
+        '<button class="btn btn-secondary" onclick="this.closest(\'.modal-overlay\').remove()">Cancel</button>' +
+        '<button class="btn btn-primary" onclick="window.__doProposeExtension(' + escapeAttr(String(id)) + ', ' + current + ')">Propose Extension</button>' +
+        '<button class="btn btn-secondary" onclick="window.__doAcceptExtension(' + escapeAttr(String(id)) + ', ' + current + ')">Accept Proposal</button>' +
+      '</div>',
+    );
+  };
+
+  /**
+   * Propose a deadline extension. The proposer's acceptance is recorded
+   * immediately by the contract; the other party must call accept.
+   */
+  window.__doProposeExtension = async function (id, currentDeadline) {
+    if (state.txPending) return;
+    var dtInput = document.getElementById("ext-deadline");
+    if (!dtInput || !dtInput.value) {
+      toast("Please enter a new deadline date and time.", "error");
+      return;
+    }
+    var newTs = Math.floor(new Date(dtInput.value).getTime() / 1000);
+    if (!Number.isFinite(newTs) || newTs <= 0) {
+      toast("Invalid date/time value.", "error");
+      return;
+    }
+    if (newTs <= Number(currentDeadline)) {
+      toast("New deadline must be after the current deadline.", "error");
+      return;
+    }
+    var cap = Number(currentDeadline) + 30 * 24 * 3600;
+    if (newTs > cap) {
+      toast("Extension exceeds the 30-day cap.", "error");
+      return;
+    }
+
+    state.txPending = true;
+    var overlay = document.querySelector(".modal-overlay");
+    if (overlay) overlay.remove();
+    showTxOverlay("Proposing deadline extension on Stellar…");
+
+    try {
+      if (wallet.connected) {
+        var res = await signAndSubmit("/propose-extension", {
+          jobId: String(id),
+          newDeadline: String(newTs),
+        });
+        hideTxOverlay();
+        toast("Proposal submitted! tx: " + (res.hash || "").slice(0, 8) + "… — the other party must now accept.");
+      } else {
+        var walletEl = document.getElementById("ext-wallet");
+        var walletVal = walletEl ? walletEl.value : "buyer";
+        var buildRes = await api("/propose-extension", {
+          method: "POST",
+          body: { publicKey: walletVal === "buyer"
+            ? (state.wallets && state.wallets.buyer ? state.wallets.buyer.address : walletVal)
+            : (state.wallets && state.wallets.seller ? state.wallets.seller.address : walletVal),
+            jobId: String(id),
+            newDeadline: String(newTs) },
+        });
+        hideTxOverlay();
+        toast("Extension proposed! The other party must accept.", "success");
+      }
+      await loadJobs();
+      renderJobList();
+    } catch (e) {
+      hideTxOverlay();
+      notifyError(e);
+    } finally {
+      state.txPending = false;
+    }
+  };
+
+  /**
+   * Accept a pending deadline extension proposal.
+   * Both parties must have proposed/accepted the same deadline.
+   */
+  window.__doAcceptExtension = async function (id, currentDeadline) {
+    if (state.txPending) return;
+    var dtInput = document.getElementById("ext-deadline");
+    if (!dtInput || !dtInput.value) {
+      toast("Please enter the deadline that was proposed.", "error");
+      return;
+    }
+    var newTs = Math.floor(new Date(dtInput.value).getTime() / 1000);
+    if (!Number.isFinite(newTs) || newTs <= 0) {
+      toast("Invalid date/time value.", "error");
+      return;
+    }
+
+    state.txPending = true;
+    var overlay = document.querySelector(".modal-overlay");
+    if (overlay) overlay.remove();
+    showTxOverlay("Accepting deadline extension on Stellar…");
+
+    try {
+      if (wallet.connected) {
+        var res = await signAndSubmit("/accept-extension", {
+          jobId: String(id),
+          newDeadline: String(newTs),
+        });
+        hideTxOverlay();
+        toast("Acceptance submitted! tx: " + (res.hash || "").slice(0, 8) + "…");
+      } else {
+        var walletEl2 = document.getElementById("ext-wallet");
+        var walletVal2 = walletEl2 ? walletEl2.value : "seller";
+        await api("/accept-extension", {
+          method: "POST",
+          body: { publicKey: walletVal2 === "buyer"
+            ? (state.wallets && state.wallets.buyer ? state.wallets.buyer.address : walletVal2)
+            : (state.wallets && state.wallets.seller ? state.wallets.seller.address : walletVal2),
+            jobId: String(id),
+            newDeadline: String(newTs) },
+        });
+        hideTxOverlay();
+        toast("Extension accepted! Deadline updated.", "success");
+      }
+      await loadJobs();
+      renderJobList();
     } catch (e) {
       hideTxOverlay();
       notifyError(e);

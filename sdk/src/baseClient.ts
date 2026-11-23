@@ -193,6 +193,9 @@ export abstract class BaseClient {
       } catch (err) {
         if (err instanceof ContractError) throw err;
         if (attempt === 3) throw err;
-        await new Promise((r) => setTimeout(r, 2000 * attempt))
-
-/* … truncated 2984 chars — edit only what you need near the top … */
+        await new Promise((r) => setTimeout(r, 2000 * attempt));
+      }
+    }
+    throw new Error("simulate: unreachable");
+  }
+}

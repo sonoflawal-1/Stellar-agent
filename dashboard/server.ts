@@ -867,6 +867,76 @@ app.post("/api/claim-refund", optionalAuthMiddleware, requireDashboardWallet, as
   }
 });
 
+// --- #928: Deadline extension by mutual consent ---
+
+const proposeExtensionSchema = z.object({
+  publicKey: stellarAddressSchema,
+  jobId: z.string().regex(/^[0-9]+$/, "Job ID must be a positive integer"),
+  newDeadline: z.union([z.string().regex(/^[0-9]+$/), z.number().int().positive()]),
+});
+
+const acceptExtensionSchema = z.object({
+  publicKey: stellarAddressSchema,
+  jobId: z.string().regex(/^[0-9]+$/, "Job ID must be a positive integer"),
+  newDeadline: z.union([z.string().regex(/^[0-9]+$/), z.number().int().positive()]),
+});
+
+/**
+ * POST /api/propose-extension
+ * Body: { publicKey, jobId, newDeadline }
+ * Builds an unsigned `propose_extension` transaction for Freighter signing.
+ */
+app.post(
+  "/api/propose-extension",
+  rateLimitMutating,
+  optionalAuthMiddleware,
+  requireDashboardWallet,
+  async (req, res) => {
+    try {
+      const parsed = proposeExtensionSchema.parse(req.body);
+      const op = commerceContract.call(
+        "propose_extension",
+        new Address(parsed.publicKey).toScVal(),
+        nativeToScVal(BigInt(parsed.jobId), { type: "u64" }),
+        nativeToScVal(BigInt(parsed.newDeadline), { type: "u64" }),
+      );
+      const txXdr = await buildTxXdr(parsed.publicKey, op);
+      res.json({ xdr: txXdr });
+    } catch (err: unknown) {
+      if (respondWithValidationError(err, res)) return;
+      res.status(500).json({ error: (err as Error).message });
+    }
+  },
+);
+
+/**
+ * POST /api/accept-extension
+ * Body: { publicKey, jobId, newDeadline }
+ * Builds an unsigned `accept_extension` transaction for Freighter signing.
+ */
+app.post(
+  "/api/accept-extension",
+  rateLimitMutating,
+  optionalAuthMiddleware,
+  requireDashboardWallet,
+  async (req, res) => {
+    try {
+      const parsed = acceptExtensionSchema.parse(req.body);
+      const op = commerceContract.call(
+        "accept_extension",
+        new Address(parsed.publicKey).toScVal(),
+        nativeToScVal(BigInt(parsed.jobId), { type: "u64" }),
+        nativeToScVal(BigInt(parsed.newDeadline), { type: "u64" }),
+      );
+      const txXdr = await buildTxXdr(parsed.publicKey, op);
+      res.json({ xdr: txXdr });
+    } catch (err: unknown) {
+      if (respondWithValidationError(err, res)) return;
+      res.status(500).json({ error: (err as Error).message });
+    }
+  },
+);
+
 // --- Freighter wallet endpoints: build unsigned XDR ---
 
 const pendingTxHashes = new Set<string>();

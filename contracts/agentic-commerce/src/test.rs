@@ -1,5 +1,5 @@
 use super::*;
-use soroban_sdk::testutils::{Address as _, Events as _};
+use soroban_sdk::testutils::{Address as _, Events as _, Ledger as _};
 use soroban_sdk::token::{StellarAssetClient, TokenClient};
 use soroban_sdk::{Address, BytesN, Env, Event, String};
 
@@ -128,7 +128,7 @@ fn create_job_transfers_budget_into_escrow() {
     // for this contract rather than asserting the entire list length.
     let all_events = env.events().all().filter_by_contract(&contract_id);
     assert_eq!(
-        all_events.last().unwrap(),
+        *all_events.events().last().unwrap(),
         expected_event.to_xdr(&env, &contract_id),
     );
 
@@ -170,7 +170,7 @@ fn submit_flips_status_and_records_deliverable() {
     // `init()` emits `Initialized` so we verify the last event only.
     let all_events = env.events().all().filter_by_contract(&client.address);
     assert_eq!(
-        all_events.last().unwrap(),
+        *all_events.events().last().unwrap(),
         expected_event.to_xdr(&env, &client.address),
     );
 
@@ -258,7 +258,7 @@ fn complete_splits_payout_99_1_between_provider_and_treasury() {
     // `init()` emits `Initialized` so we verify the last event only.
     let all_events = env.events().all().filter_by_contract(&client.address);
     assert_eq!(
-        all_events.last().unwrap(),
+        *all_events.events().last().unwrap(),
         expected_event.to_xdr(&env, &client.address),
     );
 
@@ -322,7 +322,7 @@ fn cancel_refunds_buyer_when_not_yet_submitted() {
     // `init()` emits `Initialized` so we verify the last event only.
     let all_events = env.events().all().filter_by_contract(&client.address);
     assert_eq!(
-        all_events.last().unwrap(),
+        *all_events.events().last().unwrap(),
         expected_event.to_xdr(&env, &client.address),
     );
 
@@ -514,7 +514,7 @@ fn init_emits_initialized_event() {
     };
     let all_events = env.events().all().filter_by_contract(&contract_id);
     assert_eq!(
-        all_events.last().unwrap(),
+        *all_events.events().last().unwrap(),
         expected.to_xdr(&env, &contract_id),
     );
 }
@@ -928,3 +928,266 @@ fn upgrade_panics_when_not_initialized() {
     let fake_hash: BytesN<32> = BytesN::from_array(&env, &[0u8; 32]);
     client.upgrade(&admin, &fake_hash);
 }
+
+// ===========================================================================
+// #928 — Deadline extension by mutual consent
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Helper: creates a funded job and returns (client, job_id).
+// ---------------------------------------------------------------------------
+fn setup_funded_job<'a>(
+    env: &Env,
+    contract_client: &AgenticCommerceContractClient<'a>,
+    admin: &Address,
+) -> (Address, Address, u64) {
+    let buyer = Address::generate(env);
+    let seller = Address::generate(env);
+    let (token_addr, _token, stellar_token) = deploy_token(env, admin);
+    stellar_token.mint(&buyer, &1_000_000);
+    let id = contract_client.create_job(
+        &buyer,
+        &seller,
+        &buyer,
+        &token_addr,
+        &100_000i128,
+        &String::from_str(env, "job"),
+    );
+    (buyer, seller, id)
+}
+
+/// Both parties propose + accept — deadline is updated and event emitted.
+#[test]
+fn both_signatures_extend_deadline() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+
+    let (buyer, seller, id) = setup_funded_job(&env, &client, &admin);
+
+    let job_before = client.get_job(&id).unwrap();
+    let old_deadline = job_before.deadline;
+    let new_deadline = old_deadline + 3 * 24 * 3600; // +3 days
+
+    // Buyer proposes.
+    client.propose_extension(&buyer, &id, &new_deadline);
+
+    // Job deadline should NOT change yet — only one party has accepted.
+    let job_mid = client.get_job(&id).unwrap();
+    assert_eq!(job_mid.deadline, old_deadline, "deadline changed before both parties agreed");
+
+    // Seller accepts.
+    client.accept_extension(&seller, &id, &new_deadline);
+
+    // Check the DeadlineExtended event BEFORE making any further contract calls
+    // (env.events().all() tracks the last contract invocation only).
+    let expected_event = DeadlineExtended {
+        job_id: id,
+        old_deadline,
+        new_deadline,
+    };
+    let all_events = env.events().all();
+    let events_slice = all_events.events();
+    assert!(
+        events_slice.last().is_some(),
+        "no events were emitted after accept_extension",
+    );
+    assert_eq!(
+        *events_slice.last().unwrap(),
+        expected_event.to_xdr(&env, &client.address),
+    );
+
+    // Now the deadline must be updated.
+    let job_after = client.get_job(&id).unwrap();
+    assert_eq!(job_after.deadline, new_deadline);
+}
+
+/// Provider proposes, client accepts — also works when provider initiates.
+#[test]
+fn provider_propose_client_accept_extends_deadline() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+
+    let (buyer, seller, id) = setup_funded_job(&env, &client, &admin);
+
+    let old_deadline = client.get_job(&id).unwrap().deadline;
+    let new_deadline = old_deadline + 2 * 24 * 3600; // +2 days
+
+    // Seller proposes first.
+    client.propose_extension(&seller, &id, &new_deadline);
+
+    // No change yet.
+    assert_eq!(client.get_job(&id).unwrap().deadline, old_deadline);
+
+    // Buyer accepts.
+    client.accept_extension(&buyer, &id, &new_deadline);
+
+    assert_eq!(client.get_job(&id).unwrap().deadline, new_deadline);
+}
+
+/// A single party calling propose_extension followed by accept_extension for
+/// themselves must panic with "already accepted".
+#[test]
+#[should_panic(expected = "already accepted")]
+fn single_party_cannot_self_accept() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+
+    let (buyer, _seller, id) = setup_funded_job(&env, &client, &admin);
+
+    let old_deadline = client.get_job(&id).unwrap().deadline;
+    let new_deadline = old_deadline + 24 * 3600;
+
+    client.propose_extension(&buyer, &id, &new_deadline);
+    // Proposer tries to accept again — must panic.
+    client.accept_extension(&buyer, &id, &new_deadline);
+}
+
+/// A third party (not client or provider) must be rejected.
+#[test]
+#[should_panic(expected = "not a party")]
+fn third_party_cannot_propose_extension() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+
+    let (_buyer, _seller, id) = setup_funded_job(&env, &client, &admin);
+    let mallory = Address::generate(&env);
+
+    let old_deadline = client.get_job(&id).unwrap().deadline;
+    let ext_deadline = old_deadline + 24 * 3600;
+    client.propose_extension(&mallory, &id, &ext_deadline);
+}
+
+/// Proposing a deadline that is not strictly after the current deadline panics.
+#[test]
+#[should_panic(expected = "new deadline must be after current deadline")]
+fn propose_extension_rejects_non_advancing_deadline() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+
+    let (buyer, _seller, id) = setup_funded_job(&env, &client, &admin);
+    let old_deadline = client.get_job(&id).unwrap().deadline;
+
+    // Same as current — not an extension.
+    client.propose_extension(&buyer, &id, &old_deadline);
+}
+
+/// Proposing more than EXTENSION_CAP_SECS (30 days) beyond the current deadline panics.
+#[test]
+#[should_panic(expected = "extension exceeds cap")]
+fn propose_extension_rejects_beyond_cap() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+
+    let (buyer, _seller, id) = setup_funded_job(&env, &client, &admin);
+    let old_deadline = client.get_job(&id).unwrap().deadline;
+
+    // 31 days beyond current deadline — exceeds the 30-day cap.
+    let too_far = old_deadline + 31 * 24 * 3600;
+    client.propose_extension(&buyer, &id, &too_far);
+}
+
+/// accept_extension panics when the new_deadline supplied doesn't match
+/// the pending proposal.
+#[test]
+#[should_panic(expected = "deadline mismatch")]
+fn accept_extension_rejects_mismatched_deadline() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+
+    let (buyer, seller, id) = setup_funded_job(&env, &client, &admin);
+    let old_deadline = client.get_job(&id).unwrap().deadline;
+    let proposed = old_deadline + 24 * 3600;
+    let different = old_deadline + 48 * 3600;
+
+    client.propose_extension(&buyer, &id, &proposed);
+    // Seller tries to accept a different deadline.
+    client.accept_extension(&seller, &id, &different);
+}
+
+/// accept_extension panics when no proposal exists.
+#[test]
+#[should_panic(expected = "no pending proposal")]
+fn accept_extension_panics_when_no_proposal_exists() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+
+    let (buyer, _seller, id) = setup_funded_job(&env, &client, &admin);
+    let old_deadline = client.get_job(&id).unwrap().deadline;
+
+    // No propose_extension was called — must panic.
+    client.accept_extension(&buyer, &id, &(old_deadline + 24 * 3600));
+}
+
+/// claim_refund uses the extended deadline — the buyer cannot claim before
+/// the new, extended deadline has passed.
+#[test]
+#[should_panic(expected = "timeout not reached")]
+fn claim_refund_uses_extended_deadline() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+
+    let (buyer, seller, id) = setup_funded_job(&env, &client, &admin);
+
+    let old_deadline = client.get_job(&id).unwrap().deadline;
+    let new_deadline = old_deadline + 7 * 24 * 3600; // +7 more days
+
+    // Both parties extend.
+    client.propose_extension(&buyer, &id, &new_deadline);
+    client.accept_extension(&seller, &id, &new_deadline);
+
+    // Advance time to just after the original deadline but before the new one.
+    env.ledger().with_mut(|li| {
+        li.timestamp = old_deadline + 1; // past original, before new
+    });
+
+    // claim_refund must be blocked because the deadline was extended.
+    client.claim_refund(&buyer, &id);
+}
+
+/// After both parties extend, claim_refund succeeds once the new deadline passes.
+#[test]
+fn claim_refund_succeeds_after_extended_deadline() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin, _treasury) = setup(&env);
+
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let (token_addr, token, stellar_token) = deploy_token(&env, &admin);
+    stellar_token.mint(&buyer, &1_000_000);
+
+    let id = client.create_job(
+        &buyer,
+        &seller,
+        &buyer,
+        &token_addr,
+        &100_000i128,
+        &String::from_str(&env, "job"),
+    );
+
+    let old_deadline = client.get_job(&id).unwrap().deadline;
+    let new_deadline = old_deadline + 7 * 24 * 3600;
+
+    client.propose_extension(&buyer, &id, &new_deadline);
+    client.accept_extension(&seller, &id, &new_deadline);
+
+    // Advance time past the extended deadline.
+    env.ledger().with_mut(|li| {
+        li.timestamp = new_deadline + 1;
+    });
+
+    client.claim_refund(&buyer, &id);
+
+    assert_eq!(token.balance(&buyer), 1_000_000);
+    assert_eq!(token.balance(&client.address), 0);
+}
+
