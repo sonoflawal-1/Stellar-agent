@@ -154,6 +154,7 @@ If anything in this file contradicts those docs, those docs win.
 - To assert an exact `#[contractevent]` payload in tests: `use soroban_sdk::{testutils::Events as _, Event};` then `assert_eq!(env.events().all().filter_by_contract(&contract_id), [my_event.to_xdr(&env, &contract_id)]);`. Use an array literal (`[...]`), not `std::vec![...]` — the contract crates are `#![no_std]` so bare `std::` paths don't resolve even under `#[cfg(test)]`; `ContractEvents` implements `PartialEq` against a plain array directly.
 - The commerce contract test module can use std-backed test dependencies such as `proptest` by declaring `extern crate std;` in the test module; the contract library itself remains `#![no_std]`.
 - `contracts/fuzz` has its own Cargo workspace for `cargo-fuzz`; it must not also be listed as a member of the root workspace, or Cargo reports multiple workspace roots.
+- When using `stellar contract build --optimize` (CLI 25.x), the WASM is written in-place with the optimized hash embedded — older scripts that expect a `.optimized.wasm` suffix must be rewritten, as was done in Phases 1.5 and 2.7. Closes #933
 
 ## Open risks / things to verify during implementation
 

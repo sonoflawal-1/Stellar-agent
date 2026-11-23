@@ -38,6 +38,8 @@ pub enum Error {
     Unauthorized = 4,
     /// The delegate does not have the required permission bit set. (#696)
     InsufficientPermissions = 5,
+    /// The agent has reached the maximum number of delegates allowed. (#1045)
+    MaxDelegatesReached = 6,
     /// The supplied metadata URI is empty. (#782)
     UriEmpty = 6,
     /// The supplied metadata URI exceeds `MAX_METADATA_URI_LEN`. (#782)
@@ -556,6 +558,8 @@ impl AgentIdentityContract {
     /// - `permissions` — bitmask of `PERM_*` constants (e.g. `PERM_UPDATE_URI`).
     ///
     /// Emits a `DelegateGranted` event on success.
+    const MAX_DELEGATES: u32 = 10;
+
     pub fn add_delegate(
         env: Env,
         owner: Address,
@@ -565,6 +569,17 @@ impl AgentIdentityContract {
         permissions: u32,
     ) {
         owner.require_auth();
+
+        // Enforce maximum number of delegates per agent.
+        let index_key = DataKey::DelegateIndex(agent_id);
+        let delegates: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&index_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        if delegates.len() >= MAX_DELEGATES as usize {
+            panic_with_error!(&env, Error::MaxDelegatesReached);
+        }
 
         // Verify the agent exists and is owned by `owner`.
         let agent: Agent = env
